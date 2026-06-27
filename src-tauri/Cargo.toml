@@ -25,10 +25,8 @@ parking_lot = "0.12"
 # Authoritative server-side terminal state for the daemon: parses PTY output into
 # a grid and re-emits it as escape sequences (contents_formatted) for reattach.
 vt100 = "0.15"
-
-# On Linux we shell out to `notify-send`; notify-rust (and its zbus/async stack)
-# is only the fallback for other platforms, so don't compile it on Linux.
-[target.'cfg(not(target_os = "linux"))'.dependencies]
+# Cross-platform desktop notifications. Renders under WebKitGTK/distrobox, so
+# it's used on every platform (no notify-send shell-out).
 notify-rust = "4"
 
 # Daemon detach (setsid, SIGHUP ignore) and, later, the SO_PEERCRED check.

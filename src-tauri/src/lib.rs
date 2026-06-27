@@ -5,16 +5,26 @@ mod pty;
 
 use pty::{CreateOpts, SessionManager, TermMsg, TermStatus};
 use tauri::ipc::Channel;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
-/// Bring the main window to the foreground (e.g. when a notification is clicked).
+/// Bring a window to the foreground (e.g. when a notification is clicked).
 #[cfg(target_os = "linux")]
-fn focus_main_window(app: &tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
+fn focus_window(app: &tauri::AppHandle, label: &str) {
+    if let Some(w) = app.get_webview_window(label) {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
     }
+}
+
+/// Emitted to a window when its notification banner is clicked, so the frontend
+/// can switch to the terminal the notification was about.
+#[cfg(target_os = "linux")]
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NotifTarget {
+    session_id: String,
+    terminal_id: String,
 }
 
 #[tauri::command]
@@ -192,62 +202,63 @@ fn monospace_font() -> Option<FontConfig> {
 }
 
 /// Show a desktop notification, sent from Rust rather than the webview's Web
-/// Notification API (unreliable under WebKitGTK). On Linux we shell out to
-/// notify-send (libnotify): under WebKitGTK/distrobox, notify-rust's zbus call
-/// reports success but no banner appears, while notify-send works. notify-rust
-/// is the fallback and the path on other platforms.
+/// Notification API (unreliable under WebKitGTK). Uses notify-rust on every
+/// platform. The Linux path is separate only because click handling
+/// (wait_for_action) exists just on notify-rust's DBus backend, not on the
+/// macOS/Windows backends.
 #[tauri::command]
-fn notify(app: tauri::AppHandle, summary: String, body: String) -> Result<(), String> {
+fn notify(
+    window: tauri::WebviewWindow,
+    summary: String,
+    body: String,
+    // The session/terminal the notification is about, so a click can jump to it.
+    // Absent for coalesced banners that span terminals.
+    session_id: Option<String>,
+    terminal_id: Option<String>,
+) -> Result<(), String> {
+    let mut notification = notify_rust::Notification::new();
+    notification.summary(&summary).body(&body).appname("thel");
+
     #[cfg(target_os = "linux")]
     {
-        // Register a default action and --wait for it: clicking the banner makes
-        // notify-send print the action key, which is our cue to raise the window.
-        // Runs off-thread because --wait blocks for the notification's lifetime.
-        std::thread::spawn(move || {
-            match std::process::Command::new("notify-send")
-                .arg("--app-name=thel")
-                .arg("--wait")
-                .arg("--action=default=Open")
-                .arg(&summary)
-                .arg(&body)
-                .output()
-            {
-                Ok(out) if out.status.success() => {
-                    if String::from_utf8_lossy(&out.stdout).trim() == "default" {
-                        focus_main_window(&app);
+        // Clicking the banner should raise the window that posted it (each
+        // profile runs in its own window and only notifies for its own
+        // terminals), not a hardcoded "main".
+        let label = window.label().to_string();
+        let app = window.app_handle().clone();
+        notification.action("default", "Open");
+        // wait_for_action blocks for the notification's lifetime, so run it
+        // off-thread.
+        std::thread::spawn(move || match notification.show() {
+            Ok(handle) => handle.wait_for_action(|action| {
+                if action == "default" {
+                    focus_window(&app, &label);
+                    // Tell that window's frontend which tab to switch to.
+                    if let (Some(s), Some(t)) = (&session_id, &terminal_id) {
+                        let _ = app.emit_to(
+                            label.clone(),
+                            "notification-activated",
+                            NotifTarget {
+                                session_id: s.clone(),
+                                terminal_id: t.clone(),
+                            },
+                        );
                     }
                 }
-                // Older libnotify lacks --wait/--action; still show a plain banner.
-                Ok(out) => {
-                    eprintln!(
-                        "notify-send actions unsupported ({}): {}",
-                        out.status,
-                        String::from_utf8_lossy(&out.stderr).trim()
-                    );
-                    let _ = std::process::Command::new("notify-send")
-                        .arg("--app-name=thel")
-                        .arg(&summary)
-                        .arg(&body)
-                        .status();
-                }
-                Err(e) => eprintln!("notify-send unavailable: {e}"),
-            }
+            }),
+            Err(e) => eprintln!("notify-rust failed: {e}"),
         });
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = &app;
-        notify_rust::Notification::new()
-            .summary(&summary)
-            .body(&body)
-            .appname("thel")
-            .show()
-            .map(|_| ())
-            .map_err(|e| {
-                eprintln!("notify failed: {e}");
-                e.to_string()
-            })
+        // wait_for_action (click handling) is DBus-backend-only, so elsewhere
+        // just show the banner; the jump target is unused.
+        let _ = (&window, &session_id, &terminal_id);
+        notification.show().map(|_| ()).map_err(|e| {
+            eprintln!("notify failed: {e}");
+            e.to_string()
+        })
     }
 }
 
