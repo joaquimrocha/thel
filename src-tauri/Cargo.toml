@@ -1,0 +1,42 @@
+[package]
+name = "thel"
+version = "0.1.0"
+description = "A terminal helper specialized for running coding agents"
+authors = ["thel"]
+edition = "2021"
+
+[lib]
+# The desktop entrypoint links against this lib; the name is referenced by main.rs.
+name = "thel_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-store = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+portable-pty = "0.9"
+parking_lot = "0.12"
+# Authoritative server-side terminal state for the daemon: parses PTY output into
+# a grid and re-emits it as escape sequences (contents_formatted) for reattach.
+vt100 = "0.15"
+
+# On Linux we shell out to `notify-send`; notify-rust (and its zbus/async stack)
+# is only the fallback for other platforms, so don't compile it on Linux.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+notify-rust = "4"
+
+# Daemon detach (setsid, SIGHUP ignore) and, later, the SO_PEERCRED check.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

@@ -1,0 +1,33 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+
+# Playwright MCP scratch output
+.playwright-mcp/
+
+# Rust / Tauri
+src-tauri/target
+src-tauri/gen/schemas
+
+# icon source (generated set lives in src-tauri/icons)
+icon-src.png
+
+# Generated icon variants not used by the desktop bundle; reproducible via
+# `pnpm tauri icon icon-src.png`. Only the desktop icons are tracked.
+src-tauri/icons/android/
+src-tauri/icons/ios/
+src-tauri/icons/Square*.png
+src-tauri/icons/StoreLogo.png
+src-tauri/icons/64x64.png
+src-tauri/icons/icon.png
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Coverage output
+coverage/
