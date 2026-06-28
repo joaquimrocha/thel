@@ -1,9 +1,10 @@
 [package]
 name = "thel"
 version = "0.1.0"
-description = "A terminal helper specialized for running coding agents"
-authors = ["thel"]
+description = "A desktop terminal built for running coding agents"
+authors = ["Joaquim Rocha <me@joaquimrocha.com>"]
 edition = "2021"
+license = "Apache-2.0"
 
 [lib]
 # The desktop entrypoint links against this lib; the name is referenced by main.rs.
