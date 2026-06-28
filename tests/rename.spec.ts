@@ -10,15 +10,16 @@ async function createSession(page: Page) {
   await expect(page.getByText("No sessions open.")).toBeHidden();
 }
 
-test("rename a session (double-click the name)", async ({ page }) => {
+test("rename a session (double-click opens settings)", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
+  // Double-clicking the row opens the Session Settings dialog; rename there.
   await page
-    .locator('[data-session-list] [title="Double-click to rename"]')
+    .locator('[data-session-list] [title="Double-click for session settings"]')
     .dblclick();
-  const input = page.locator("[data-session-list] input");
-  await input.fill("MySession");
-  await input.press("Enter");
+  const dialog = page.getByRole("dialog");
+  await dialog.locator("input").first().fill("MySession");
+  await dialog.getByRole("button", { name: "Done" }).click();
   await expect(page.locator("[data-session-list]")).toContainText("MySession");
 });
 

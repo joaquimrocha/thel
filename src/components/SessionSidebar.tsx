@@ -6,7 +6,8 @@ import {
   GitBranch,
   PanelLeftClose,
   PanelLeftOpen,
-  FolderCog,
+  Zap,
+  Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -14,9 +15,7 @@ import { useSessions, type Session } from "@/store/sessions";
 import { usePrefs } from "@/store/prefs";
 import { useNotifications } from "@/store/notifications";
 import { useUI } from "@/store/ui";
-import { sessionNameForDir } from "@/lib/launch";
 import { closeSessionConfirmed } from "@/lib/actions";
-import { EditableLabel } from "./EditableLabel";
 import { StatusDot, sessionDotState } from "./StatusDot";
 import { ActionTooltip } from "./ActionTooltip";
 import { Logo } from "./Logo";
@@ -26,7 +25,7 @@ export function SessionSidebar() {
   const activeSessionId = useSessions((s) => s.activeSessionId);
   const setActiveSession = useSessions((s) => s.setActiveSession);
   const openNewSession = useUI((s) => s.openNewSession);
-  const openSettings = useUI((s) => s.openSettings);
+  const openPalette = useUI((s) => s.setPaletteOpen);
   const openNotifications = useUI((s) => s.openNotifications);
   const unread = useNotifications((s) => s.items.filter((i) => !i.read).length);
   // The custom title bar already shows "thel", so drop the redundant sidebar
@@ -126,15 +125,15 @@ export function SessionSidebar() {
   // Global actions that live at the bottom of the sidebar.
   const globalActions = (
     <>
-      <ActionTooltip label="Sessions settings">
+      <ActionTooltip label="Command palette" shortcutId="palette">
         <Button
           variant="ghost"
           size="icon"
           className="size-7"
-          onClick={() => openSettings("sessions")}
-          aria-label="Sessions settings"
+          onClick={() => openPalette(true)}
+          aria-label="Command palette"
         >
-          <FolderCog className="size-4" />
+          <Zap className="size-4" />
         </Button>
       </ActionTooltip>
     </>
@@ -265,7 +264,11 @@ export function SessionSidebar() {
                   : "hover:bg-secondary/50",
               )}
             >
-              <StatusDot state={sessionDotState(s)} className="size-2" />
+              <StatusDot
+                state={sessionDotState(s)}
+                icon={s.icon}
+                className="size-2"
+              />
             </button>
           </ActionTooltip>
         ))}
@@ -311,11 +314,12 @@ function SessionRow({
   onSelect: () => void;
   onClose: () => void;
 }) {
-  const renameSession = useSessions((s) => s.renameSession);
   const reorderSession = useSessions((s) => s.reorderSession);
+  const openSessionSettings = useUI((s) => s.openSessionSettings);
   return (
     <div
       onClick={onSelect}
+      onDoubleClick={() => openSessionSettings(session.id)}
       draggable
       onDragStart={(e) => {
         e.dataTransfer.setData("text/plain", session.id);
@@ -338,14 +342,18 @@ function SessionRow({
         highlighted && "ring-1 ring-ring",
       )}
     >
-      <StatusDot state={sessionDotState(session)} />
+      {/* Fixed slot so a row's text starts at the same x whether it shows the
+          small dot or a larger icon. */}
+      <span
+        data-status-slot
+        className="flex size-4 shrink-0 items-center justify-center"
+      >
+        <StatusDot state={sessionDotState(session)} icon={session.icon} />
+      </span>
       <div className="min-w-0 flex-1">
-        <EditableLabel
-          value={session.name}
-          onCommit={(v) => renameSession(session.id, v)}
-          fallback={session.cwd ? sessionNameForDir(session.cwd) : undefined}
-          className="block truncate"
-        />
+        <span className="block truncate" title="Double-click for session settings">
+          {session.name}
+        </span>
         {session.branch && (
           <span className="flex items-center gap-1 text-xs text-muted-foreground/80">
             <GitBranch className="size-3 shrink-0" />
@@ -354,6 +362,18 @@ function SessionRow({
           </span>
         )}
       </div>
+      <ActionTooltip label="Session settings">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            openSessionSettings(session.id);
+          }}
+          className="shrink-0 rounded opacity-0 hover:bg-background/60 group-hover:opacity-100"
+          aria-label="Session settings"
+        >
+          <Settings className="size-3.5" />
+        </button>
+      </ActionTooltip>
       <ActionTooltip label="Close session">
         <button
           onClick={(e) => {

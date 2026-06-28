@@ -61,7 +61,20 @@ interface UIState {
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
 
+  // The session whose settings dialog (name + icon) is open (null = closed).
+  sessionSettings: string | null;
+  openSessionSettings: (sessionId: string) => void;
+  closeSessionSettings: () => void;
+
+  // The "add an icon to the library" dialog (global, not session-specific).
+  addIconOpen: boolean;
+  setAddIconOpen: (open: boolean) => void;
+
+  // The confirmation currently shown, plus any requested while it's open. A
+  // single slot would let a second request (a rapid second close, a launcher
+  // error) clobber an open dialog; queue them so each is answered in turn.
   confirm: ConfirmRequest | null;
+  confirmQueue: ConfirmRequest[];
   requestConfirm: (req: ConfirmRequest) => void;
   clearConfirm: () => void;
 }
@@ -142,7 +155,24 @@ export const useUI = create<UIState>((set) => ({
       return { sidebarCollapsed: collapsed };
     }),
 
+  sessionSettings: null,
+  openSessionSettings: (sessionId) => set({ sessionSettings: sessionId }),
+  closeSessionSettings: () => set({ sessionSettings: null }),
+
+  addIconOpen: false,
+  setAddIconOpen: (open) => set({ addIconOpen: open }),
+
   confirm: null,
-  requestConfirm: (req) => set({ confirm: req }),
-  clearConfirm: () => set({ confirm: null }),
+  confirmQueue: [],
+  // Show it now if nothing's open, else line it up behind the current one.
+  requestConfirm: (req) =>
+    set((s) =>
+      s.confirm ? { confirmQueue: [...s.confirmQueue, req] } : { confirm: req },
+    ),
+  // Advance to the next queued confirmation, or close when none remain.
+  clearConfirm: () =>
+    set((s) => {
+      const [next, ...rest] = s.confirmQueue;
+      return { confirm: next ?? null, confirmQueue: rest };
+    }),
 }));

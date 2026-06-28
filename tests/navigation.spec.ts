@@ -12,12 +12,12 @@ async function createSession(page: Page) {
 
 async function renameActiveSession(page: Page, name: string) {
   await page
-    .locator('[data-session-list] [title="Double-click to rename"]')
+    .locator('[data-session-list] [title="Double-click for session settings"]')
     .first()
     .dblclick();
-  const input = page.locator("[data-session-list] input");
-  await input.fill(name);
-  await input.press("Enter");
+  const dialog = page.getByRole("dialog");
+  await dialog.locator("input").first().fill(name);
+  await dialog.getByRole("button", { name: "Done" }).click();
 }
 
 test("Ctrl+Shift+E focuses the session list; x closes the highlighted one", async ({

@@ -74,6 +74,7 @@ interface PersistedSession {
   name: string;
   cwd?: string;
   repoRoot?: string;
+  icon?: string;
   groups?: PersistedGroup[];
   layout?: LayoutNode;
   activeGroupId?: string;
@@ -157,6 +158,7 @@ export async function hydrateSessions(): Promise<void> {
           name: s.name,
           cwd: s.cwd,
           repoRoot: s.repoRoot,
+          icon: s.icon,
           groups,
           layout,
           activeGroupId: s.activeGroupId ?? groups[0].id,
@@ -250,6 +252,7 @@ function clonePersisted(sessions: Session[]): PersistedLayout {
       name: s.name,
       cwd: s.cwd,
       repoRoot: s.repoRoot,
+      icon: s.icon,
       layout: remapLayout(s.layout, groupIds),
       activeGroupId: groupIds.get(s.activeGroupId),
       groups,
@@ -282,6 +285,7 @@ function serialize(state: SessionState): PersistedLayout {
       name: s.name,
       cwd: s.cwd,
       repoRoot: s.repoRoot,
+      icon: s.icon,
       layout: s.layout,
       activeGroupId: s.activeGroupId,
       groups: s.groups.map((g) => ({

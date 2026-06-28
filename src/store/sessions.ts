@@ -57,6 +57,10 @@ export interface Session {
   // terminals default to this cwd. repoRoot is set when cwd is inside a repo.
   cwd?: string;
   repoRoot?: string;
+  // A Lucide icon name (kebab-case, e.g. "rocket") shown in the sidebar to tell
+  // sessions apart. Replaces the status dot while idle; the dot returns (pulsing)
+  // while a command runs.
+  icon?: string;
   // Runtime-only (refreshed from git, not persisted).
   branch?: string;
   dirty?: boolean;
@@ -147,6 +151,7 @@ export interface SessionState {
   removeSession: (id: string) => void;
   setActiveSession: (id: string) => void;
   renameSession: (id: string, name: string) => void;
+  setSessionIcon: (id: string, icon: string | undefined) => void;
   setSessionGit: (id: string, branch: string | undefined, dirty: boolean) => void;
 
   // groupId defaults to the session's active group.
@@ -267,6 +272,13 @@ export const useSessions = create<SessionState>((set, get) => ({
     set((s) => ({
       sessions: s.sessions.map((ss) =>
         ss.id === id ? { ...ss, name } : ss,
+      ),
+    })),
+
+  setSessionIcon: (id, icon) =>
+    set((s) => ({
+      sessions: s.sessions.map((ss) =>
+        ss.id === id ? { ...ss, icon } : ss,
       ),
     })),
 

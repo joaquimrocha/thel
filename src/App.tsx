@@ -15,6 +15,8 @@ import { NotificationsDialog } from "@/components/NotificationsDialog";
 import { SessionsDialog } from "@/components/SessionsDialog";
 import { DaemonSkewDialog } from "@/components/DaemonSkewDialog";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
+import { SessionSettingsDialog } from "@/components/SessionSettingsDialog";
+import { AddIconDialog } from "@/components/AddIconDialog";
 import { Toaster } from "@/components/ui/sonner";
 import { hydrateSessions, startPersistence, flushSessions } from "@/lib/persistence";
 import { checkDaemon, daemonOptedOut } from "@/lib/pty";
@@ -192,6 +194,8 @@ export default function App() {
       <SessionsDialog />
       <DaemonSkewDialog />
       <ShortcutsDialog />
+      <SessionSettingsDialog />
+      <AddIconDialog />
       <Toaster />
     </div>
     </TooltipProvider>

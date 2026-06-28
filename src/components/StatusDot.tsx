@@ -1,3 +1,4 @@
+import { SvgIcon } from "./SvgIcon";
 import { cn } from "@/lib/utils";
 import { sessionTerminals, type Session, type Terminal } from "@/store/sessions";
 
@@ -35,13 +36,29 @@ const COLOR: Record<Exclude<DotState, "busy">, string> = {
   attention: "bg-blue-500",
 };
 
+// Icon tint mirrors the dot's colour for the same state, so a session icon still
+// reads its status at a glance (green = running, blue = wants attention, faded =
+// idle/exited). Concrete hex (not CSS classes): the icon renders via an <img>
+// data URI, which can't resolve currentColor or theme variables.
+const ICON_HEX: Record<Exclude<DotState, "busy">, string> = {
+  none: "#71717a",
+  idle: "#71717a",
+  exited: "#52525b",
+  running: "#10b981",
+  attention: "#3b82f6",
+};
+
 // `className` carries the size (e.g. "size-2"); defaults to the tab/row size.
+// `icon` (an SVG string, sessions only) replaces the dot while idle; a running
+// command still shows the pulsing dot so work stays obvious.
 export function StatusDot({
   state,
   className,
+  icon,
 }: {
   state: DotState;
   className?: string;
+  icon?: string;
 }) {
   const size = className ?? "size-1.5";
   if (state === "busy") {
@@ -51,6 +68,11 @@ export function StatusDot({
         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
         <span className="relative inline-flex h-full w-full rounded-full bg-emerald-500" />
       </span>
+    );
+  }
+  if (icon) {
+    return (
+      <SvgIcon svg={icon} color={ICON_HEX[state]} className="size-4 shrink-0" />
     );
   }
   return <span className={cn("shrink-0 rounded-full", size, COLOR[state])} />;

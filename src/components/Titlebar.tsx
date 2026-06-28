@@ -17,6 +17,7 @@ import { useUI } from "@/store/ui";
 import { ProfileDialog } from "@/components/ProfileDialog";
 import { ActionTooltip } from "@/components/ActionTooltip";
 import { Logo } from "@/components/Logo";
+import { SvgIcon } from "@/components/SvgIcon";
 
 // Custom titlebar (the OS one is disabled via decorations:false). The bar is a
 // drag region; the window controls and the profile menu sit on top and stay
@@ -24,6 +25,9 @@ import { Logo } from "@/components/Logo";
 export function Titlebar() {
   const name = useSessions((s) =>
     s.sessions.find((x) => x.id === s.activeSessionId)?.name,
+  );
+  const icon = useSessions((s) =>
+    s.sessions.find((x) => x.id === s.activeSessionId)?.icon,
   );
   // The current profile's accent tints this window's title bar border.
   const color = useProfiles(
@@ -44,7 +48,11 @@ export function Titlebar() {
           lets a drag started here fall through to the bar. */}
       {name && (
         <div className="pointer-events-none absolute inset-x-0 flex items-center justify-center gap-1.5">
-          <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+          {icon ? (
+            <SvgIcon svg={icon} color="#a1a1aa" className="size-3.5 shrink-0" />
+          ) : (
+            <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+          )}
           <span
             data-testid="active-session-name"
             className="max-w-[50%] truncate text-sm text-muted-foreground"

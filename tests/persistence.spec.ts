@@ -78,14 +78,16 @@ test("a corrupt saved layout can be set aside to start fresh", async ({ page }) 
 test("Escape cancels an in-progress rename", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
+  // Sessions rename via the settings dialog now; terminal tabs keep the inline
+  // editor, so its Escape-to-cancel is what we cover here.
   await page
-    .locator('[data-session-list] [title="Double-click to rename"]')
+    .locator('[title="Double-click to rename"]')
     .first()
     .dblclick();
-  const input = page.locator("[data-session-list] input");
+  const input = page.locator("input:focus");
   await input.fill("Discarded");
   await input.press("Escape");
-  await expect(page.locator("[data-session-list]")).not.toContainText(
-    "Discarded",
-  );
+  await expect(
+    page.locator('[title="Double-click to rename"]', { hasText: "Discarded" }),
+  ).toHaveCount(0);
 });
