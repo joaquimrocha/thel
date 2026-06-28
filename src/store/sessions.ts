@@ -185,6 +185,9 @@ export interface SessionState {
   ) => void;
   markExited: (terminalId: string, code: number | null) => void;
   setAttention: (terminalId: string, value: boolean) => void;
+  // Drop the attention indicator from every terminal (e.g. the user cleared the
+  // notifications panel).
+  clearAllAttention: () => void;
   setBusy: (terminalId: string, value: boolean) => void;
   // zoom = undefined resets the terminal to the default zoom.
   setZoom: (terminalId: string, zoom: number | undefined) => void;
@@ -541,6 +544,20 @@ export const useSessions = create<SessionState>((set, get) => ({
   setAttention: (terminalId, value) =>
     set((s) => ({
       sessions: patchTerminal(s.sessions, terminalId, { attention: value }),
+    })),
+
+  clearAllAttention: () =>
+    set((s) => ({
+      sessions: s.sessions.map((ss) => ({
+        ...ss,
+        groups: ss.groups.map((g) => ({
+          ...g,
+          // Only rewrite terminals that actually had it, to avoid churn.
+          terminals: g.terminals.map((t) =>
+            t.attention ? { ...t, attention: false } : t,
+          ),
+        })),
+      })),
     })),
 
   setBusy: (terminalId, value) =>

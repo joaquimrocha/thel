@@ -10,6 +10,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { useUI } from "@/store/ui";
+import { useSessions } from "@/store/sessions";
 import {
   useNotifications,
   kindLabel,
@@ -43,7 +44,14 @@ export function NotificationsDialog() {
   const setOpen = useUI((s) => s.setNotificationsOpen);
   const items = useNotifications((s) => s.items);
   const markAllRead = useNotifications((s) => s.markAllRead);
-  const clear = useNotifications((s) => s.clear);
+  const clearItems = useNotifications((s) => s.clear);
+  const clearAllAttention = useSessions((s) => s.clearAllAttention);
+  // Clearing the panel also drops the attention dots on sessions/tabs that
+  // those notifications were flagging.
+  const clear = () => {
+    clearItems();
+    clearAllAttention();
+  };
 
   // Opening the panel counts as seeing them.
   useEffect(() => {

@@ -55,6 +55,22 @@ test("a terminal reply does not clear the attention dot", async ({ page }) => {
   await expect(firstSessionDot(page)).toBeVisible();
 });
 
+test("clearing all notifications removes the attention dots", async ({
+  page,
+}) => {
+  await gotoApp(page);
+  await createSession(page);
+  await createSession(page);
+
+  await emitTerminal(page, 0, "\x07"); // bell on the background terminal
+  await expect(firstSessionDot(page)).toBeVisible();
+
+  // Clearing the notifications panel should also drop the attention dot it flagged.
+  await page.getByRole("button", { name: "Notifications" }).click();
+  await page.getByRole("button", { name: "Clear all" }).click();
+  await expect(firstSessionDot(page)).toHaveCount(0);
+});
+
 test("the active terminal's dot survives a window refocus, clears on typing", async ({
   page,
 }) => {
