@@ -9,6 +9,7 @@ import {
   type Terminal,
 } from "@/store/sessions";
 import { usePrefs } from "@/store/prefs";
+import { useUI } from "@/store/ui";
 
 // Each profile keeps its own session layout. The default profile keeps the
 // original filename so existing layouts are preserved. Computed from the window
@@ -22,6 +23,16 @@ function layoutFileFor(id: string): string {
 }
 const layoutFile = () => layoutFileFor(profileIdFromWindow());
 const KEY = "layout";
+
+// Set when hydrateSessions couldn't read the saved layout. It gates persistence
+// off (see startPersistence) so we never overwrite a file we failed to load and
+// destroy a possibly-recoverable layout.
+let hydrationFailed = false;
+
+// hydrateSessions is a one-shot startup step; guard against a second run (React
+// StrictMode double-invokes the effect in dev) so it can't restore twice or
+// raise the corrupt-layout prompt twice.
+let hydrationStarted = false;
 
 // Only structural fields are persisted; runtime state (started/exited/output)
 // is intentionally dropped so restored terminals come back idle.
@@ -87,10 +98,15 @@ function getStore(): Promise<Store> {
  * flashing their Start card; the rest come back not-started.
  */
 export async function hydrateSessions(): Promise<void> {
+  if (hydrationStarted) return;
+  hydrationStarted = true;
+  // Held outside the try so the failure handler can offer to set it aside.
+  let raw: PersistedLayout | undefined;
   try {
     const store = await getStore();
-    const layout = await store.get<PersistedLayout>(KEY);
-    if (!layout?.sessions?.length) return;
+    raw = await store.get<PersistedLayout>(KEY);
+    if (!raw?.sessions?.length) return;
+    const layout = raw;
     // With the daemon, every restored terminal comes back started: `open` is
     // attach-if-alive-else-respawn, so it reattaches a surviving shell or spawns
     // a fresh one at its cwd. With a direct PTY there's nothing to reattach, so
@@ -149,11 +165,48 @@ export async function hydrateSessions(): Promise<void> {
     });
   } catch (e) {
     console.error("failed to restore layout", e);
+    // Keep persistence from overwriting the unreadable file (see
+    // startPersistence). Let the user recover it manually or set it aside and
+    // start saving again.
+    hydrationFailed = true;
+    useUI.getState().requestConfirm({
+      title: "Couldn't restore your saved layout",
+      description:
+        "Your saved session layout couldn't be read. Cancel to leave it untouched so it can be recovered (new sessions won't be saved this run), or start fresh to set it aside and begin saving again.",
+      confirmLabel: "Start fresh",
+      onConfirm: () => void discardCorruptLayout(raw),
+    });
   } finally {
     // Mark hydration done (even when there was nothing to restore) so the
     // "No sessions" empty state can show without flashing during load.
     useSessions.setState({ hydrated: true });
   }
+}
+
+// Set the unreadable layout aside (copied to a sibling file so it can still be
+// recovered by hand), reset the live layout, and resume persistence so the app
+// saves again. Best-effort: a file the store plugin can't even open can't be
+// reset from here, but the common case (a valid file whose shape drifted) can.
+async function discardCorruptLayout(raw: PersistedLayout | undefined): Promise<void> {
+  try {
+    if (raw !== undefined) {
+      const backup = await load(layoutFile().replace(/\.json$/, ".corrupt.json"), {
+        autoSave: false,
+        defaults: {},
+      });
+      await backup.set(KEY, raw);
+      await backup.save();
+    }
+    const store = await getStore();
+    await store.clear();
+    await store.save();
+  } catch (e) {
+    console.error("failed to set aside corrupt layout", e);
+  }
+  // Resume saving and write the current (fresh) state right away.
+  hydrationFailed = false;
+  lastSaved = null;
+  writer.schedule(serialize(useSessions.getState()));
 }
 
 // Deep-clone a session's layout tree, remapping pane-group ids.
@@ -264,6 +317,9 @@ export const flushSessions = writer.flush;
  */
 export function startPersistence(): () => void {
   return useSessions.subscribe((state) => {
+    // A failed hydration left the on-disk layout unreadable; don't overwrite it
+    // until the user starts fresh (discardCorruptLayout clears this).
+    if (hydrationFailed) return;
     const layout = serialize(state);
     const json = JSON.stringify(layout);
     if (json === lastSaved) return;

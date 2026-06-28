@@ -341,6 +341,13 @@ export function TerminalPane({
     };
     window.addEventListener("focus", onWindowFocus);
 
+    // Clicking into the terminal attends it, so drop its attention dot (typing
+    // already clears it via the key handler above). Bare window refocus does
+    // not, by design: you dismiss a specific terminal by interacting with it.
+    const container = containerRef.current;
+    const onPointerDown = () => clearAttention();
+    container?.addEventListener("mousedown", onPointerDown);
+
     let raf = 0;
     const ro = new ResizeObserver(() => {
       // Coalesce bursts of resize events into one fit per frame.
@@ -365,6 +372,7 @@ export function TerminalPane({
       onSelDisp.dispose();
       onTitleDisp.dispose();
       window.removeEventListener("focus", onWindowFocus);
+      container?.removeEventListener("mousedown", onPointerDown);
       clearActivity(tab.id);
       closeSession(tab.id).catch(() => {});
       term.dispose();
