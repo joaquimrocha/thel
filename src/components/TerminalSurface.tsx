@@ -24,6 +24,17 @@ interface Rect {
   height: number;
 }
 
+// Unmount a session's terminals once it's been inactive this long, freeing
+// their xterms (heavy: scrollback + a WebGL context each). The daemon keeps the
+// terminals running, so switching back reattaches and restores them. Chosen so
+// quick back-and-forth switching never unmounts; later configurable.
+const SESSION_IDLE_UNMOUNT_MS = 10 * 60 * 1000;
+// How often to re-check, so a session unmounts once idle even with no input.
+const IDLE_CHECK_MS = 60 * 1000;
+// A newly-active session only mounts after staying active this long, so cycling
+// past sessions (Ctrl+Alt+PgUp/Dn) doesn't cold-mount each one in passing.
+const SESSION_SETTLE_MS = 250;
+
 // Walk the split tree, assigning each pane a percentage rectangle. Splits divide
 // their rect equally among children along their direction.
 function computeRects(node: LayoutNode, rect: Rect, out: Record<string, Rect>) {
@@ -58,24 +69,77 @@ export function TerminalArea() {
   const hasActive = sessions.some((s) => s.id === activeSessionId);
 
   // Mount only the active session first so startup isn't blocked by spinning up
-  // every terminal in every (invisible) session; bring the rest in just after
-  // the first paint so switching stays instant once warmed.
+  // every terminal in every (invisible) session; `warm` then lets a mounted
+  // session bring in its background tabs just after first paint.
   const [warm, setWarm] = useState(false);
+  // When warm-up ran, used as the idle baseline for sessions never visited this
+  // run (they're mounted at warm-up, then unmount once that baseline goes stale).
+  const warmAt = useRef<number | null>(null);
   useEffect(() => {
+    const onWarm = () => {
+      warmAt.current = Date.now();
+      setWarm(true);
+    };
     const w = window as Window & {
       requestIdleCallback?: (cb: () => void) => number;
       cancelIdleCallback?: (id: number) => void;
     };
     if (w.requestIdleCallback) {
-      const id = w.requestIdleCallback(() => setWarm(true));
+      const id = w.requestIdleCallback(onWarm);
       return () => w.cancelIdleCallback?.(id);
     }
-    const t = setTimeout(() => setWarm(true), 50);
+    const t = setTimeout(onWarm, 50);
     return () => clearTimeout(t);
   }, []);
-  const rendered = warm
-    ? sessions
-    : sessions.filter((s) => s.id === activeSessionId);
+
+  // A session "commits" (and mounts) only after it's stayed active for the
+  // settle delay, so cycling past sessions doesn't cold-mount each one. Already
+  // mounted sessions still show instantly via the visibility flip below.
+  // lastActiveAt records when a committed session was left, for the idle window;
+  // a periodic re-check unmounts sessions once stale.
+  const lastActiveAt = useRef<Map<string, number>>(new Map());
+  const committedRef = useRef<string | undefined>(undefined);
+  const commitTimer = useRef<number | undefined>(undefined);
+  const [committedActive, setCommittedActive] = useState<string | undefined>(
+    undefined,
+  );
+  const [, recheckIdle] = useState(0);
+  useEffect(() => {
+    window.clearTimeout(commitTimer.current);
+    const commit = () => {
+      const prev = committedRef.current;
+      if (prev && prev !== activeSessionId)
+        lastActiveAt.current.set(prev, Date.now());
+      committedRef.current = activeSessionId;
+      setCommittedActive(activeSessionId);
+    };
+    // Commit at once on the first settle (startup) or when returning to the
+    // already-committed session; otherwise wait the delay so a pass-by doesn't
+    // mount.
+    if (
+      committedRef.current === undefined ||
+      committedRef.current === activeSessionId
+    )
+      commit();
+    else commitTimer.current = window.setTimeout(commit, SESSION_SETTLE_MS);
+    return () => window.clearTimeout(commitTimer.current);
+  }, [activeSessionId]);
+  useEffect(() => {
+    const h = window.setInterval(() => recheckIdle((n) => n + 1), IDLE_CHECK_MS);
+    return () => window.clearInterval(h);
+  }, []);
+
+  const now = Date.now();
+  const isMounted = (id: string) => {
+    if (!warm) return id === activeSessionId; // pre-paint: only the active one
+    // The settled (committed) session is mounted; one you only passed through is
+    // not, until it commits. Visited/warmed sessions stay mounted until their
+    // idle window elapses.
+    if (id === committedActive) return true;
+    const last = lastActiveAt.current.get(id) ?? warmAt.current;
+    return last != null && now - last < SESSION_IDLE_UNMOUNT_MS;
+  };
+  const rendered = sessions.filter((s) => isMounted(s.id));
 
   return (
     <div className="relative h-full w-full bg-[#1e1e1e]">

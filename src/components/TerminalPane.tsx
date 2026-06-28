@@ -23,8 +23,8 @@ import { notify, useNotifications } from "@/store/notifications";
 import { markInput, markOutput, clearActivity, busyAgeMs, markBusy } from "@/lib/activity";
 import { appFocused } from "@/lib/focus";
 import { copyText, pasteText, dedent } from "@/lib/clipboard";
-import { comboMatches, comboToString } from "@/lib/keymap";
-import { effectiveCombo } from "@/store/keybindings";
+import { comboMatches } from "@/lib/keymap";
+import { effectiveCombo, shortcutLabel } from "@/store/keybindings";
 import { usePrefs } from "@/store/prefs";
 import { toast } from "sonner";
 import {
@@ -70,6 +70,70 @@ function notifyCopied(dedented: boolean) {
       className: "!bg-popover/80 backdrop-blur-sm",
     });
   }
+}
+
+// Copy the terminal's selection (optionally dedented), shared by the copy
+// shortcut and the right-click menu.
+function copyTermSelection(term: Terminal, mode: "raw" | "dedent") {
+  const sel = term.getSelection();
+  if (!sel) return;
+  void copyText(mode === "dedent" ? dedent(sel) : sel);
+  notifyCopied(mode === "dedent");
+}
+
+// Paste the clipboard into the terminal, shared by the paste shortcut and menu.
+function pasteIntoTerm(term: Terminal) {
+  void pasteText().then((t) => {
+    if (t) term.paste(t);
+  });
+}
+
+// Construct an xterm with thel's addons (fit, system-browser links, Unicode 11
+// widths, and a WebGL renderer that falls back to DOM), open it in `container`,
+// and fit it. `onLinkHover` tracks the URL under the pointer (null on leave) so
+// the context menu can offer "Copy URL".
+function createXterm(
+  container: HTMLDivElement,
+  zoom: number,
+  onLinkHover: (uri: string | null) => void,
+): { term: Terminal; fit: FitAddon } {
+  const font = getTerminalFont();
+  const term = new Terminal({
+    fontFamily: font.fontFamily,
+    fontSize: zoomedFontSize(zoom),
+    cursorBlink: true,
+    allowProposedApi: true,
+    // Matches a common default history limit. Kept modest to bound per-terminal
+    // memory (each line costs cells + WebGL textures); make configurable later.
+    scrollback: 2000,
+    theme: TERMINAL_THEME,
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  // Open links in the system browser; the webview's default window.open (what
+  // WebLinksAddon uses otherwise) does nothing under WebKitGTK.
+  term.loadAddon(
+    new WebLinksAddon((_e, uri) => void openUrl(uri), {
+      // React bails out when the value is unchanged, so per-move hovers are cheap.
+      hover: (_e, uri) => onLinkHover(uri),
+      leave: () => onLinkHover(null),
+    }),
+  );
+  // Use Unicode 11 width tables so emoji and other wide glyphs occupy two cells;
+  // otherwise the next character overlaps them.
+  term.loadAddon(new Unicode11Addon());
+  term.unicode.activeVersion = "11";
+  term.open(container);
+  try {
+    // GPU-accelerated renderer; dispose on context loss to fall back to DOM.
+    const webgl = new WebglAddon();
+    webgl.onContextLoss(() => webgl.dispose());
+    term.loadAddon(webgl);
+  } catch {
+    // WebGL unavailable (e.g. headless/software GL); DOM renderer is fine.
+  }
+  fit.fit();
+  return { term, fit };
 }
 
 export function TerminalPane({
@@ -127,41 +191,11 @@ export function TerminalPane({
     // (dev) mounts twice: the first child is spawned then killed on cleanup, and
     // its real exit must NOT mark the (re-spawned) terminal as exited.
     let closed = false;
-    const font = getTerminalFont();
-    const term = new Terminal({
-      fontFamily: font.fontFamily,
-      fontSize: zoomedFontSize(zoomRef.current),
-      cursorBlink: true,
-      allowProposedApi: true,
-      scrollback: 10000,
-      theme: TERMINAL_THEME,
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    // Open links in the system browser; the webview's default window.open
-    // (what WebLinksAddon uses otherwise) does nothing under WebKitGTK.
-    term.loadAddon(
-      new WebLinksAddon((_e, uri) => void openUrl(uri), {
-        // Track the link under the pointer so the context menu can copy it.
-        // React bails out when the value is unchanged, so per-move hovers are cheap.
-        hover: (_e, uri) => setLinkUrl(uri),
-        leave: () => setLinkUrl(null),
-      }),
+    const { term, fit } = createXterm(
+      containerRef.current!,
+      zoomRef.current,
+      setLinkUrl,
     );
-    // Use Unicode 11 width tables so emoji and other wide glyphs occupy two
-    // cells; otherwise the next character overlaps them.
-    term.loadAddon(new Unicode11Addon());
-    term.unicode.activeVersion = "11";
-    term.open(containerRef.current!);
-    try {
-      // GPU-accelerated renderer; dispose on context loss to fall back to DOM.
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch {
-      // WebGL unavailable (e.g. headless/software GL); DOM renderer is fine.
-    }
-    fit.fit();
     termRef.current = term;
     fitRef.current = fit;
 
@@ -207,27 +241,17 @@ export function TerminalPane({
       }
       if (matches(e, "terminal-copy-dedent")) {
         e.preventDefault();
-        const sel = term.getSelection();
-        if (sel) {
-          void copyText(dedent(sel));
-          notifyCopied(true);
-        }
+        copyTermSelection(term, "dedent");
         return false;
       }
       if (matches(e, "terminal-copy")) {
         e.preventDefault();
-        const sel = term.getSelection();
-        if (sel) {
-          void copyText(sel);
-          notifyCopied(false);
-        }
+        copyTermSelection(term, "raw");
         return false;
       }
       if (matches(e, "terminal-paste")) {
         e.preventDefault();
-        void pasteText().then((t) => {
-          if (t) term.paste(t);
-        });
+        pasteIntoTerm(term);
         return false;
       }
       return true;
@@ -453,20 +477,10 @@ export function TerminalPane({
 
   // Right-click menu acts on this exact pane's terminal.
   const copySelection = (mode: "raw" | "dedent") => {
-    const sel = termRef.current?.getSelection();
-    if (sel) {
-      void copyText(mode === "dedent" ? dedent(sel) : sel);
-      notifyCopied(mode === "dedent");
-    }
+    if (termRef.current) copyTermSelection(termRef.current, mode);
   };
   const pasteClipboard = () => {
-    void pasteText().then((t) => {
-      if (t) termRef.current?.paste(t);
-    });
-  };
-  const keyHint = (id: string) => {
-    const c = effectiveCombo(id);
-    return c ? comboToString(c) : undefined;
+    if (termRef.current) pasteIntoTerm(termRef.current);
   };
 
   // Hidden panes must keep a real size (visibility, not display:none): an
@@ -498,19 +512,19 @@ export function TerminalPane({
         )}
         <ContextMenuItem disabled={!hasSelection} onSelect={() => copySelection("raw")}>
           Copy
-          <ContextMenuShortcut>{keyHint("terminal-copy")}</ContextMenuShortcut>
+          <ContextMenuShortcut>{shortcutLabel("terminal-copy")}</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuItem
           disabled={!hasSelection}
           onSelect={() => copySelection("dedent")}
         >
           Copy without indentation
-          <ContextMenuShortcut>{keyHint("terminal-copy-dedent")}</ContextMenuShortcut>
+          <ContextMenuShortcut>{shortcutLabel("terminal-copy-dedent")}</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={pasteClipboard}>
           Paste
-          <ContextMenuShortcut>{keyHint("terminal-paste")}</ContextMenuShortcut>
+          <ContextMenuShortcut>{shortcutLabel("terminal-paste")}</ContextMenuShortcut>
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
