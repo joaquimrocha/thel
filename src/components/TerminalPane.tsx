@@ -88,6 +88,9 @@ export function TerminalPane({
   const fitRef = useRef<FitAddon | null>(null);
   // Drives the enabled state of the right-click Copy items.
   const [hasSelection, setHasSelection] = useState(false);
+  // The URL currently under the pointer (from the link addon's hover), so the
+  // right-click menu can offer "Copy URL" when you click on a link.
+  const [linkUrl, setLinkUrl] = useState<string | null>(null);
   const markExited = useSessions((s) => s.markExited);
   const setAttention = useSessions((s) => s.setAttention);
   const setProcTitle = useSessions((s) => s.setProcTitle);
@@ -137,7 +140,14 @@ export function TerminalPane({
     term.loadAddon(fit);
     // Open links in the system browser; the webview's default window.open
     // (what WebLinksAddon uses otherwise) does nothing under WebKitGTK.
-    term.loadAddon(new WebLinksAddon((_e, uri) => void openUrl(uri)));
+    term.loadAddon(
+      new WebLinksAddon((_e, uri) => void openUrl(uri), {
+        // Track the link under the pointer so the context menu can copy it.
+        // React bails out when the value is unchanged, so per-move hovers are cheap.
+        hover: (_e, uri) => setLinkUrl(uri),
+        leave: () => setLinkUrl(null),
+      }),
+    );
     // Use Unicode 11 width tables so emoji and other wide glyphs occupy two
     // cells; otherwise the next character overlaps them.
     term.loadAddon(new Unicode11Addon());
@@ -473,6 +483,19 @@ export function TerminalPane({
         />
       </ContextMenuTrigger>
       <ContextMenuContent>
+        {linkUrl && (
+          <>
+            <ContextMenuItem
+              onSelect={() => {
+                void copyText(linkUrl);
+                notifyCopied(false);
+              }}
+            >
+              Copy URL
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        )}
         <ContextMenuItem disabled={!hasSelection} onSelect={() => copySelection("raw")}>
           Copy
           <ContextMenuShortcut>{keyHint("terminal-copy")}</ContextMenuShortcut>
