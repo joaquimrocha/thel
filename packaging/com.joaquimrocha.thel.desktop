@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=thel
+GenericName=Terminal Sessions
+Comment=A desktop terminal built for running coding agents
+Exec=thel
+Icon=com.joaquimrocha.thel
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;sessions;shell;agents;
+StartupNotify=true
+# Must equal the running window's app_id / WM_CLASS, which GTK derives from the
+# binary name (thel), not the reverse-DNS app id. Otherwise the shell can't tie
+# the window to this launcher and shows a generic icon in the dock.
+StartupWMClass=thel
