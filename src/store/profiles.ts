@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { copyLayoutToProfile } from "@/lib/persistence";
+import { storeFile } from "@/lib/storeFile";
 
 // A profile is a named set of sessions. Each profile is shown in its own OS
 // window; the default profile lives in the main window and needs no setup.
@@ -34,7 +35,7 @@ export const PROFILE_COLORS = [
   "#64748b",
 ];
 
-const FILE = "thel-profiles.json";
+const FILE = storeFile("thel-profiles.json");
 const KEY = "profiles";
 
 // The default profile is the main window; others get a profile-<id> window.

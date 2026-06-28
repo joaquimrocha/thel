@@ -1,6 +1,7 @@
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { debouncedWriter } from "@/lib/persistDebounce";
+import { storeFile } from "@/lib/storeFile";
 import {
   useSessions,
   type SessionState,
@@ -19,7 +20,9 @@ function profileIdFromWindow(): string {
   return label === "main" ? "default" : label.replace(/^profile-/, "");
 }
 function layoutFileFor(id: string): string {
-  return id === "default" ? "thel-layout.json" : `thel-layout-${id}.json`;
+  return storeFile(
+    id === "default" ? "thel-layout.json" : `thel-layout-${id}.json`,
+  );
 }
 const layoutFile = () => layoutFileFor(profileIdFromWindow());
 const KEY = "layout";

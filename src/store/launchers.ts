@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { debouncedWriter } from "@/lib/persistDebounce";
+import { storeFile } from "@/lib/storeFile";
 
 export interface Launcher {
   id: string;
@@ -69,7 +70,7 @@ export function getDefaultLauncher(): Launcher {
   return launchers.find((l) => l.id === defaultLauncherId) ?? SHELL_LAUNCHER;
 }
 
-const FILE = "thel-launchers.json";
+const FILE = storeFile("thel-launchers.json");
 
 let storePromise: Promise<Store> | null = null;
 const getStore = () =>
