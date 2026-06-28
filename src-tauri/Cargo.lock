@@ -3910,7 +3910,7 @@ dependencies = [
 
 [[package]]
 name = "thel"
-version = "0.1.0"
+version = "0.1.0-beta"
 dependencies = [
  "libc",
  "notify-rust",

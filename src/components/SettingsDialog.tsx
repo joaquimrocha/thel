@@ -7,6 +7,7 @@ import {
   Rocket,
   FolderCog,
   Users,
+  Info,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -22,6 +23,8 @@ import { useTheme } from "@/store/theme";
 import { usePrefs } from "@/store/prefs";
 import { zoomedFontSize } from "@/lib/theme";
 import { isWindows } from "@/lib/platform";
+import { openUrl } from "@/lib/pty";
+import { Logo } from "@/components/Logo";
 import { ProfilesSettings } from "@/components/ProfilesSettings";
 
 export function SettingsDialog() {
@@ -75,6 +78,9 @@ export function SettingsDialog() {
             </TabsTrigger>
             <TabsTrigger value="keyboard" className="justify-start gap-2 data-[state=active]:bg-muted data-[state=active]:shadow-none">
               <Keyboard className="size-4" /> Keyboard
+            </TabsTrigger>
+            <TabsTrigger value="about" className="justify-start gap-2 data-[state=active]:bg-muted data-[state=active]:shadow-none">
+              <Info className="size-4" /> About
             </TabsTrigger>
           </TabsList>
 
@@ -196,6 +202,57 @@ export function SettingsDialog() {
               <Button variant="outline" size="sm" onClick={go(openHelp)}>
                 <Keyboard className="size-4" /> Edit shortcuts…
               </Button>
+            </TabsContent>
+
+            <TabsContent value="about" className="mt-0 space-y-4">
+              <div className="flex items-center gap-4">
+                <Logo className="size-14 shrink-0 text-emerald-500" />
+                <div className="space-y-1">
+                  <p className="text-base font-semibold">thel</p>
+                  <p className="text-sm text-muted-foreground">
+                    Terminal helper built for AI coding agents and other
+                    long-running sessions
+                  </p>
+                </div>
+              </div>
+              <dl className="space-y-1 text-sm">
+                <div className="flex gap-3">
+                  <dt className="w-16 text-muted-foreground">Version</dt>
+                  <dd className="font-mono">{__APP_VERSION__}</dd>
+                </div>
+                <div className="flex gap-3">
+                  <dt className="w-16 text-muted-foreground">Git tag</dt>
+                  <dd className="font-mono">{__GIT_TAG__ || "unknown"}</dd>
+                </div>
+                <div className="flex gap-3">
+                  <dt className="w-16 text-muted-foreground">Website</dt>
+                  <dd>
+                    <button
+                      className="underline underline-offset-2 hover:text-foreground"
+                      onClick={() =>
+                        void openUrl("https://github.com/joaquimrocha/thel")
+                      }
+                    >
+                      github.com/joaquimrocha/thel
+                    </button>
+                  </dd>
+                </div>
+                <div className="flex gap-3">
+                  <dt className="w-16 text-muted-foreground">Author</dt>
+                  <dd>
+                    <button
+                      className="underline underline-offset-2 hover:text-foreground"
+                      onClick={() => void openUrl("https://joaquimrocha.com")}
+                    >
+                      Joaquim Rocha
+                    </button>
+                  </dd>
+                </div>
+                <div className="flex gap-3">
+                  <dt className="w-16 text-muted-foreground">License</dt>
+                  <dd>Apache-2.0</dd>
+                </div>
+              </dl>
             </TabsContent>
           </div>
         </Tabs>

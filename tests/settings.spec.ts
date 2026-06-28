@@ -16,9 +16,20 @@ test("settings shows every tab", async ({ page }) => {
     "Profiles",
     "Launchers",
     "Keyboard",
+    "About",
   ]) {
     await expect(page.getByRole("tab", { name })).toBeVisible();
   }
+});
+
+test("about tab shows the version, git tag, and license", async ({ page }) => {
+  await gotoApp(page);
+  await openSettings(page);
+  await page.getByRole("tab", { name: "About" }).click();
+  const content = page.getByTestId("settings-tab-content");
+  await expect(content.getByText("Version")).toBeVisible();
+  await expect(content.getByText("Git tag")).toBeVisible();
+  await expect(content.getByText("Apache-2.0")).toBeVisible();
 });
 
 test("appearance tab has theme and title-bar options", async ({ page }) => {

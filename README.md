@@ -5,7 +5,7 @@ keeps each session alive in the background and can anchor it to its own git
 worktree, so you can run a fleet of them at once and tell at a glance which one
 needs you.
 
-> **Alpha.** thel builds for Linux, macOS, and Windows, but it is currently only
+> **Beta.** thel builds for Linux, macOS, and Windows, but it is currently only
 > tested on Linux. Expect rough edges.
 
 ## Features

@@ -1,8 +1,8 @@
 [package]
 name = "thel"
-version = "0.1.0"
-description = "A desktop terminal built for running coding agents"
-authors = ["Joaquim Rocha <me@joaquimrocha.com>"]
+version = "0.1.0-beta"
+description = "Terminal helper built for AI coding agents and other long-running sessions"
+authors = ["Joaquim Rocha"]
 edition = "2021"
 license = "Apache-2.0"
 
