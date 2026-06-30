@@ -216,6 +216,16 @@ impl SessionManager {
         }
         if let Some(session) = self.sessions.lock().remove(term_id) {
             let _ = session.child.lock().kill();
+            return;
+        }
+        #[cfg(unix)]
+        {
+            // A restored daemon tab may not have been mounted in this GUI run yet,
+            // so it is not in daemon_ids. If a compatible daemon is already up,
+            // still ask it to kill the tab by id; do not spawn one just to kill.
+            if crate::daemon::check() == "ok" {
+                let _ = crate::daemon::kill(term_id);
+            }
         }
     }
 
@@ -235,7 +245,18 @@ impl SessionManager {
             }
         }
         let map = self.sessions.lock();
-        let busy = map.get(id).map(|s| is_busy(s)).unwrap_or(false);
+        if let Some(session) = map.get(id) {
+            return TermStatus {
+                busy: is_busy(session),
+                dead: false,
+                code: None,
+            };
+        }
+        drop(map);
+        #[cfg(unix)]
+        let busy = crate::daemon::statuses().get(id).copied().unwrap_or(false);
+        #[cfg(not(unix))]
+        let busy = false;
         TermStatus {
             busy,
             dead: false,
@@ -243,45 +264,6 @@ impl SessionManager {
         }
     }
 
-    /// Busy state of every terminal in one shot: direct terminals probed
-    /// in-process, daemon terminals via one query to the daemon. This is what
-    /// drives the "working" dot, so daemon tabs (the default backend) must be
-    /// included or the animation never fires.
-    pub fn all_statuses(&self) -> HashMap<String, TermStatus> {
-        let mut out: HashMap<String, TermStatus> = self
-            .sessions
-            .lock()
-            .iter()
-            .map(|(id, s)| {
-                (
-                    id.clone(),
-                    TermStatus {
-                        busy: is_busy(s),
-                        dead: false,
-                        code: None,
-                    },
-                )
-            })
-            .collect();
-        #[cfg(unix)]
-        {
-            let ids = self.daemon_ids.lock();
-            if !ids.is_empty() {
-                let busy = crate::daemon::statuses();
-                for id in ids.iter() {
-                    out.insert(
-                        id.clone(),
-                        TermStatus {
-                            busy: busy.get(id).copied().unwrap_or(false),
-                            dead: false,
-                            code: None,
-                        },
-                    );
-                }
-            }
-        }
-        out
-    }
 }
 
 /// A foreground command is running when the PTY's foreground process group isn't

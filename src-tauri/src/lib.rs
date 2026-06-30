@@ -67,13 +67,6 @@ fn close_session(state: State<SessionManager>, id: String) -> Result<(), String>
     state.close(&id)
 }
 
-/// Busy/exit status for every live terminal in one call, so the busy poller
-/// hits the backend once per tick instead of once per terminal.
-#[tauri::command]
-fn terminal_statuses(state: State<SessionManager>) -> std::collections::HashMap<String, TermStatus> {
-    state.all_statuses()
-}
-
 #[tauri::command]
 fn terminal_status(state: State<SessionManager>, id: String) -> TermStatus {
     state.status(&id)
@@ -398,7 +391,6 @@ pub fn run() {
             write_session,
             resize_session,
             close_session,
-            terminal_statuses,
             terminal_status,
             kill_terminal_window,
             check_daemon,

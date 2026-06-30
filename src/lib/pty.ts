@@ -46,10 +46,6 @@ export interface TerminalStatus {
 export const terminalStatus = (id: string) =>
   invoke<TerminalStatus>("terminal_status", { id });
 
-/** Status of every live terminal, keyed by id, in a single IPC round trip. */
-export const terminalStatuses = () =>
-  invoke<Record<string, TerminalStatus>>("terminal_statuses");
-
 /** True if a foreground command is running in the terminal (vs an idle shell). */
 export const terminalBusy = (id: string) =>
   terminalStatus(id).then((s) => s.busy);

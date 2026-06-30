@@ -152,6 +152,12 @@ function install(config: MockConfig) {
         }
         return null;
       }
+      case "close_session":
+        termChannels.delete(String(args.id));
+        return null;
+      case "kill_terminal_window":
+        termChannels.delete(String(args.id));
+        return null;
       case "kill_backend":
         (w.__MOCK__ as Record<string, unknown>).killedBackend = true;
         return null;
@@ -161,18 +167,6 @@ function install(config: MockConfig) {
           dead: m.terminalDead ?? false,
           code: m.terminalDead ? 0 : null,
         };
-      case "terminal_statuses": {
-        // Mirror terminal_status for every started terminal, keyed by id.
-        const out: Record<string, unknown> = {};
-        for (const id of termChannels.keys()) {
-          out[id] = {
-            busy: m.terminalBusy ?? false,
-            dead: m.terminalDead ?? false,
-            code: m.terminalDead ? 0 : null,
-          };
-        }
-        return out;
-      }
       case "live_terminals":
         return m.liveTerminals || [];
       case "backend_available":
@@ -293,10 +287,18 @@ function install(config: MockConfig) {
     // bell ("\x07") to exercise the attention indicator.
     __emitTerminal: (index: number, data: string) =>
       [...termChannels.values()][index]?.({ kind: "data", data }),
+    __emitTerminalById: (id: string, data: string) => {
+      const send = termChannels.get(id);
+      send?.({ kind: "data", data });
+      return !!send;
+    },
     // Report the index-th terminal's process exit (the Direct path's exit
     // signal). code 0 = clean exit.
     __exitTerminal: (index: number, code: number | null) =>
       [...termChannels.values()][index]?.({ kind: "exit", code }),
+    __exitTerminalById: (id: string, code: number | null) =>
+      termChannels.get(id)?.({ kind: "exit", code }),
+    __hasTerminalChannel: (id: string) => termChannels.has(id),
     // Drive the OS "close window" flow: run the registered close-requested
     // handler exactly as the @tauri-apps API does. Returns false if no handler
     // is registered yet. The window is "closed" when it then invokes destroy().

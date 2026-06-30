@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { load, type Store } from "@tauri-apps/plugin-store";
-import { SHORTCUTS, type Combo } from "@/lib/keymap";
+import { SHORTCUTS, comboToString, type Combo } from "@/lib/keymap";
 import { debouncedWriter } from "@/lib/persistDebounce";
 import { storeFile } from "@/lib/storeFile";
 
@@ -40,6 +40,14 @@ export function effectiveCombo(id: string): Combo | null {
   const ov = useKeybindings.getState().overrides[id];
   if (ov) return ov;
   return SHORTCUTS.find((s) => s.id === id)?.defaultCombo ?? null;
+}
+
+/** The current key label for a shortcut id (e.g. "Ctrl+Shift+N"), or undefined
+ * if it's unbound. Combines effectiveCombo + comboToString, used wherever a
+ * shortcut's keys are shown (tooltips, menus, empty states). */
+export function shortcutLabel(id: string): string | undefined {
+  const c = effectiveCombo(id);
+  return c ? comboToString(c) : undefined;
 }
 
 const FILE = storeFile("thel-keybindings.json");

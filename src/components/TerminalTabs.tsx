@@ -155,7 +155,7 @@ export function TerminalTabs({
   };
 
   return (
-    <div className="flex items-center border-b border-border bg-background">
+    <div className="flex h-10 shrink-0 items-center border-b border-border bg-background">
       {/* Pinned outside the scroller so it's always reachable. Just a +; on
           hover it reveals a menu with the + (new terminal) and split, stacked. */}
       <div className="group/add relative ml-1 shrink-0">

@@ -1,9 +1,8 @@
 import { test, gotoApp, expect } from "./app";
 
-// Startup cost scales with how many restored terminals mount at launch. This
-// seeds several sessions and logs how long until the ACTIVE session is
-// interactive vs. until every session has mounted. The active number is what the
-// user feels; the gap is the work deferred off the startup path.
+// Startup cost must not scale with every restored terminal. This seeds several
+// sessions and logs how long until the ACTIVE session is interactive. With the
+// daemon backend, hidden tabs stay detached and reattach on demand.
 const SESSIONS = 4;
 const TABS = 4; // per session
 const TOTAL = SESSIONS * TABS;
@@ -49,13 +48,11 @@ test(`startup with ${TOTAL} restored terminals (${SESSIONS}×${TABS})`, async ({
   await expect(page.locator(".xterm").first()).toBeVisible();
   const activeMs = Date.now() - t0;
 
-  // Every terminal has eventually mounted (deferred sessions + tabs warmed in).
-  // .xterm counts mounted terminals including the hidden ones.
-  await expect(page.locator(".xterm")).toHaveCount(TOTAL);
-  const allMs = Date.now() - t0;
+  // Daemon-backed hidden tabs do not mount their xterm until selected.
+  await expect(page.locator(".xterm")).toHaveCount(1);
 
   console.log(
-    `[startup-bench] active interactive: ${activeMs}ms | all ${TOTAL} mounted: ${allMs}ms`,
+    `[startup-bench] active interactive: ${activeMs}ms | ${TOTAL} configured, 1 mounted`,
   );
 });
 
@@ -96,6 +93,6 @@ test("a split active session loads every pane's visible terminal", async ({
   // Both panes' active terminals render (not just the active group's).
   await expect(page.locator('[data-terminal-pane="a0"] .xterm')).toBeVisible();
   await expect(page.locator('[data-terminal-pane="b0"] .xterm')).toBeVisible();
-  // The hidden tabs behind each pane still warm in afterward.
-  await expect(page.locator(".xterm")).toHaveCount(4);
+  // The hidden tabs behind each pane stay detached until selected.
+  await expect(page.locator(".xterm")).toHaveCount(2);
 });

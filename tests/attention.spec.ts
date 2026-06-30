@@ -8,18 +8,52 @@ async function createSession(page: Page) {
   await create.click();
 }
 
-const emitTerminal = (page: Page, index: number, data: string) =>
+const emitTerminal = (page: Page, id: string, data: string) =>
   page.evaluate(
-    ([i, d]) =>
+    ([terminalId, d]) =>
       (
         window as unknown as {
           __TAURI_INTERNALS__: {
-            __emitTerminal: (i: number, d: string) => void;
+            __emitTerminalById: (id: string, d: string) => boolean;
           };
         }
-      ).__TAURI_INTERNALS__.__emitTerminal(i as number, d as string),
-    [index, data] as const,
+      ).__TAURI_INTERNALS__.__emitTerminalById(
+        terminalId as string,
+        d as string,
+      ),
+    [id, data] as const,
   );
+
+const hasTerminalChannel = (page: Page, id: string) =>
+  page.evaluate(
+    (terminalId) =>
+      (
+        window as unknown as {
+          __TAURI_INTERNALS__: {
+            __hasTerminalChannel: (id: string) => boolean;
+          };
+        }
+      ).__TAURI_INTERNALS__.__hasTerminalChannel(terminalId),
+    id,
+  );
+
+async function waitTerminalListener(page: Page, id: string): Promise<void> {
+  await expect.poll(() => hasTerminalChannel(page, id)).toBe(true);
+  // TerminalPane and the background daemon listener suppress BEL during the
+  // initial reattach replay; the mock prompt settles after the same short pause.
+  await page.waitForTimeout(350);
+}
+
+async function createBackgroundSession(page: Page): Promise<string> {
+  await createSession(page);
+  const firstId = await page
+    .getByTestId("terminal-tab")
+    .first()
+    .getAttribute("data-tab-id");
+  await createSession(page);
+  await waitTerminalListener(page, firstId!);
+  return firstId!;
+}
 
 const fireWindow = (page: Page, type: "focus" | "blur") =>
   page.evaluate((t) => window.dispatchEvent(new Event(t)), type);
@@ -33,24 +67,22 @@ test("a background terminal's bell shows the blue attention dot", async ({
 }) => {
   await gotoApp(page);
   // Two sessions: the second is active, so the first runs in the background.
-  await createSession(page);
-  await createSession(page);
+  const firstId = await createBackgroundSession(page);
 
-  await emitTerminal(page, 0, "\x07"); // bell on the background terminal
+  await emitTerminal(page, firstId, "\x07"); // bell on the background terminal
   await expect(firstSessionDot(page)).toBeVisible();
 });
 
 test("a terminal reply does not clear the attention dot", async ({ page }) => {
   await gotoApp(page);
-  await createSession(page);
-  await createSession(page);
+  const firstId = await createBackgroundSession(page);
 
-  await emitTerminal(page, 0, "\x07");
+  await emitTerminal(page, firstId, "\x07");
   await expect(firstSessionDot(page)).toBeVisible();
 
   // A cursor-position query makes xterm reply via onData (as a multiplexer's probes do).
   // That must not be mistaken for the user attending the terminal.
-  await emitTerminal(page, 0, "\x1b[6n");
+  await emitTerminal(page, firstId, "\x1b[6n");
   await page.waitForTimeout(100);
   await expect(firstSessionDot(page)).toBeVisible();
 });
@@ -59,10 +91,9 @@ test("clearing all notifications removes the attention dots", async ({
   page,
 }) => {
   await gotoApp(page);
-  await createSession(page);
-  await createSession(page);
+  const firstId = await createBackgroundSession(page);
 
-  await emitTerminal(page, 0, "\x07"); // bell on the background terminal
+  await emitTerminal(page, firstId, "\x07"); // bell on the background terminal
   await expect(firstSessionDot(page)).toBeVisible();
 
   // Clearing the notifications panel should also drop the attention dot it flagged.
@@ -76,12 +107,17 @@ test("the active terminal's dot survives a window refocus, clears on typing", as
 }) => {
   await gotoApp(page);
   await createSession(page); // single, active+visible terminal
+  const activeId = await page
+    .getByTestId("terminal-tab")
+    .first()
+    .getAttribute("data-tab-id");
+  await waitTerminalListener(page, activeId!);
 
   // Bell while the window is unfocused, then refocus. The dot must remain so you
   // can still see which terminal wanted you (regression: the visible terminal's
   // dot was wiped the instant the window regained focus).
   await fireWindow(page, "blur");
-  await emitTerminal(page, 0, "\x07");
+  await emitTerminal(page, activeId!, "\x07");
   const dot = firstSessionDot(page);
   await expect(dot).toBeVisible();
   await fireWindow(page, "focus");
@@ -98,9 +134,14 @@ test("clicking the terminal clears its attention dot (no typing needed)", async 
 }) => {
   await gotoApp(page);
   await createSession(page);
+  const activeId = await page
+    .getByTestId("terminal-tab")
+    .first()
+    .getAttribute("data-tab-id");
+  await waitTerminalListener(page, activeId!);
 
   await fireWindow(page, "blur");
-  await emitTerminal(page, 0, "\x07");
+  await emitTerminal(page, activeId!, "\x07");
   await expect(firstSessionDot(page)).toBeVisible();
   await fireWindow(page, "focus");
   await expect(firstSessionDot(page)).toBeVisible(); // refocus alone keeps it

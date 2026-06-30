@@ -199,6 +199,11 @@ export function TerminalPane({
   // burst settles (settleTimer) or a fallback fires, gating the bell handler.
   const replaySettled = useRef(false);
   const settleTimer = useRef<number | undefined>(undefined);
+  // A bell is only a "wants attention" signal once the terminal falls quiet.
+  // Resident agents (claude) emit BELs mid-action too, so we defer notifying and
+  // cancel if fresh output follows (see the data handler and onBell below).
+  const bellTimer = useRef<number | undefined>(undefined);
+  const bellPending = useRef(false);
   // Latest foreground busy state, pushed by the daemon. Drives the "finished"
   // heuristic; workingRef tracks the last animation value to avoid store churn.
   const busyRef = useRef(false);
@@ -310,11 +315,20 @@ export function TerminalPane({
       (msg) => {
         if (closed) return;
         if (msg.kind === "data") {
+          const visible = hasVisibleOutput(msg.data);
+          // Fresh output in a later chunk means a pending bell wasn't the agent
+          // finishing. Check before term.write so a bell inside THIS chunk (which
+          // onBell arms during the write) isn't immediately cancelled by its own
+          // trailing text.
+          if (visible && bellPending.current) {
+            bellPending.current = false;
+            window.clearTimeout(bellTimer.current);
+          }
           term.write(msg.data);
           // Control-only chunks (e.g. a cursor-visibility broadcast when another
           // client attaches) aren't activity and must not trip the working
           // animation or the finished heuristic.
-          if (!hasVisibleOutput(msg.data)) return;
+          if (!visible) return;
           // Record output activity (unless it's an echo of the user's own
           // typing) so the animation runs only while really working.
           markOutput(tab.id);
@@ -387,14 +401,21 @@ export function TerminalPane({
       setProcTitle(tab.id, title),
     );
 
-    // Bell = the program (e.g. an agent) wants attention. Flag it unless this
-    // pane is the one in focus, or the bell is just a BEL byte in the reattach
-    // replay burst (historical, not a live request).
+    // Bell = the program (e.g. an agent) wants attention. Don't notify on the
+    // bell itself: resident agents ring the bell mid-action too. Wait for the
+    // terminal to fall quiet; if fresh output follows first, the data handler
+    // cancels this. Skip when focused, or when the BEL is just a byte in the
+    // reattach replay burst (historical, not a live request).
     const onBellDisp = term.onBell(() => {
-      if (!watched() && replaySettled.current) {
+      if (watched() || !replaySettled.current) return;
+      bellPending.current = true;
+      window.clearTimeout(bellTimer.current);
+      bellTimer.current = window.setTimeout(() => {
+        bellPending.current = false;
+        if (closed || watched()) return;
         setAttention(tab.id, true);
         notify(tab.id, "bell");
-      }
+      }, 1000);
     });
 
     // When the app regains focus, clear notifications for the focused terminal.
@@ -439,6 +460,7 @@ export function TerminalPane({
       window.clearTimeout(idleTimer.current);
       window.clearTimeout(settleTimer.current);
       window.clearTimeout(settleFallback);
+      window.clearTimeout(bellTimer.current);
       ro.disconnect();
       onDataDisp.dispose();
       onBellDisp.dispose();

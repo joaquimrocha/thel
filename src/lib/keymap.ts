@@ -28,6 +28,10 @@ export interface Shortcut {
   // shortcut handler. Still listed/rebindable in the shortcuts panel; the
   // global handler skips it so the key reaches xterm.
   terminalOnly?: boolean;
+  // Rate-limit OS key-repeat for actions that enqueue async UI/backend work.
+  // Holding a key can still repeat, but queued repeat bursts won't all execute
+  // after the UI catches up.
+  repeatThrottleMs?: number;
 }
 
 const ui = () => useUI.getState();
@@ -51,6 +55,7 @@ export const SHORTCUTS: Shortcut[] = [
       { code: "KeyN", ctrl: true, shift: true },
     ),
     run: () => ui().openNewSession(),
+    repeatThrottleMs: 500,
   },
   {
     id: "new-terminal",
@@ -60,6 +65,7 @@ export const SHORTCUTS: Shortcut[] = [
       { code: "KeyT", ctrl: true, shift: true },
     ),
     run: () => void addTerminal(),
+    repeatThrottleMs: 500,
   },
   {
     id: "split-pane",
@@ -69,6 +75,7 @@ export const SHORTCUTS: Shortcut[] = [
       { code: "KeyD", ctrl: true, shift: true },
     ),
     run: () => void splitPane(undefined, "row"),
+    repeatThrottleMs: 500,
   },
   {
     id: "close-terminal",
@@ -78,6 +85,7 @@ export const SHORTCUTS: Shortcut[] = [
       { code: "KeyW", ctrl: true, shift: true },
     ),
     run: () => closeActiveTerminal(),
+    repeatThrottleMs: 500,
   },
   {
     id: "close-all-terminals",
@@ -87,6 +95,7 @@ export const SHORTCUTS: Shortcut[] = [
       { code: "KeyW", ctrl: true, alt: true },
     ),
     run: () => closeAllTerminals(),
+    repeatThrottleMs: 500,
   },
   {
     id: "terminal-copy",

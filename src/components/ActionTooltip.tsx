@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { useKeybindings, effectiveCombo } from "@/store/keybindings";
-import { comboToString } from "@/lib/keymap";
+import { useKeybindings, shortcutLabel } from "@/store/keybindings";
 
 /**
  * Wraps a control with a tooltip showing its name and, if `shortcutId` names a
@@ -21,8 +20,7 @@ export function ActionTooltip({
 }) {
   // Re-render when bindings change so the displayed shortcut stays current.
   useKeybindings((s) => s.overrides);
-  const combo = shortcutId ? effectiveCombo(shortcutId) : null;
-  const keys = combo ? comboToString(combo) : null;
+  const keys = shortcutId ? shortcutLabel(shortcutId) : undefined;
 
   return (
     <Tooltip>
