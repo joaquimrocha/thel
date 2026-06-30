@@ -55,10 +55,12 @@ export function StatusDot({
   state,
   className,
   icon,
+  onIconError,
 }: {
   state: DotState;
   className?: string;
   icon?: string;
+  onIconError?: () => void;
 }) {
   const size = className ?? "size-1.5";
   if (state === "busy") {
@@ -72,7 +74,12 @@ export function StatusDot({
   }
   if (icon) {
     return (
-      <SvgIcon svg={icon} color={ICON_HEX[state]} className="size-4 shrink-0" />
+      <SvgIcon
+        svg={icon}
+        color={ICON_HEX[state]}
+        onError={onIconError}
+        className="size-4 shrink-0"
+      />
     );
   }
   return <span className={cn("shrink-0 rounded-full", size, COLOR[state])} />;

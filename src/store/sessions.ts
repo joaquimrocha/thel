@@ -152,6 +152,9 @@ export interface SessionState {
   setActiveSession: (id: string) => void;
   renameSession: (id: string, name: string) => void;
   setSessionIcon: (id: string, icon: string | undefined) => void;
+  // Revert every session using this icon to the default (e.g. it was deleted
+  // from the library).
+  clearIcon: (svg: string) => void;
   setSessionGit: (id: string, branch: string | undefined, dirty: boolean) => void;
 
   // groupId defaults to the session's active group.
@@ -279,6 +282,13 @@ export const useSessions = create<SessionState>((set, get) => ({
     set((s) => ({
       sessions: s.sessions.map((ss) =>
         ss.id === id ? { ...ss, icon } : ss,
+      ),
+    })),
+
+  clearIcon: (svg) =>
+    set((s) => ({
+      sessions: s.sessions.map((ss) =>
+        ss.icon === svg ? { ...ss, icon: undefined } : ss,
       ),
     })),
 
@@ -577,3 +587,10 @@ export const useSessions = create<SessionState>((set, get) => ({
       sessions: patchTerminal(s.sessions, terminalId, { busy: value }),
     })),
 }));
+
+/** Drop a session's icon after its stored SVG fails to render, logging once (the
+ * cleared icon means the failing render won't recur). */
+export function revertBrokenIcon(id: string, svg?: string): void {
+  console.warn(`session ${id}: icon failed to render, reverting to default`, svg);
+  useSessions.getState().setSessionIcon(id, undefined);
+}

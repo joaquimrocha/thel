@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { useSessions, type Session } from "@/store/sessions";
+import { useSessions, revertBrokenIcon, type Session } from "@/store/sessions";
 import { usePrefs } from "@/store/prefs";
 import { useNotifications } from "@/store/notifications";
 import { useUI } from "@/store/ui";
@@ -340,6 +340,7 @@ export function SessionSidebar() {
               <StatusDot
                 state={sessionDotState(s)}
                 icon={s.icon}
+                onIconError={() => revertBrokenIcon(s.id, s.icon)}
                 className="size-2"
               />
             </button>
@@ -418,7 +419,11 @@ function SessionRow({
         data-status-slot
         className="flex size-4 shrink-0 items-center justify-center"
       >
-        <StatusDot state={sessionDotState(session)} icon={session.icon} />
+        <StatusDot
+          state={sessionDotState(session)}
+          icon={session.icon}
+          onIconError={() => revertBrokenIcon(session.id, session.icon)}
+        />
       </span>
       <div className="min-w-0 flex-1">
         <span className="block truncate" title="Double-click for session settings">

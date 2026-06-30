@@ -13,12 +13,22 @@ export function SvgIcon({
   svg,
   color,
   className,
+  onError,
 }: {
   svg: string;
   color?: string;
   className?: string;
+  onError?: () => void;
 }) {
   const tinted = color ? svg.replace(/currentColor/g, color) : svg;
   const src = `data:image/svg+xml,${encodeURIComponent(tinted)}`;
-  return <img src={src} alt="" aria-hidden className={cn("inline-block", className)} />;
+  return (
+    <img
+      src={src}
+      alt=""
+      aria-hidden
+      onError={onError}
+      className={cn("inline-block", className)}
+    />
+  );
 }

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Plus, X } from "lucide-react";
+import { Ban, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SvgIcon } from "./SvgIcon";
+import { ActionTooltip } from "./ActionTooltip";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,6 +22,7 @@ export function SessionSettingsDialog() {
   const close = useUI((s) => s.closeSessionSettings);
   const openAddIcon = useUI((s) => s.setAddIconOpen);
   const setSessionIcon = useSessions((s) => s.setSessionIcon);
+  const clearIcon = useSessions((s) => s.clearIcon);
   const renameSession = useSessions((s) => s.renameSession);
   const session = useSessions((s) =>
     s.sessions.find((x) => x.id === sessionId),
@@ -81,6 +83,19 @@ export function SessionSettingsDialog() {
 
         <label className="mt-1 text-xs font-medium text-muted-foreground">Icon</label>
         <div className="flex flex-wrap gap-1.5">
+          {/* First slot clears the association: the session shows the default dot. */}
+          <ActionTooltip label="No icon">
+            <button
+              aria-label="No icon"
+              onClick={() => sessionId && setSessionIcon(sessionId, undefined)}
+              className={cn(
+                "flex size-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary",
+                !session?.icon && "ring-1 ring-ring bg-secondary",
+              )}
+            >
+              <Ban className="size-4" />
+            </button>
+          </ActionTooltip>
           {icons.map((svg) => (
             <div key={svg} className="group relative">
               <button
@@ -93,14 +108,18 @@ export function SessionSettingsDialog() {
               >
                 <SvgIcon svg={svg} color="#a1a1aa" className="size-4" />
               </button>
-              {/* Only user-added icons can be removed from the library. */}
+              {/* Only user-added icons can be deleted; doing so reverts any
+                  session still using it to the default. */}
               {!DEFAULT_ICONS.includes(svg) && (
                 <button
                   aria-label="Delete icon"
-                  onClick={() => removeIcon(svg)}
+                  onClick={() => {
+                    removeIcon(svg);
+                    clearIcon(svg);
+                  }}
                   className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-secondary text-muted-foreground opacity-0 ring-1 ring-border hover:text-destructive group-hover:opacity-100"
                 >
-                  <X className="size-2.5" />
+                  <Trash2 className="size-2.5" />
                 </button>
               )}
             </div>
@@ -115,14 +134,6 @@ export function SessionSettingsDialog() {
         </div>
 
         <DialogFooter>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => sessionId && setSessionIcon(sessionId, undefined)}
-            disabled={!session?.icon}
-          >
-            Remove icon
-          </Button>
           <Button size="sm" onClick={done}>
             Done
           </Button>
