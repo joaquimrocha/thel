@@ -14,6 +14,7 @@ import {
   type PaneGroup,
 } from "@/store/sessions";
 import { addTerminal, splitPane } from "@/lib/launch";
+import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
 import { closeTerminalConfirmed, closeAllTerminals } from "@/lib/actions";
 import { useUI } from "@/store/ui";
 import { EditableLabel } from "./EditableLabel";
@@ -72,21 +73,7 @@ export function TerminalTabs({
   const order = group.terminals.map((t) => t.id).join(",");
   useLayoutEffect(() => {
     const strip = stripRef.current;
-    if (!strip) return;
-    strip.querySelectorAll<HTMLElement>("[data-tab-id]").forEach((el) => {
-      const id = el.dataset.tabId!;
-      const left = el.getBoundingClientRect().left;
-      const prev = prevLefts.current.get(id);
-      if (prev != null && prev !== left) {
-        el.style.transition = "none";
-        el.style.transform = `translateX(${prev - left}px)`;
-        requestAnimationFrame(() => {
-          el.style.transition = "transform 150ms ease";
-          el.style.transform = "";
-        });
-      }
-      prevLefts.current.set(id, left);
-    });
+    if (strip) flipReorder(strip, "data-tab-id", "x", prevLefts.current);
   }, [order]);
 
   // Keep the active tab in view: newly created (appended off-screen), selected,
@@ -141,9 +128,8 @@ export function TerminalTabs({
     if (!id || id === overId) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const after = e.clientX >= rect.left + rect.width / 2;
-    let to = overIndex + (after ? 1 : 0);
     const from = group.terminals.findIndex((t) => t.id === id);
-    if (from < to) to -= 1; // account for removing the dragged tab first
+    const to = reorderIndex(from, overIndex, after);
     if (from !== -1 && to !== from) reorderTerminal(sessionId, group.id, id, to);
   };
 
@@ -252,32 +238,10 @@ export function TerminalTabs({
             draggable
             onDragStart={(e) => {
               draggingId.current = t.id;
-              // The webview's default drag image tracks the live element, which
-              // we hide (opacity-0), so snapshot a visible clone to use as the
-              // dragged copy instead. Removed once the browser has captured it.
-              const node = e.currentTarget;
-              const rect = node.getBoundingClientRect();
-              const clone = node.cloneNode(true) as HTMLElement;
-              clone.removeAttribute("data-testid");
-              clone.removeAttribute("data-tab-id");
-              // A solid background so the dragged copy is fully opaque (an
-              // inactive tab's background is transparent, which renders the drag
-              // image see-through).
-              clone.classList.add("bg-secondary", "text-secondary-foreground");
-              clone.style.transform = "";
-              clone.style.transition = "none";
-              clone.style.position = "fixed";
-              clone.style.top = "-9999px";
-              clone.style.left = "-9999px";
-              clone.style.width = `${rect.width}px`;
-              clone.style.pointerEvents = "none";
-              document.body.appendChild(clone);
-              e.dataTransfer.setDragImage(
-                clone,
-                e.clientX - rect.left,
-                e.clientY - rect.top,
-              );
-              setTimeout(() => clone.remove(), 0);
+              setClonedDragImage(e, (clone) => {
+                clone.removeAttribute("data-testid");
+                clone.removeAttribute("data-tab-id");
+              });
               setDragging(t.id);
               e.dataTransfer.setData("text/plain", t.id);
               e.dataTransfer.effectAllowed = "move";

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   X,
   Plus,
@@ -16,6 +16,7 @@ import { usePrefs } from "@/store/prefs";
 import { useNotifications } from "@/store/notifications";
 import { useUI } from "@/store/ui";
 import { closeSessionConfirmed } from "@/lib/actions";
+import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
 import { StatusDot, sessionDotState } from "./StatusDot";
 import { ActionTooltip } from "./ActionTooltip";
 import { Logo } from "./Logo";
@@ -51,6 +52,72 @@ export function SessionSidebar() {
   // Keyboard navigation cursor while the list is focused.
   const [navFocused, setNavFocused] = useState(false);
   const [highlight, setHighlight] = useState(0);
+
+  // Drag-to-reorder, mirroring the terminal tab strip: the dragged row is
+  // hidden (opacity-0) so its slot reads as the empty landing space, the list
+  // reorders live as the pointer crosses a neighbour's middle, and a FLIP pass
+  // slides the rows that move.
+  const reorderSession = useSessions((s) => s.reorderSession);
+  const draggingId = useRef<string | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
+  // A drag suppresses mouse events, so :hover sticks on the row the pointer
+  // ended over, leaving its action buttons visible. Disarm on any drag and
+  // re-arm on the next real pointer move.
+  const [hoverArmed, setHoverArmed] = useState(true);
+  const listRef = useRef<HTMLDivElement>(null);
+  const prevTops = useRef<Map<string, number>>(new Map());
+
+  const order = sessions.map((s) => s.id).join(",");
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (list) flipReorder(list, "data-row-id", "y", prevTops.current);
+  }, [order]);
+
+  useEffect(() => {
+    const clear = () => {
+      draggingId.current = null;
+      setDragging(null);
+    };
+    const disarm = () => setHoverArmed(false);
+    const rearm = () => setHoverArmed(true);
+    window.addEventListener("dragend", clear);
+    window.addEventListener("dragstart", disarm);
+    window.addEventListener("pointermove", rearm);
+    return () => {
+      window.removeEventListener("dragend", clear);
+      window.removeEventListener("dragstart", disarm);
+      window.removeEventListener("pointermove", rearm);
+    };
+  }, []);
+
+  const startRowDrag = (e: React.DragEvent, id: string) => {
+    draggingId.current = id;
+    setClonedDragImage(e, (clone) => {
+      clone.removeAttribute("data-row-id");
+      // Drop the keyboard-nav highlight ring so the dragged copy doesn't carry
+      // a stray white border.
+      clone.classList.remove("ring-1", "ring-ring");
+    });
+    setDragging(id);
+    e.dataTransfer.setData("text/plain", id);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const onRowDragOver = (
+    e: React.DragEvent,
+    overId: string,
+    overIndex: number,
+  ) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const id = draggingId.current;
+    if (!id || id === overId) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const after = e.clientY >= rect.top + rect.height / 2;
+    const from = sessions.findIndex((s) => s.id === id);
+    const to = reorderIndex(from, overIndex, after);
+    if (from !== -1 && to !== from) reorderSession(id, to);
+  };
 
   const handleToggle = () => {
     setHovered(false);
@@ -158,6 +225,7 @@ export function SessionSidebar() {
 
       <div
         data-session-list
+        ref={listRef}
         tabIndex={0}
         onKeyDown={onListKeyDown}
         onFocus={() => {
@@ -166,6 +234,8 @@ export function SessionSidebar() {
           setHighlight(i >= 0 ? i : 0);
         }}
         onBlur={() => setNavFocused(false)}
+        // Allow dropping in the gaps/padding between rows, not just on a row.
+        onDragOver={(e) => e.preventDefault()}
         className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-2 pt-1 outline-none"
       >
         {sessions.length === 0 && (
@@ -177,11 +247,14 @@ export function SessionSidebar() {
           <SessionRow
             key={session.id}
             session={session}
-            index={i}
             active={session.id === activeSessionId}
             highlighted={navFocused && i === Math.min(highlight, sessions.length - 1)}
+            dragging={dragging === session.id}
+            hoverArmed={hoverArmed}
             onSelect={() => setActiveSession(session.id)}
             onClose={() => closeSessionConfirmed(session.id)}
+            onDragStart={(e) => startRowDrag(e, session.id)}
+            onDragOver={(e) => onRowDragOver(e, session.id, i)}
           />
         ))}
       </div>
@@ -301,45 +374,42 @@ export function SessionSidebar() {
 
 function SessionRow({
   session,
-  index,
   active,
   highlighted,
+  dragging,
+  hoverArmed,
   onSelect,
   onClose,
+  onDragStart,
+  onDragOver,
 }: {
   session: Session;
-  index: number;
   active: boolean;
   highlighted: boolean;
+  dragging: boolean;
+  hoverArmed: boolean;
   onSelect: () => void;
   onClose: () => void;
+  onDragStart: (e: React.DragEvent) => void;
+  onDragOver: (e: React.DragEvent) => void;
 }) {
-  const reorderSession = useSessions((s) => s.reorderSession);
   const openSessionSettings = useUI((s) => s.openSessionSettings);
   return (
     <div
+      data-row-id={session.id}
       onClick={onSelect}
       onDoubleClick={() => openSessionSettings(session.id)}
       draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData("text/plain", session.id);
-        e.dataTransfer.effectAllowed = "move";
-      }}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        const id = e.dataTransfer.getData("text/plain");
-        if (id && id !== session.id) reorderSession(id, index);
-      }}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={(e) => e.preventDefault()}
       className={cn(
         "group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm",
         active
           ? "bg-secondary text-secondary-foreground"
           : "text-muted-foreground hover:bg-secondary/50",
         highlighted && "ring-1 ring-ring",
+        dragging && "opacity-0",
       )}
     >
       {/* Fixed slot so a row's text starts at the same x whether it shows the
@@ -368,7 +438,10 @@ function SessionRow({
             e.stopPropagation();
             openSessionSettings(session.id);
           }}
-          className="shrink-0 rounded opacity-0 hover:bg-background/60 group-hover:opacity-100"
+          className={cn(
+            "shrink-0 rounded opacity-0 hover:bg-background/60",
+            hoverArmed && "group-hover:opacity-100",
+          )}
           aria-label="Session settings"
         >
           <Settings className="size-3.5" />
@@ -380,7 +453,10 @@ function SessionRow({
             e.stopPropagation();
             onClose();
           }}
-          className="shrink-0 rounded opacity-0 hover:bg-background/60 group-hover:opacity-100"
+          className={cn(
+            "shrink-0 rounded opacity-0 hover:bg-background/60",
+            hoverArmed && "group-hover:opacity-100",
+          )}
           aria-label="Close session"
         >
           <X className="size-3.5" />
