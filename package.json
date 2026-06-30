@@ -13,7 +13,8 @@
     "test": "playwright test",
     "test:headed": "playwright test --headed",
     "test:ui": "playwright test --ui",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "build:container": "bin=docker; docker info >/dev/null 2>&1 || bin=podman; $bin build -t thel-build . && id=$($bin create thel-build) && $bin cp \"$id:/app/src-tauri/target/release/bundle\" ./bundle && $bin rm \"$id\""
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.5",

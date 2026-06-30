@@ -31,3 +31,6 @@ playwright/.cache/
 
 # Coverage output
 coverage/
+
+# Container build output (pnpm build:container)
+bundle/
