@@ -7,12 +7,23 @@ use pty::{CreateOpts, SessionManager, TermMsg, TermStatus};
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, State};
 
-/// Bring a window to the foreground (e.g. when a notification is clicked).
+/// Bring a window to the foreground (e.g. when a notification is clicked). Must
+/// run on the GTK main thread. On Wayland a background process can't raise
+/// itself; `token` is the XDG activation token the compositor granted for the
+/// click, fed to GTK so the present is allowed instead of bouncing to GNOME's
+/// "app is ready" notification.
 #[cfg(target_os = "linux")]
-fn focus_window(app: &tauri::AppHandle, label: &str) {
+fn focus_window(app: &tauri::AppHandle, label: &str, token: Option<&str>) {
+    use gtk::prelude::*;
     if let Some(w) = app.get_webview_window(label) {
         let _ = w.unminimize();
         let _ = w.show();
+        if let Ok(gtk_win) = w.gtk_window() {
+            if let Some(t) = token {
+                gtk_win.set_startup_id(t);
+            }
+            gtk_win.present();
+        }
         let _ = w.set_focus();
     }
 }
@@ -202,10 +213,10 @@ fn monospace_font() -> Option<FontConfig> {
 }
 
 /// Show a desktop notification, sent from Rust rather than the webview's Web
-/// Notification API (unreliable under WebKitGTK). Uses notify-rust on every
-/// platform. The Linux path is separate only because click handling
-/// (wait_for_action) exists just on notify-rust's DBus backend, not on the
-/// macOS/Windows backends.
+/// Notification API (unreliable under WebKitGTK). Linux shells out to
+/// notify-send (so the binary skips notify-rust's zbus/async stack);
+/// macOS/Windows use notify-rust. Both hit the same notification service with
+/// the same text, so the banner is identical either way.
 #[tauri::command]
 fn notify(
     window: tauri::WebviewWindow,
@@ -216,49 +227,118 @@ fn notify(
     session_id: Option<String>,
     terminal_id: Option<String>,
 ) -> Result<(), String> {
-    let mut notification = notify_rust::Notification::new();
-    notification.summary(&summary).body(&body).appname("thel");
-
     #[cfg(target_os = "linux")]
     {
-        // Clicking the banner should raise the window that posted it (each
-        // profile runs in its own window and only notifies for its own
-        // terminals), not a hardcoded "main".
+        // notify-send hits the same org.freedesktop.Notifications service that
+        // notify-rust used, with the same app name, summary, body, and a
+        // "default" action, so the banner and click are identical, but it avoids
+        // pulling notify-rust's zbus/async stack into the Linux build.
+        //
+        // Clicking the banner triggers the "default" action, which notify-send
+        // prints on stdout; --wait blocks for the notification's lifetime, so
+        // run it off-thread. On click we raise the window that posted it (each
+        // profile is its own window) and tell its frontend which tab to show.
+        //
+        // The desktop-entry hint ties the banner to our .desktop file so GNOME
+        // raises the app itself on click. Without it the compositor won't grant
+        // the focus (Wayland focus-stealing prevention), the window stays hidden,
+        // and the still-unfocused terminal posts a second notification.
         let label = window.label().to_string();
         let app = window.app_handle().clone();
-        notification.action("default", "Open");
-        // wait_for_action blocks for the notification's lifetime, so run it
-        // off-thread.
-        std::thread::spawn(move || match notification.show() {
-            Ok(handle) => handle.wait_for_action(|action| {
-                if action == "default" {
-                    focus_window(&app, &label);
-                    // Tell that window's frontend which tab to switch to.
-                    if let (Some(s), Some(t)) = (&session_id, &terminal_id) {
-                        let _ = app.emit_to(
-                            label.clone(),
-                            "notification-activated",
-                            NotifTarget {
-                                session_id: s.clone(),
-                                terminal_id: t.clone(),
-                            },
-                        );
+        std::thread::spawn(move || {
+            use std::io::Read;
+            use std::os::unix::io::FromRawFd;
+            use std::os::unix::process::CommandExt;
+
+            // Pipe so notify-send can hand back the XDG activation token the
+            // compositor grants on click. O_CLOEXEC keeps it out of unrelated
+            // children; pre_exec re-exposes the write end at fd 3 for this child.
+            let mut fds = [0 as libc::c_int; 2];
+            let have_pipe = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } == 0;
+            let (read_fd, write_fd) = (fds[0], fds[1]);
+
+            let mut cmd = std::process::Command::new("notify-send");
+            cmd.arg("--app-name=thel")
+                .arg("--hint=string:desktop-entry:com.joaquimrocha.thel")
+                .arg("--wait")
+                .arg("--action=default=Open");
+            if have_pipe {
+                cmd.arg("--activation-token-fd=3");
+                unsafe {
+                    cmd.pre_exec(move || {
+                        // dup2 clears CLOEXEC on the copy, so fd 3 survives exec.
+                        if libc::dup2(write_fd, 3) < 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+            }
+            let result = cmd.arg("--").arg(&summary).arg(&body).output();
+
+            // Drop our write end so the read end hits EOF once the child exits,
+            // then read whatever token it wrote (empty if the daemon can't grant
+            // one, in which case we just present without it).
+            let mut token = String::new();
+            if have_pipe {
+                unsafe { libc::close(write_fd) };
+                let mut r = unsafe { std::fs::File::from_raw_fd(read_fd) };
+                let _ = r.read_to_string(&mut token);
+            }
+
+            match result {
+                Ok(out) if out.status.success() => {
+                    if String::from_utf8_lossy(&out.stdout).trim() == "default" {
+                        let app2 = app.clone();
+                        let label2 = label.clone();
+                        let token = token.trim().to_string();
+                        // GTK calls must run on the main thread.
+                        let _ = app.run_on_main_thread(move || {
+                            let t = (!token.is_empty()).then_some(token.as_str());
+                            focus_window(&app2, &label2, t);
+                        });
+                        if let (Some(s), Some(t)) = (&session_id, &terminal_id) {
+                            let _ = app.emit_to(
+                                label.clone(),
+                                "notification-activated",
+                                NotifTarget {
+                                    session_id: s.clone(),
+                                    terminal_id: t.clone(),
+                                },
+                            );
+                        }
                     }
                 }
-            }),
-            Err(e) => eprintln!("notify-rust failed: {e}"),
+                // A non-zero exit can still mean the banner was shown (e.g. an
+                // activation-token warning on click), so don't re-post here or
+                // we'd double the banner. Just log; the user already saw it.
+                Ok(out) => {
+                    eprintln!(
+                        "notify-send exited {}: {}",
+                        out.status,
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    );
+                }
+                Err(e) => eprintln!("notify-send unavailable: {e}"),
+            }
         });
         Ok(())
     }
     #[cfg(not(target_os = "linux"))]
     {
-        // wait_for_action (click handling) is DBus-backend-only, so elsewhere
-        // just show the banner; the jump target is unused.
+        // macOS/Windows use notify-rust (no zbus there); the jump target is
+        // unused since click handling is the DBus backend's.
         let _ = (&window, &session_id, &terminal_id);
-        notification.show().map(|_| ()).map_err(|e| {
-            eprintln!("notify failed: {e}");
-            e.to_string()
-        })
+        notify_rust::Notification::new()
+            .summary(&summary)
+            .body(&body)
+            .appname("thel")
+            .show()
+            .map(|_| ())
+            .map_err(|e| {
+                eprintln!("notify failed: {e}");
+                e.to_string()
+            })
     }
 }
 
@@ -277,13 +357,7 @@ fn open_url(url: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut cmd = std::process::Command::new("open");
     #[cfg(target_os = "windows")]
-    let mut cmd = {
-        // `start` is a cmd builtin; the empty "" is its window-title argument so
-        // the URL isn't consumed as the title.
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]);
-        c
-    };
+    let mut cmd = std::process::Command::new("explorer");
     cmd.arg(&url);
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }

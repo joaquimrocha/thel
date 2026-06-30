@@ -3912,6 +3912,7 @@ dependencies = [
 name = "thel"
 version = "0.1.0-beta"
 dependencies = [
+ "gtk",
  "libc",
  "notify-rust",
  "parking_lot",

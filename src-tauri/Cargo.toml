@@ -26,13 +26,21 @@ parking_lot = "0.12"
 # Authoritative server-side terminal state for the daemon: parses PTY output into
 # a grid and re-emits it as escape sequences (contents_formatted) for reattach.
 vt100 = "0.15"
-# Cross-platform desktop notifications. Renders under WebKitGTK/distrobox, so
-# it's used on every platform (no notify-send shell-out).
-notify-rust = "4"
 
 # Daemon detach (setsid, SIGHUP ignore) and, later, the SO_PEERCRED check.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Present the window with the XDG activation token from a clicked notification,
+# so Wayland lets it raise (gtk_window().set_startup_id + present). Matches the
+# gtk Tauri already pulls in.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+# Desktop notifications on macOS/Windows. On Linux we shell out to notify-send
+# instead, so the binary doesn't pull notify-rust's zbus/async stack.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+notify-rust = "4"
 
 [profile.release]
 codegen-units = 1
