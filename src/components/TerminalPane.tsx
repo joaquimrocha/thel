@@ -9,7 +9,6 @@ import {
   writeSession,
   resizeSession,
   closeSession,
-  terminalBusy,
   openUrl,
   daemonOptedOut,
 } from "@/lib/pty";
@@ -20,7 +19,14 @@ import {
 } from "@/store/sessions";
 import { useUI } from "@/store/ui";
 import { notify, useNotifications } from "@/store/notifications";
-import { markInput, markOutput, clearActivity, busyAgeMs, markBusy } from "@/lib/activity";
+import {
+  markInput,
+  markOutput,
+  clearActivity,
+  busyAgeMs,
+  markBusy,
+  outputAgeMs,
+} from "@/lib/activity";
 import { appFocused } from "@/lib/focus";
 import { copyText, pasteText, dedent } from "@/lib/clipboard";
 import { comboMatches } from "@/lib/keymap";
@@ -59,6 +65,10 @@ function hasVisibleOutput(data: string): boolean {
   }
   return false;
 }
+
+// A foreground command animates the dot only if it produced output this
+// recently; keeps a quiet resident program (claude, vim) from pulsing forever.
+const ACTIVE_WINDOW_MS = 1000;
 
 // Transient "Copied" toast after a terminal copy, if the user enabled it.
 function notifyCopied(dedented: boolean) {
@@ -157,6 +167,7 @@ export function TerminalPane({
   const [linkUrl, setLinkUrl] = useState<string | null>(null);
   const markExited = useSessions((s) => s.markExited);
   const setAttention = useSessions((s) => s.setAttention);
+  const setBusy = useSessions((s) => s.setBusy);
   const setProcTitle = useSessions((s) => s.setProcTitle);
   const closeTerminal = useSessions((s) => s.closeTerminal);
   const clearNotifications = useNotifications((s) => s.clearForTerminal);
@@ -183,6 +194,15 @@ export function TerminalPane({
   const idleTimer = useRef<number | undefined>(undefined);
   // Ignore attention from the redraw a resize (SIGWINCH) provokes until this ms.
   const resizeQuietUntil = useRef(0);
+  // A reattaching session replays its whole screen as one output burst; a BEL
+  // byte in that replay must not read as a live bell. Stays false until the
+  // burst settles (settleTimer) or a fallback fires, gating the bell handler.
+  const replaySettled = useRef(false);
+  const settleTimer = useRef<number | undefined>(undefined);
+  // Latest foreground busy state, pushed by the daemon. Drives the "finished"
+  // heuristic; workingRef tracks the last animation value to avoid store churn.
+  const busyRef = useRef(false);
+  const workingRef = useRef(false);
 
   // Create the terminal + session exactly once; the pane is kept mounted
   // across tab switches so scrollback and PTY wiring survive.
@@ -264,13 +284,18 @@ export function TerminalPane({
     // Settle the terminal on program exit (delivered as the channel's exit
     // message). Guarded so it runs once.
     let exitHandled = false;
-    // Throttle for sampling foreground state while output flows (see below).
-    let lastBusySample = 0;
     const handleExit = () => {
       if (exitHandled) return;
       exitHandled = true;
       closeTerminal(tab.id);
     };
+
+    // Fallback: if a terminal replays nothing (empty snapshot), no output ever
+    // arrives to settle the burst, so arm the heuristic anyway after a beat.
+    // Long enough that a real snapshot burst settles first via settleTimer.
+    const settleFallback = window.setTimeout(() => {
+      replaySettled.current = true;
+    }, 3000);
 
     createSession(
       {
@@ -291,32 +316,30 @@ export function TerminalPane({
           // animation or the finished heuristic.
           if (!hasVisibleOutput(msg.data)) return;
           // Record output activity (unless it's an echo of the user's own
-          // typing) so the busy poller can animate only while really working.
+          // typing) so the animation runs only while really working.
           markOutput(tab.id);
-          // While unwatched the busy poller is paused, so sample the foreground
-          // state here (throttled) as output flows. This is what lets the
-          // finished heuristic below distinguish a real command that ran and
-          // ended from an idle shell that merely got a redraw.
-          if (!watched() && Date.now() - lastBusySample > 500) {
-            lastBusySample = Date.now();
-            terminalBusy(tab.id)
-              .then((b) => b && markBusy(tab.id))
-              .catch(() => {});
+          // Treat the initial output burst as reattach replay: keep refreshing
+          // the settle timer while it flows, and mark it settled once it pauses.
+          if (!replaySettled.current) {
+            window.clearTimeout(settleTimer.current);
+            settleTimer.current = window.setTimeout(() => {
+              replaySettled.current = true;
+            }, 250);
           }
           // Flag the session once an unfocused terminal goes quiet after output.
           // Skip output that's just a resize-triggered redraw.
           if (!watched() && Date.now() >= resizeQuietUntil.current) {
             window.clearTimeout(idleTimer.current);
-            idleTimer.current = window.setTimeout(async () => {
-              if (watched()) return;
+            idleTimer.current = window.setTimeout(() => {
+              if (closed || watched()) return;
               // Only a real return to the shell prompt counts as "finished". A
               // still-foreground process (an agent thinking, a dev server, an
               // editor) isn't done and would otherwise fire a false alert every
               // time it pauses. Resident agents like claude stay foreground
               // between turns, so they signal turn-completion via the bell
-              // (onBell below), not this heuristic.
-              const busy = await terminalBusy(tab.id).catch(() => false);
-              if (closed || busy || watched()) return;
+              // (onBell below), not this heuristic. busyRef is fed by the
+              // daemon's pushed busy state.
+              if (busyRef.current) return;
               // Only signal "finished" if a foreground command actually ran and
               // just ended. An idle shell that merely got a redraw (e.g. a
               // repaint when a sibling terminal opened) was never busy, so it has
@@ -325,6 +348,19 @@ export function TerminalPane({
               setAttention(tab.id, true);
               notify(tab.id, "idle");
             }, 1000);
+          }
+        } else if (msg.kind === "busy") {
+          // Pushed by the daemon (heartbeat while busy, once on going idle).
+          busyRef.current = msg.busy;
+          // The heartbeat keeps busyAgeMs fresh, so a long quiet command is still
+          // known to have been busy when it finishes.
+          if (msg.busy) markBusy(tab.id);
+          // Animate only while a foreground command is actively producing output;
+          // a quiet resident program (claude, vim) shouldn't pulse forever.
+          const working = msg.busy && outputAgeMs(tab.id) < ACTIVE_WINDOW_MS;
+          if (workingRef.current !== working) {
+            workingRef.current = working;
+            setBusy(tab.id, working);
           }
         } else {
           handleExit();
@@ -352,9 +388,10 @@ export function TerminalPane({
     );
 
     // Bell = the program (e.g. an agent) wants attention. Flag it unless this
-    // pane is the one in focus.
+    // pane is the one in focus, or the bell is just a BEL byte in the reattach
+    // replay burst (historical, not a live request).
     const onBellDisp = term.onBell(() => {
-      if (!watched()) {
+      if (!watched() && replaySettled.current) {
         setAttention(tab.id, true);
         notify(tab.id, "bell");
       }
@@ -400,6 +437,8 @@ export function TerminalPane({
       closed = true;
       cancelAnimationFrame(raf);
       window.clearTimeout(idleTimer.current);
+      window.clearTimeout(settleTimer.current);
+      window.clearTimeout(settleFallback);
       ro.disconnect();
       onDataDisp.dispose();
       onBellDisp.dispose();

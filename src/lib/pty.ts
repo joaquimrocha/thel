@@ -2,6 +2,7 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 
 export type TermMsg =
   | { kind: "data"; data: string }
+  | { kind: "busy"; busy: boolean }
   | { kind: "exit"; code: number | null };
 
 export interface CreateOpts {

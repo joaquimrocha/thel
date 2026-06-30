@@ -24,6 +24,8 @@ use tauri::ipc::Channel;
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum TermMsg {
     Data { data: String },
+    // Foreground busy state, pushed by the daemon so the GUI doesn't poll.
+    Busy { busy: bool },
     Exit { code: Option<i32> },
 }
 

@@ -31,6 +31,11 @@ use crate::pty::{decode_utf8_stream, CreateOpts, TermMsg};
 
 const PROTOCOL_VERSION: u32 = 1;
 const EMPTY_GRACE: Duration = Duration::from_secs(45);
+// How often the daemon samples each tab's foreground state to push busy
+// transitions. Foreground-pgroup changes have no kernel event, so this is a
+// poll, but it lives here (in-process, no IPC) and the GUI only ever sees the
+// resulting events.
+const BUSY_POLL: Duration = Duration::from_millis(600);
 const DAEMON_ARG: &str = "__daemon";
 /// Scrollback the VTE keeps (lines), used for the alt-screen snapshot path.
 const SCROLLBACK: usize = 1000;
@@ -162,6 +167,9 @@ enum Command {
 #[serde(tag = "event", rename_all = "snake_case")]
 enum Event {
     TabExited { id: String, code: Option<i32> },
+    // A tab's foreground state changed (or a heartbeat while busy). The GUI uses
+    // this to drive the working animation and the "command finished" heuristic.
+    TabBusy { id: String, busy: bool },
     Error { id: String, message: String },
 }
 
@@ -379,9 +387,48 @@ pub fn run() {
     });
     daemon.maybe_schedule_exit();
 
+    std::thread::spawn({
+        let daemon = daemon.clone();
+        move || busy_monitor(daemon)
+    });
+
     for stream in listener.incoming().flatten() {
         let daemon = daemon.clone();
         std::thread::spawn(move || handle_client(stream, daemon));
+    }
+}
+
+/// Push each tab's foreground busy state to its subscribers. Emits every tick
+/// while busy (a heartbeat, so the GUI's "busy age" stays fresh for a long quiet
+/// command) and once when it drops to idle; a steadily-idle tab sends nothing.
+fn busy_monitor(daemon: Arc<Daemon>) {
+    let mut last: HashMap<String, bool> = HashMap::new();
+    loop {
+        std::thread::sleep(BUSY_POLL);
+        // Snapshot (id, busy, subscribers) under the tabs lock, then send after
+        // releasing it so a slow/dead peer can't stall the sampling.
+        let snap: Vec<(String, bool, Vec<Arc<Mutex<UnixStream>>>)> = {
+            let tabs = daemon.tabs.lock();
+            tabs.iter()
+                .map(|(id, t)| (id.clone(), tab_busy(t), t.shared.lock().subscribers.clone()))
+                .collect()
+        };
+        let mut next: HashMap<String, bool> = HashMap::new();
+        for (id, busy, subs) in snap {
+            let was = last.get(&id).copied().unwrap_or(false);
+            if busy || was {
+                let ev = control_json(&Event::TabBusy {
+                    id: id.clone(),
+                    busy,
+                });
+                for c in &subs {
+                    send(c, &ev);
+                }
+            }
+            next.insert(id, busy);
+        }
+        // Drop ids for tabs that went away, so `last` can't grow unbounded.
+        last = next;
     }
 }
 
@@ -883,6 +930,11 @@ fn client_read_loop(mut r: UnixStream, routes: Arc<Mutex<HashMap<String, Channel
                     }
                     routes.lock().remove(&id);
                     carries.remove(&id);
+                }
+                Some(Event::TabBusy { id, busy }) => {
+                    if let Some(ch) = routes.lock().get(&id) {
+                        let _ = ch.send(TermMsg::Busy { busy });
+                    }
                 }
                 Some(Event::Error { id, message }) => {
                     eprintln!("[thel] daemon error for {id}: {message}");

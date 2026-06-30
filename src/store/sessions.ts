@@ -24,7 +24,7 @@ export interface Terminal {
   // Runtime-only: wants attention (bell or process exit while not focused).
   attention?: boolean;
   // Runtime-only: a foreground process is running (vs an idle shell). Driven by
-  // polling the backend's terminal_status; see useBusyPolling.
+  // the daemon's pushed busy events (see TerminalPane's channel handler).
   busy?: boolean;
   // Per-terminal zoom as a px offset from the system font size; persisted so a
   // terminal reopens at its set zoom. Undefined falls back to the default zoom.
@@ -395,8 +395,9 @@ export const useSessions = create<SessionState>((set, get) => ({
     set((s) => ({ sessions: patchTerminal(s.sessions, terminalId, { zoom }) })),
 
   closeTerminal: (terminalId) => {
-    // Permanently remove the terminal's backend session. Found before the state
-    // update so we still know which session it belonged to. No-op without a backend session.
+    // Permanently kill the terminal's backend process (daemon tab or direct
+    // PTY). Found before the state update so we still know which session it
+    // belonged to.
     const owner = get().sessions.find((ss) =>
       ss.groups.some((g) => g.terminals.some((t) => t.id === terminalId)),
     );

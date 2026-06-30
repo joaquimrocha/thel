@@ -24,7 +24,6 @@ import { hydrateLaunchers, startLauncherPersistence, flushLaunchers } from "@/st
 import { hydrateKeybindings, startKeybindingPersistence, flushKeybindings } from "@/store/keybindings";
 import { refreshSessionGit } from "@/lib/launch";
 import { useGlobalShortcuts } from "@/lib/useGlobalShortcuts";
-import { useBusyPolling } from "@/lib/useBusyPolling";
 import { initFocusTracking, appFocused } from "@/lib/focus";
 import { useSessions } from "@/store/sessions";
 import { activateNotification } from "@/store/notifications";
@@ -67,7 +66,6 @@ export default function App() {
   }, [customTitlebar]);
 
   useGlobalShortcuts();
-  useBusyPolling();
 
   useEffect(() => {
     void initFocusTracking();
