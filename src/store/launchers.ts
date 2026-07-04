@@ -6,22 +6,23 @@ import { storeFile } from "@/lib/storeFile";
 export interface Launcher {
   id: string;
   name: string;
-  // A shell command line run in the session's cwd. Empty => a plain shell.
+  // A command line run in the session's cwd. Empty => a plain shell. It may
+  // reference __SESSION_DIR__ / __SESSION_ID__ / __SESSION_NAME__, replaced
+  // at launch.
   command: string;
+  // Run the command via a login shell (PATH/profile apply). Off = exec the
+  // command directly. undefined (pre-flag persisted data) means on.
+  shell?: boolean;
 }
 
-// Fallback when no launchers are configured (e.g. user deleted them all).
+// Fallback when no launcher is starred (or none exist): a plain shell.
 export const SHELL_LAUNCHER: Launcher = { id: "shell", name: "Terminal", command: "" };
-
-function seedTerminal(): Launcher {
-  return { id: crypto.randomUUID(), name: "Terminal", command: "" };
-}
 
 interface LauncherState {
   launchers: Launcher[];
   // Used by the + button and new sessions.
   defaultLauncherId: string | null;
-  add: () => void;
+  add: (launcher: Omit<Launcher, "id">) => void;
   update: (id: string, patch: Partial<Omit<Launcher, "id">>) => void;
   remove: (id: string) => void;
   setDefault: (id: string) => void;
@@ -29,16 +30,12 @@ interface LauncherState {
 }
 
 export const useLaunchers = create<LauncherState>((set) => {
-  const initial = seedTerminal();
   return {
-    launchers: [initial],
-    defaultLauncherId: initial.id,
-    add: () =>
+    launchers: [],
+    defaultLauncherId: null,
+    add: (launcher) =>
       set((s) => ({
-        launchers: [
-          ...s.launchers,
-          { id: crypto.randomUUID(), name: "New launcher", command: "" },
-        ],
+        launchers: [...s.launchers, { id: crypto.randomUUID(), ...launcher }],
       })),
     update: (id, patch) =>
       set((s) => ({
@@ -79,9 +76,8 @@ const getStore = () =>
 export async function hydrateLaunchers(): Promise<void> {
   try {
     const store = await getStore();
-    // Honor a saved list even when it's empty (the user deleted every
-    // launcher); only fall back to the seeded default when nothing was ever
-    // saved. undefined = no saved key, [] = a deliberate empty list.
+    // undefined = nothing ever saved (keep the empty initial state);
+    // [] = a deliberately emptied list. Both mean no launchers.
     const launchers = await store.get<Launcher[]>("launchers");
     if (launchers) {
       const def = await store.get<string>("defaultLauncherId");

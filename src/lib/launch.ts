@@ -16,23 +16,92 @@ export function sessionNameForDir(cwd: string): string {
   return abbreviatePath(cwd) === "~" ? "~" : basename(cwd);
 }
 
-// Build a terminal for a launcher, pinned to the given cwd. A launcher with no
-// command is a plain interactive shell; otherwise we run the command line via a
-// login shell so the user's PATH/profile is available (thel may be launched
-// from a GUI, not a terminal).
+// The session values a launcher command can reference.
+interface SessionCtx {
+  id: string;
+  name: string;
+  cwd?: string;
+}
+
+// Replace __SESSION_DIR__ / __SESSION_ID__ / __SESSION_NAME__ with the
+// session's values. Delimited so ordinary command text (e.g. a variable
+// named SESSION_DIRECTORY) can't be shadowed, and space-free so the argv
+// splitter needs no special casing. Unknown __...__ names are left as-is so
+// a typo stays visible instead of silently disappearing. The replacement
+// callback keeps values containing `$` away from replace()'s
+// special-pattern handling.
+function substituteVars(text: string, ctx: SessionCtx): string {
+  const vars: Record<string, string> = {
+    SESSION_DIR: ctx.cwd ?? "",
+    SESSION_ID: ctx.id,
+    SESSION_NAME: ctx.name,
+  };
+  return text.replace(
+    /__(SESSION_DIR|SESSION_ID|SESSION_NAME)__/g,
+    (_m, key: string) => vars[key],
+  );
+}
+
+// Split a command line into argv for direct (no-shell) execution. Honors
+// single/double quotes; no backslash escapes or other shell syntax (a
+// launcher that needs those should run in a shell).
+export function splitArgs(line: string): string[] {
+  const args: string[] = [];
+  let cur = "";
+  let quote: string | null = null;
+  let inToken = false;
+  for (const ch of line) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      inToken = true;
+    } else if (ch === " " || ch === "\t") {
+      if (inToken) {
+        args.push(cur);
+        cur = "";
+        inToken = false;
+      }
+    } else {
+      cur += ch;
+      inToken = true;
+    }
+  }
+  if (inToken) args.push(cur);
+  return args;
+}
+
+// Build a terminal for a launcher, pinned to the session's cwd. A launcher
+// with no command is a plain interactive shell. A shell launcher runs the
+// command line via a login shell so the user's PATH/profile is available
+// (thel may be launched from a GUI, not a terminal); a no-shell launcher is
+// exec'd directly, with placeholders substituted per token so a directory
+// with spaces stays a single argument.
 async function makeTerminal(
   launcher: Launcher,
-  cwd?: string,
+  session: SessionCtx,
 ): Promise<Terminal> {
   const shell = await defaultShell();
-  const command = launcher.command.trim();
+  const commandLine = launcher.command.trim();
+  let command = shell;
+  let args: string[] = [];
+  if (commandLine && launcher.shell !== false) {
+    args = ["-l", "-c", substituteVars(commandLine, session)];
+  } else if (commandLine) {
+    const argv = splitArgs(commandLine).map((t) => substituteVars(t, session));
+    if (argv.length > 0) {
+      command = argv[0];
+      args = argv.slice(1);
+    }
+  }
   return {
     id: crypto.randomUUID(),
     title: launcher.name,
     defaultTitle: launcher.name,
-    command: shell,
-    args: command ? ["-l", "-c", command] : [],
-    cwd,
+    command,
+    args,
+    cwd: session.cwd,
     // Snapshot the default zoom at creation; later changes to the default only
     // affect new terminals, not this one.
     zoom: usePrefs.getState().terminalZoom,
@@ -61,7 +130,11 @@ export async function createSessionInDir(opts: {
     cwd: opts.cwd,
     repoRoot: opts.repoRoot,
   });
-  const term = await makeTerminal(opts.launcher ?? getDefaultLauncher(), opts.cwd);
+  const term = await makeTerminal(opts.launcher ?? getDefaultLauncher(), {
+    id: session.id,
+    name: session.name,
+    cwd: opts.cwd,
+  });
   store.addTerminal(session.id, term);
   void refreshSessionGit(session.id);
   return session;
@@ -73,7 +146,11 @@ export async function addTerminal(launcher?: Launcher, groupId?: string) {
   const store = useSessions.getState();
   const session = store.sessions.find((s) => s.id === store.activeSessionId);
   if (!session) return; // no active session; the UI opens the dialog instead
-  const term = await makeTerminal(launcher ?? getDefaultLauncher(), session.cwd);
+  const term = await makeTerminal(launcher ?? getDefaultLauncher(), {
+    id: session.id,
+    name: session.name,
+    cwd: session.cwd,
+  });
   store.addTerminal(session.id, term, groupId);
 }
 
@@ -87,6 +164,10 @@ export async function splitPane(
   const store = useSessions.getState();
   const session = store.sessions.find((s) => s.id === store.activeSessionId);
   if (!session) return;
-  const term = await makeTerminal(launcher ?? getDefaultLauncher(), session.cwd);
+  const term = await makeTerminal(launcher ?? getDefaultLauncher(), {
+    id: session.id,
+    name: session.name,
+    cwd: session.cwd,
+  });
   store.splitGroup(session.id, term, dir, groupId);
 }

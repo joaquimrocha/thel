@@ -40,8 +40,12 @@ interface UIState {
   setDaemonSkew: (open: boolean) => void;
 
   paletteOpen: boolean;
+  // Initial query for the palette (e.g. a section prefix like "l:"), consumed
+  // when it opens. Plain open/toggle clear it.
+  paletteSeed: string;
   setPaletteOpen: (open: boolean) => void;
   togglePalette: () => void;
+  openPaletteWith: (seed: string) => void;
 
   helpOpen: boolean;
   setHelpOpen: (open: boolean) => void;
@@ -127,8 +131,11 @@ export const useUI = create<UIState>((set) => ({
   setDaemonSkew: (open) => set({ daemonSkew: open }),
 
   paletteOpen: false,
-  setPaletteOpen: (open) => set({ paletteOpen: open }),
-  togglePalette: () => set((s) => ({ paletteOpen: !s.paletteOpen })),
+  paletteSeed: "",
+  setPaletteOpen: (open) => set({ paletteOpen: open, paletteSeed: "" }),
+  togglePalette: () =>
+    set((s) => ({ paletteOpen: !s.paletteOpen, paletteSeed: "" })),
+  openPaletteWith: (seed) => set({ paletteOpen: true, paletteSeed: seed }),
 
   helpOpen: false,
   setHelpOpen: (open) => set({ helpOpen: open }),

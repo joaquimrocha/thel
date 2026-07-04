@@ -48,6 +48,16 @@ export const SHORTCUTS: Shortcut[] = [
     run: () => ui().togglePalette(),
   },
   {
+    id: "launchers-palette",
+    description: "Open launcher list",
+    defaultCombo: def(
+      { code: "KeyL", meta: true, shift: true },
+      { code: "KeyL", ctrl: true, shift: true },
+    ),
+    // The palette pre-filtered to the Launchers section.
+    run: () => ui().openPaletteWith("l:"),
+  },
+  {
     id: "new-session",
     description: "New session",
     defaultCombo: def(
@@ -217,9 +227,10 @@ export const SHORTCUTS: Shortcut[] = [
   {
     id: "focus-terminal",
     description: "Focus current terminal",
+    // L went to the launchers palette (better mnemonic there).
     defaultCombo: def(
-      { code: "KeyL", meta: true, shift: true },
-      { code: "KeyL", ctrl: true, shift: true },
+      { code: "KeyJ", meta: true, shift: true },
+      { code: "KeyJ", ctrl: true, shift: true },
     ),
     run: () => ui().focusTerminal(),
   },
