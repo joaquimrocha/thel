@@ -47,28 +47,24 @@ import {
   loadTerminalFont,
   zoomedFontSize,
 } from "@/lib/theme";
-
-// Strips escape/control sequences; matches CSI, OSC and other ESC-introduced
-// sequences so what's left is just printable content.
-// eslint-disable-next-line no-control-regex
-const ESC_SEQ =
-  /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][^\x1b]*\x1b\\|[@-Z\\-_])/g;
-
-// Whether a data chunk carries actual screen content (a printable character)
-// rather than only control sequences. a multiplexer broadcasts a cursor-visibility update
-// to every attached client whenever another client attaches; treating that as
-// output would make every other terminal flag itself "finished".
-function hasVisibleOutput(data: string): boolean {
-  for (const ch of data.replace(ESC_SEQ, "")) {
-    const c = ch.codePointAt(0)!;
-    if (c >= 0x20 && c !== 0x7f) return true;
-  }
-  return false;
-}
+import { hasVisibleOutput } from "@/lib/ansi";
 
 // A foreground command animates the dot only if it produced output this
 // recently; keeps a quiet resident program (claude, vim) from pulsing forever.
 const ACTIVE_WINDOW_MS = 1000;
+
+// Silence required after a bell before notifying.
+const BELL_QUIET_MS = 1000;
+
+// After a sustained work burst (an agent generating), this much silence while
+// still foreground means the turn ended and it's waiting for you. The bell and
+// OSC paths handle agents that signal explicitly; this is the fallback for the
+// ones (claude in a plain terminal) that don't.
+const AGENT_QUIET_MS = 3000;
+// Output continuing this long after a bell means it rang mid-action (agent
+// still working), not on completion; the pending notification is dropped.
+// A completion bell only has a short prompt repaint after it.
+const BELL_WINDOW_MS = 4000;
 
 // Transient "Copied" toast after a terminal copy, if the user enabled it.
 function notifyCopied(dedented: boolean) {
@@ -192,6 +188,18 @@ export function TerminalPane({
   const watched = () => visibleRef.current && appFocused();
   // Fires when an unfocused terminal goes quiet after output (command done).
   const idleTimer = useRef<number | undefined>(undefined);
+  // "Waiting for input" detection for resident agents: a periodic check watches
+  // the visible screen *text*. An agent animates while working (a ticking
+  // elapsed timer, a spinner) so the text keeps changing; when its turn ends
+  // the text goes static even though the cursor stays visible (you can type
+  // mid-turn) and a border may still shimmer in colour only. Static text while
+  // busy = waiting for you. Cursor visibility can't tell the states apart here,
+  // so we don't use it. See the interval in the mount effect.
+  const agentCheck = useRef<number | undefined>(undefined);
+  const lastScreen = useRef("");
+  const screenChangedAt = useRef(0);
+  const agentSawWork = useRef(false);
+  const waitingNotified = useRef(false);
   // Ignore attention from the redraw a resize (SIGWINCH) provokes until this ms.
   const resizeQuietUntil = useRef(0);
   // A reattaching session replays its whole screen as one output burst; a BEL
@@ -200,10 +208,12 @@ export function TerminalPane({
   const replaySettled = useRef(false);
   const settleTimer = useRef<number | undefined>(undefined);
   // A bell is only a "wants attention" signal once the terminal falls quiet.
-  // Resident agents (claude) emit BELs mid-action too, so we defer notifying and
-  // cancel if fresh output follows (see the data handler and onBell below).
+  // Resident agents (claude) emit BELs mid-action too, so we defer notifying;
+  // output right after the bell postpones it, sustained output drops it (see
+  // the data handler and onBell below). bellAt anchors that window.
   const bellTimer = useRef<number | undefined>(undefined);
   const bellPending = useRef(false);
+  const bellAt = useRef(0);
   // Latest foreground busy state, pushed by the daemon. Drives the "finished"
   // heuristic; workingRef tracks the last animation value to avoid store churn.
   const busyRef = useRef(false);
@@ -234,15 +244,16 @@ export function TerminalPane({
       const c = effectiveCombo(id);
       return !!c && comboMatches(e, c);
     };
-    // Drop this terminal's attention dot once you're attending it. Guarded so an
-    // ordinary keystroke doesn't churn the store.
-    const clearAttention = () => {
-      const has = useSessions
+    const hasAttention = () =>
+      useSessions
         .getState()
         .sessions.some((s) =>
           sessionTerminals(s).some((t) => t.id === tab.id && t.attention),
         );
-      if (has) setAttention(tab.id, false);
+    // Drop this terminal's attention dot once you're attending it. Guarded so an
+    // ordinary keystroke doesn't churn the store.
+    const clearAttention = () => {
+      if (hasAttention()) setAttention(tab.id, false);
     };
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
@@ -302,6 +313,61 @@ export function TerminalPane({
       replaySettled.current = true;
     }, 3000);
 
+    // (Re)start the quiet timer behind a pending bell; fires the notification
+    // once the terminal has stayed silent for BELL_QUIET_MS.
+    const armBellTimer = () => {
+      window.clearTimeout(bellTimer.current);
+      bellTimer.current = window.setTimeout(() => {
+        bellPending.current = false;
+        if (closed || watched()) return;
+        setAttention(tab.id, true);
+        notify(tab.id, "bell");
+      }, BELL_QUIET_MS);
+    };
+
+    // Snapshot of the current screen's visible text (colour/cursor ignored), so
+    // an agent that only shimmers or blinks while idle reads as unchanged.
+    const screenText = (): string => {
+      const buf = term.buffer.active;
+      let s = "";
+      for (let i = 0; i < term.rows; i++) {
+        s += (buf.getLine(buf.baseY + i)?.translateToString(true) ?? "") + "\n";
+      }
+      return s;
+    };
+
+    // Poll for the working -> waiting transition: while busy and unwatched,
+    // watch the screen text. Each change resets the clock and marks that real
+    // work happened; once it holds still for AGENT_QUIET_MS, notify once. A
+    // busy-but-static screen from the start (an editor sitting open) never
+    // "saw work", so it doesn't fire. Skips reattach replay and bell handling.
+    const agentCheckTick = () => {
+      if (watched() || !busyRef.current || !replaySettled.current) {
+        lastScreen.current = screenText();
+        screenChangedAt.current = Date.now();
+        agentSawWork.current = false;
+        return;
+      }
+      const scr = screenText();
+      if (scr !== lastScreen.current) {
+        lastScreen.current = scr;
+        screenChangedAt.current = Date.now();
+        agentSawWork.current = true;
+        waitingNotified.current = false;
+        return;
+      }
+      if (
+        agentSawWork.current &&
+        !waitingNotified.current &&
+        !bellPending.current &&
+        Date.now() - screenChangedAt.current >= AGENT_QUIET_MS
+      ) {
+        waitingNotified.current = true;
+        setAttention(tab.id, true);
+        notify(tab.id, "waiting");
+      }
+    };
+
     createSession(
       {
         id: tab.id,
@@ -316,13 +382,19 @@ export function TerminalPane({
         if (closed) return;
         if (msg.kind === "data") {
           const visible = hasVisibleOutput(msg.data);
-          // Fresh output in a later chunk means a pending bell wasn't the agent
-          // finishing. Check before term.write so a bell inside THIS chunk (which
-          // onBell arms during the write) isn't immediately cancelled by its own
-          // trailing text.
+          // Output shortly after a bell is the agent repainting its prompt
+          // (claude rings BEL, then renders): postpone the notification until
+          // quiet. Output still flowing past the window means the bell rang
+          // mid-action, so drop it. Checked before term.write so a bell inside
+          // THIS chunk (which onBell arms during the write) isn't judged by
+          // its own trailing text.
           if (visible && bellPending.current) {
-            bellPending.current = false;
-            window.clearTimeout(bellTimer.current);
+            if (Date.now() - bellAt.current > BELL_WINDOW_MS) {
+              bellPending.current = false;
+              window.clearTimeout(bellTimer.current);
+            } else {
+              armBellTimer();
+            }
           }
           term.write(msg.data);
           // Control-only chunks (e.g. a cursor-visibility broadcast when another
@@ -409,13 +481,32 @@ export function TerminalPane({
     const onBellDisp = term.onBell(() => {
       if (watched() || !replaySettled.current) return;
       bellPending.current = true;
-      window.clearTimeout(bellTimer.current);
-      bellTimer.current = window.setTimeout(() => {
-        bellPending.current = false;
-        if (closed || watched()) return;
-        setAttention(tab.id, true);
-        notify(tab.id, "bell");
-      }, 1000);
+      bellAt.current = Date.now();
+      armBellTimer();
+    });
+
+    // Programs can request a desktop notification directly: OSC 9 (iTerm2,
+    // what Claude Code's iterm2/auto channel emits), OSC 777;notify (rxvt),
+    // OSC 99 (kitty). Unlike a bell this is an explicit ask carrying its own
+    // message, so it fires immediately; the replay gate keeps a reattach
+    // snapshot from re-notifying with stale messages.
+    const oscNotify = (body: string): boolean => {
+      const text = body.trim();
+      if (!replaySettled.current || !text || watched()) return true;
+      setAttention(tab.id, true);
+      notify(tab.id, "message", text);
+      return true;
+    };
+    const osc9Disp = term.parser.registerOscHandler(9, oscNotify);
+    const osc777Disp = term.parser.registerOscHandler(777, (data) => {
+      const [k, title, ...rest] = data.split(";");
+      if (k !== "notify") return false;
+      return oscNotify([title, rest.join(";")].filter(Boolean).join(": "));
+    });
+    const osc99Disp = term.parser.registerOscHandler(99, (data) => {
+      // ponytail: minimal kitty support, payload only; metadata if ever needed.
+      const i = data.indexOf(";");
+      return oscNotify(i >= 0 ? data.slice(i + 1) : data);
     });
 
     // When the app regains focus, clear notifications for the focused terminal.
@@ -454,16 +545,25 @@ export function TerminalPane({
     });
     ro.observe(containerRef.current!);
 
+    // Poll the screen once a second for the working -> waiting transition.
+    lastScreen.current = screenText();
+    screenChangedAt.current = Date.now();
+    agentCheck.current = window.setInterval(agentCheckTick, 1000);
+
     return () => {
       closed = true;
       cancelAnimationFrame(raf);
       window.clearTimeout(idleTimer.current);
+      window.clearInterval(agentCheck.current);
       window.clearTimeout(settleTimer.current);
       window.clearTimeout(settleFallback);
       window.clearTimeout(bellTimer.current);
       ro.disconnect();
       onDataDisp.dispose();
       onBellDisp.dispose();
+      osc9Disp.dispose();
+      osc777Disp.dispose();
+      osc99Disp.dispose();
       onSelDisp.dispose();
       onTitleDisp.dispose();
       window.removeEventListener("focus", onWindowFocus);
@@ -516,6 +616,9 @@ export function TerminalPane({
   useEffect(() => {
     if (visible) {
       window.clearTimeout(idleTimer.current);
+      // Watching this pane; let the next work burst re-establish the baseline.
+      agentSawWork.current = false;
+      waitingNotified.current = false;
       setAttention(tab.id, false);
     }
   }, [visible]);

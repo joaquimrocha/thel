@@ -73,6 +73,17 @@ test("a background terminal's bell shows the blue attention dot", async ({
   await expect(firstSessionDot(page)).toBeVisible();
 });
 
+test("an OSC 9 notification flags a background terminal", async ({
+  page,
+}) => {
+  await gotoApp(page);
+  const firstId = await createBackgroundSession(page);
+
+  // What Claude Code's iterm2/auto channel emits on completion.
+  await emitTerminal(page, firstId, "\x1b]9;Task complete\x07");
+  await expect(firstSessionDot(page)).toBeVisible();
+});
+
 test("a terminal reply does not clear the attention dot", async ({ page }) => {
   await gotoApp(page);
   const firstId = await createBackgroundSession(page);

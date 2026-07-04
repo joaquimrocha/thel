@@ -44,7 +44,9 @@ function flush() {
   if (items.length === 0) return;
 
   if (items.length === 1) {
-    send(items[0].title, items[0].body, items[0].target);
+    // The body can carry program-supplied text (OSC notifications), so it
+    // needs the same markup escaping as the coalesced form.
+    send(items[0].title, escapeMarkup(items[0].body), items[0].target);
   } else {
     // Summarize, listing the most recent few so the desktop stays tidy. A click
     // jumps to the most recent terminal in the batch.

@@ -3,12 +3,26 @@ import { useSessions, sessionTerminals, terminalDisplayTitle } from "./sessions"
 import { systemNotify } from "@/lib/systemNotify";
 import { appFocused } from "@/lib/focus";
 
-export type NotificationKind = "bell" | "idle" | "exit" | "warn";
+export type NotificationKind =
+  | "bell"
+  | "idle"
+  | "exit"
+  | "warn"
+  | "message"
+  | "waiting";
 
 export function kindLabel(kind: NotificationKind, detail?: string): string {
   switch (kind) {
     case "bell":
       return "Wants input";
+    // A notification the program asked for itself (OSC 9/777/99), with its
+    // own message text.
+    case "message":
+      return detail ?? "Notification";
+    // A resident agent (claude) that was working went quiet while still in the
+    // foreground: its turn ended and it's waiting for you.
+    case "waiting":
+      return "Waiting for input";
     case "idle":
       return "Command finished";
     case "exit":

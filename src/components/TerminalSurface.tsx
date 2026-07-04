@@ -21,36 +21,27 @@ import {
   busyAgeMs,
   markBusy,
   markOutput,
+  noteBurst,
   outputAgeMs,
 } from "@/lib/activity";
 import { notify } from "@/store/notifications";
+import {
+  hasVisibleOutput,
+  oscNotifications,
+  terminalTitleFromOutput,
+} from "@/lib/ansi";
 import { TerminalPane } from "./TerminalPane";
 import { TerminalTabs } from "./TerminalTabs";
 
-// Strips escape/control sequences; matches CSI, OSC and other ESC-introduced
-// sequences so what's left is just printable content.
-// eslint-disable-next-line no-control-regex
-const ESC_SEQ =
-  /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][^\x1b]*\x1b\\|[@-Z\\-_])/g;
-
-function hasVisibleOutput(data: string): boolean {
-  for (const ch of data.replace(ESC_SEQ, "")) {
-    const c = ch.codePointAt(0)!;
-    if (c >= 0x20 && c !== 0x7f) return true;
-  }
-  return false;
-}
-
-function terminalTitleFromOutput(data: string): string | undefined {
-  let title: string | undefined;
-  // OSC 0 and 2 set the window/icon title; xterm's onTitleChange follows the
-  // same sequences for mounted terminals. Keep the last title in the chunk.
-  const re = /\x1b\](?:0|2);([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
-  for (let m = re.exec(data); m; m = re.exec(data)) title = m[1];
-  return title;
-}
-
 const ACTIVE_WINDOW_MS = 1000;
+
+// Bell debounce (mirrors TerminalPane): notify only after BELL_QUIET_MS of
+// silence; output past BELL_WINDOW_MS after the bell means it rang mid-action.
+const BELL_QUIET_MS = 1000;
+const BELL_WINDOW_MS = 4000;
+// Silence after a sustained work burst that means an agent is waiting for input
+// (mirrors TerminalPane).
+const AGENT_QUIET_MS = 3000;
 
 interface Rect {
   left: number;
@@ -336,9 +327,12 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
   useEffect(() => {
     let closed = false;
     const idleTimer = { current: undefined as number | undefined };
+    const agentTimer = { current: undefined as number | undefined };
+    const agentArmed = { current: false };
     const settleTimer = { current: undefined as number | undefined };
     const bellTimer = { current: undefined as number | undefined };
     const bellPending = { current: false };
+    const bellAt = { current: 0 };
     const replaySettled = { current: false };
     const busyRef = { current: false };
     const workingRef = { current: false };
@@ -346,6 +340,29 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
     const settleFallback = window.setTimeout(() => {
       replaySettled.current = true;
     }, 3000);
+
+    const armBellTimer = () => {
+      window.clearTimeout(bellTimer.current);
+      bellTimer.current = window.setTimeout(() => {
+        bellPending.current = false;
+        if (closed) return;
+        setAttention(terminal.id, true);
+        notify(terminal.id, "bell");
+      }, BELL_QUIET_MS);
+    };
+
+    // Best-effort waiting detection for background tabs (no screen buffer to
+    // inspect, unlike a mounted pane): fires once a work burst falls quiet
+    // while still busy.
+    const armAgentTimer = () => {
+      window.clearTimeout(agentTimer.current);
+      agentTimer.current = window.setTimeout(() => {
+        if (closed || !busyRef.current || bellPending.current) return;
+        agentArmed.current = false;
+        setAttention(terminal.id, true);
+        notify(terminal.id, "waiting");
+      }, AGENT_QUIET_MS);
+    };
 
     createSession(
       {
@@ -363,27 +380,44 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
           const title = terminalTitleFromOutput(msg.data);
           if (title !== undefined) setProcTitle(terminal.id, title);
           const visible = hasVisibleOutput(msg.data);
-          // Fresh output in a later chunk means a pending bell wasn't the agent
-          // finishing; cancel it before arming a new one for this chunk's bell.
+          // Output shortly after a bell (the agent repainting its prompt)
+          // postpones the notification until quiet; output still flowing past
+          // the window means a mid-action bell, so drop it.
           if (visible && bellPending.current) {
-            bellPending.current = false;
-            window.clearTimeout(bellTimer.current);
-          }
-          // Defer the bell notification until the terminal falls quiet: resident
-          // agents (claude) ring the bell mid-action, and only a bell followed by
-          // silence means "done, wants you".
-          if (msg.data.includes("\x07") && replaySettled.current) {
-            bellPending.current = true;
-            window.clearTimeout(bellTimer.current);
-            bellTimer.current = window.setTimeout(() => {
+            if (Date.now() - bellAt.current > BELL_WINDOW_MS) {
               bellPending.current = false;
-              if (closed) return;
+              window.clearTimeout(bellTimer.current);
+            } else {
+              armBellTimer();
+            }
+          }
+          // OSC notification requests carry their own message and fire at
+          // once (no quiet-wait); replay is gated like the bell. The bell
+          // check below uses the stripped rest so an OSC terminator byte
+          // doesn't also ring.
+          const osc = oscNotifications(msg.data);
+          if (replaySettled.current) {
+            for (const text of osc.texts) {
               setAttention(terminal.id, true);
-              notify(terminal.id, "bell");
-            }, 1000);
+              notify(terminal.id, "message", text);
+            }
+          }
+          // Defer the bell notification until the terminal falls quiet: only a
+          // bell followed by silence means "done, wants you".
+          if (osc.rest.includes("\x07") && replaySettled.current) {
+            bellPending.current = true;
+            bellAt.current = Date.now();
+            armBellTimer();
           }
           if (!visible) return;
           markOutput(terminal.id);
+          // Waiting-for-input fallback: a sustained work burst arms it, then
+          // AGENT_QUIET_MS of silence while still busy fires it once. This
+          // listener only runs for background tabs, so no watched() guard.
+          if (replaySettled.current) {
+            if (noteBurst(terminal.id)) agentArmed.current = true;
+            if (agentArmed.current) armAgentTimer();
+          }
           if (!replaySettled.current) {
             window.clearTimeout(settleTimer.current);
             settleTimer.current = window.setTimeout(() => {
@@ -414,6 +448,7 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
     return () => {
       closed = true;
       window.clearTimeout(idleTimer.current);
+      window.clearTimeout(agentTimer.current);
       window.clearTimeout(settleTimer.current);
       window.clearTimeout(bellTimer.current);
       window.clearTimeout(settleFallback);
