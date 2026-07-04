@@ -52,17 +52,19 @@ export function ConfirmDialog() {
           </div>
         )}
         <DialogFooter>
-          <Button variant="ghost" onClick={clear}>
-            Cancel
-          </Button>
+          {!confirm?.okOnly && (
+            <Button variant="ghost" onClick={clear}>
+              Cancel
+            </Button>
+          )}
           <Button
-            variant="destructive"
+            variant={confirm?.okOnly ? "default" : "destructive"}
             onClick={() => {
               confirm?.onConfirm(checked);
               clear();
             }}
           >
-            {confirm?.confirmLabel ?? "Confirm"}
+            {confirm?.confirmLabel ?? (confirm?.okOnly ? "OK" : "Confirm")}
           </Button>
         </DialogFooter>
       </DialogContent>

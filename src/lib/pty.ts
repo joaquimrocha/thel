@@ -54,6 +54,11 @@ export const terminalBusy = (id: string) =>
 export const killTerminalWindow = (sessionId: string, id: string) =>
   invoke<void>("kill_terminal_window", { sessionId, id });
 
+/** Launch a command detached in its own session, fire-and-forget -- for
+ * no-shell "app" launchers, which aren't terminals and must outlive any tab. */
+export const spawnDetached = (command: string, args: string[], cwd?: string) =>
+  invoke<void>("spawn_detached", { command, args, cwd });
+
 /** Probe the session daemon at startup: "ok" | "skew" (incompatible version
  * running) | "none". */
 export const checkDaemon = () =>
@@ -87,6 +92,10 @@ export const homeDir = () => invoke<string | null>("home_dir");
 /** True if the path exists and is a directory. */
 export const dirExists = (path: string) =>
   invoke<boolean>("dir_exists", { path });
+
+/** True if a program is spawnable (PATH lookup for bare names). */
+export const programExists = (name: string) =>
+  invoke<boolean>("program_exists", { name });
 
 /** Subdirectory completions for a partial absolute path (shell Tab style). */
 export const completeDir = (input: string) =>

@@ -127,6 +127,76 @@ fn home_dir() -> Option<String> {
     std::env::var(key).ok()
 }
 
+/// Whether a program is spawnable: a path (contains a separator) is checked
+/// directly, a bare name is searched in PATH. Lets the GUI fail a no-shell
+/// launcher with an error dialog instead of a silently dead tab. Windows
+/// PATHEXT resolution is skipped (Linux-first); a bare name there may probe
+/// the literal file only.
+#[tauri::command]
+fn program_exists(name: String) -> bool {
+    use std::path::Path;
+    #[cfg(unix)]
+    fn is_exec(p: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        p.is_file()
+            && p.metadata()
+                .map(|m| m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    fn is_exec(p: &Path) -> bool {
+        p.is_file()
+    }
+    if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
+        return is_exec(Path::new(&name));
+    }
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| is_exec(&dir.join(&name)))
+}
+
+/// Launch a command detached in its own session, fire-and-forget. Used for
+/// no-shell "app" launchers (e.g. `flatpak run <gui-app>`): they aren't
+/// terminals, so they get no PTY/tab and must outlive thel and any tab close.
+#[tauri::command]
+fn spawn_detached(command: String, args: Vec<String>, cwd: Option<String>) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    #[cfg(unix)]
+    {
+        // setsid forks the target into a new session and exits, so the target
+        // reparents to init -- detached from thel's terminal and lifecycle, with
+        // no zombie left here (we reap the short-lived setsid).
+        let mut cmd = Command::new("setsid");
+        cmd.arg(&command).args(&args);
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to launch '{command}': {e}"))?;
+        let _ = child.wait();
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let mut cmd = Command::new(&command);
+        cmd.args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
+        cmd.spawn()
+            .map(|_| ())
+            .map_err(|e| format!("failed to launch '{command}': {e}"))
+    }
+}
+
 /// Whether the path exists and is a directory. Used to validate a typed folder
 /// before anchoring a session to it.
 #[tauri::command]
@@ -398,6 +468,8 @@ pub fn run() {
             default_shell,
             home_dir,
             dir_exists,
+            program_exists,
+            spawn_detached,
             complete_dir,
             monospace_font,
             notify,

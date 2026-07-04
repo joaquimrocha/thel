@@ -8,6 +8,9 @@ export interface ConfirmRequest {
   // state is passed to onConfirm. `warning` shows under the label (e.g. a
   // data-loss caveat that applies to the checked action, not the dialog itself).
   checkbox?: { label: string; defaultChecked?: boolean; warning?: string };
+  // Notice mode: a single non-destructive OK button, no Cancel (e.g. an error
+  // report where there is nothing to confirm).
+  okOnly?: boolean;
   onConfirm: (checked: boolean) => void;
 }
 
