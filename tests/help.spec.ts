@@ -20,9 +20,10 @@ test("rebind a shortcut and reset it", async ({ page }) => {
     .getByRole("button", { name: "Ctrl+Shift+P", exact: true })
     .click();
   await expect(page.getByText("Press keys…")).toBeVisible();
-  await page.keyboard.press("Control+Shift+J");
+  // A combo not bound by default (Ctrl+Shift+J is focus-terminal).
+  await page.keyboard.press("Control+Shift+G");
   await expect(
-    page.getByRole("button", { name: "Ctrl+Shift+J", exact: true }),
+    page.getByRole("button", { name: "Ctrl+Shift+G", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Ctrl+Shift+P", exact: true }),

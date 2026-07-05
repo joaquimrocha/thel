@@ -180,6 +180,6 @@ test("removing the icon brings the dot back", async ({ page }) => {
   await expect(slot(page).locator("img")).toBeVisible();
 
   await openSettings(page);
-  await page.getByRole("dialog").getByRole("button", { name: "Remove icon" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "No icon" }).click();
   await expect(slot(page).locator("img")).toHaveCount(0);
 });

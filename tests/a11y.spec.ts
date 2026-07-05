@@ -14,7 +14,7 @@ test("primary controls expose accessible names", async ({ page }) => {
     "App menu",
     "Notifications",
     "New session",
-    "Sessions settings",
+    "Command palette",
   ]) {
     await expect(page.getByRole("button", { name })).toBeVisible();
   }

@@ -8,34 +8,61 @@ async function openLaunchers(page: Page) {
   await expect(page.getByText(/A launcher opens a terminal/)).toBeVisible();
 }
 
-const names = (page: Page) => page.getByPlaceholder("Name");
+// Create a launcher through the Create Launcher dialog.
+async function createLauncher(page: Page, name: string, command?: string) {
+  await page.getByRole("button", { name: "Create launcher…" }).click();
+  await page.getByPlaceholder("e.g. Claude").fill(name);
+  if (command) await page.getByPlaceholder(/empty = shell/).fill(command);
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+}
 
-test("starts with the default Terminal launcher", async ({ page }) => {
+// One "Delete launcher" button per row, so its count is the launcher count.
+const launcherCount = (page: Page) =>
+  page.getByRole("button", { name: "Delete launcher" });
+
+test("starts with no launchers", async ({ page }) => {
   await gotoApp(page);
   await openLaunchers(page);
-  await expect(names(page)).toHaveCount(1);
-  await expect(names(page).first()).toHaveValue("Terminal");
+  await expect(launcherCount(page)).toHaveCount(0);
 });
 
-test("add and delete launchers", async ({ page }) => {
+test("create and delete a launcher", async ({ page }) => {
   await gotoApp(page);
   await openLaunchers(page);
-  await page.getByRole("button", { name: "Add launcher" }).click();
-  await expect(names(page)).toHaveCount(2);
-  await page.getByRole("button", { name: "Delete launcher" }).last().click();
-  await expect(names(page)).toHaveCount(1);
+  await createLauncher(page, "Claude");
+  await expect(launcherCount(page)).toHaveCount(1);
+  await expect(page.getByText("Claude")).toBeVisible();
+
+  await launcherCount(page).click();
+  await expect(launcherCount(page)).toHaveCount(0);
 });
 
-test("rename a launcher and it persists across reload", async ({ page }) => {
+test("edit a launcher name and it persists across reload", async ({ page }) => {
   await gotoApp(page);
   await openLaunchers(page);
-  await names(page).first().fill("Claude");
-  await expect(names(page).first()).toHaveValue("Claude");
+  await createLauncher(page, "Claude");
+
+  // Reopen it in the edit dialog and rename.
+  await page.getByRole("button", { name: "Claude" }).click();
+  await page.getByPlaceholder("e.g. Claude").fill("Claude 2");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Claude 2")).toBeVisible();
 
   await page.waitForTimeout(500); // persistence is debounced ~300ms
   await page.reload();
   await openLaunchers(page);
-  await expect(names(page).first()).toHaveValue("Claude");
+  await expect(page.getByText("Claude 2")).toBeVisible();
+});
+
+test("rejects a duplicate launcher name", async ({ page }) => {
+  await gotoApp(page);
+  await openLaunchers(page);
+  await createLauncher(page, "Claude");
+
+  await page.getByRole("button", { name: "Create launcher…" }).click();
+  await page.getByPlaceholder("e.g. Claude").fill("Claude");
+  await expect(page.getByText(/name already exists/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create", exact: true })).toBeDisabled();
 });
 
 test("starring sets the default, clicking it again unsets it", async ({
@@ -43,13 +70,12 @@ test("starring sets the default, clicking it again unsets it", async ({
 }) => {
   await gotoApp(page);
   await openLaunchers(page);
-  // The Terminal launcher starts as the default.
+  await createLauncher(page, "Claude");
+
+  // No default until starred.
   await expect(
     page.getByRole("button", { name: "Default launcher" }),
-  ).toHaveCount(1);
-
-  await page.getByRole("button", { name: "Add launcher" }).click();
-  // Make the new one the default.
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "Set as default" }).click();
   await expect(
     page.getByRole("button", { name: "Default launcher" }),
@@ -62,12 +88,13 @@ test("starring sets the default, clicking it again unsets it", async ({
   ).toHaveCount(0);
 });
 
-test("renamed default launcher drives the New-session terminal title", async ({
+test("default launcher drives the New-session terminal title", async ({
   page,
 }) => {
   await gotoApp(page);
   await openLaunchers(page);
-  await names(page).first().fill("Claude"); // the default launcher
+  await createLauncher(page, "Claude");
+  await page.getByRole("button", { name: "Set as default" }).click();
   await page.keyboard.press("Escape");
 
   await page.keyboard.press("Control+Shift+N");

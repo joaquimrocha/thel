@@ -163,17 +163,17 @@ test("closing a pane's terminals collapses the split", async ({ page }) => {
   await expect(page.locator("[data-pane-group]")).toHaveCount(1);
 });
 
-test("palette lists launcher-in-session only when a session exists", async ({
+test("palette lists New terminal only when a session exists", async ({
   page,
 }) => {
   await gotoApp(page);
   await page.keyboard.press("Control+Shift+P");
-  await expect(page.getByText("in current session")).toHaveCount(0);
+  await expect(page.getByText("New terminal")).toHaveCount(0);
   await page.keyboard.press("Escape");
 
   await createSession(page);
   await page.keyboard.press("Control+Shift+P");
-  await expect(page.getByText("in current session").first()).toBeVisible();
+  await expect(page.getByText("New terminal").first()).toBeVisible();
 });
 
 test("created session is restored after reload", async ({ page }) => {

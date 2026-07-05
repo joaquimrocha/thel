@@ -49,7 +49,7 @@ test("palette can search and switch sessions", async ({ page }) => {
   await createSession(page);
 
   await page.keyboard.press("Control+Shift+P");
-  await expect(page.getByText("Switch to session")).toBeVisible();
+  await expect(page.getByText("Sessions")).toBeVisible();
   await page
     .getByPlaceholder("Type a command or search sessions...")
     .fill("Alpha");
