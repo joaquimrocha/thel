@@ -237,6 +237,21 @@ export function SettingsDialog() {
                   A command finishes in a background terminal
                 </label>
               </div>
+              <p className="border-t border-border pt-3 text-xs text-muted-foreground">
+                Notify from a script with{" "}
+                <code className="rounded bg-muted px-1 font-mono">thel notify</code>
+                .{" "}
+                <button
+                  className="underline underline-offset-2 hover:text-foreground"
+                  onClick={() =>
+                    void openUrl(
+                      "https://github.com/joaquimrocha/thel/blob/main/docs/notifications.md",
+                    )
+                  }
+                >
+                  Learn more
+                </button>
+              </p>
             </TabsContent>
 
             <TabsContent value="profiles" className="mt-0">

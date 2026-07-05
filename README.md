@@ -45,6 +45,8 @@ interactive shells, Makefiles, and `&&` chains, but not from a process detached
 from the tty (e.g. an agent's completion hook that runs without one). thel also
 picks up bells and OSC 9 / 777 / 99 notification escapes from any program.
 
+See [docs/notifications.md](docs/notifications.md) for the full details.
+
 ## Prerequisites
 
 - Node 18+ and pnpm
