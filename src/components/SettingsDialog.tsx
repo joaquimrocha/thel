@@ -8,6 +8,7 @@ import {
   FolderCog,
   Users,
   Info,
+  Bell,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -45,6 +46,14 @@ export function SettingsDialog() {
   const setAutoStartTerminals = usePrefs((s) => s.setAutoStartTerminals);
   const useDaemon = usePrefs((s) => s.useDaemon);
   const setUseDaemon = usePrefs((s) => s.setUseDaemon);
+  const notifyDesktop = usePrefs((s) => s.notifyDesktop);
+  const setNotifyDesktop = usePrefs((s) => s.setNotifyDesktop);
+  const notifyBell = usePrefs((s) => s.notifyBell);
+  const setNotifyBell = usePrefs((s) => s.setNotifyBell);
+  const notifyAgentWaiting = usePrefs((s) => s.notifyAgentWaiting);
+  const setNotifyAgentWaiting = usePrefs((s) => s.setNotifyAgentWaiting);
+  const notifyCommandFinished = usePrefs((s) => s.notifyCommandFinished);
+  const setNotifyCommandFinished = usePrefs((s) => s.setNotifyCommandFinished);
 
   // Close this modal before opening another dialog/panel so overlays don't stack.
   const go = (fn: () => void) => () => {
@@ -69,6 +78,9 @@ export function SettingsDialog() {
             </TabsTrigger>
             <TabsTrigger value="sessions" className="justify-start gap-2 data-[state=active]:bg-muted data-[state=active]:shadow-none">
               <FolderCog className="size-4" /> Sessions
+            </TabsTrigger>
+            <TabsTrigger value="notifications" className="justify-start gap-2 data-[state=active]:bg-muted data-[state=active]:shadow-none">
+              <Bell className="size-4" /> Notifications
             </TabsTrigger>
             <TabsTrigger value="profiles" className="justify-start gap-2 data-[state=active]:bg-muted data-[state=active]:shadow-none">
               <Users className="size-4" /> Profiles
@@ -179,6 +191,52 @@ export function SettingsDialog() {
                   </p>
                 </div>
               )}
+            </TabsContent>
+
+            <TabsContent value="notifications" className="mt-0 space-y-4">
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-2 text-sm">
+                  <Switch
+                    checked={notifyDesktop}
+                    onCheckedChange={setNotifyDesktop}
+                  />
+                  Desktop notifications
+                </label>
+                <p className="pl-9 text-xs text-muted-foreground">
+                  Show an OS notification when a background terminal wants you
+                  and the window isn't focused. The in-app notification list
+                  works regardless.
+                </p>
+              </div>
+              <div className="space-y-2 border-t border-border pt-3">
+                <p className="text-xs font-medium text-muted-foreground">
+                  Notify me when…
+                </p>
+                <label className="flex items-center gap-2 text-sm">
+                  <Switch checked={notifyBell} onCheckedChange={setNotifyBell} />
+                  A program rings the terminal bell
+                </label>
+                <div className="space-y-1">
+                  <label className="flex items-center gap-2 text-sm">
+                    <Switch
+                      checked={notifyAgentWaiting}
+                      onCheckedChange={setNotifyAgentWaiting}
+                    />
+                    An agent finishes and waits for input
+                  </label>
+                  <p className="pl-9 text-xs text-muted-foreground">
+                    Best-effort: detected from the terminal going quiet after
+                    activity. Turn off if it fires at the wrong time.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                  <Switch
+                    checked={notifyCommandFinished}
+                    onCheckedChange={setNotifyCommandFinished}
+                  />
+                  A command finishes in a background terminal
+                </label>
+              </div>
             </TabsContent>
 
             <TabsContent value="profiles" className="mt-0">

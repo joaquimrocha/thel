@@ -16,14 +16,8 @@ import { shortcutLabel } from "@/store/keybindings";
 import { daemonOptedOut } from "@/lib/pty";
 import { usePrefs } from "@/store/prefs";
 import { createSession, closeSession } from "@/lib/pty";
-import {
-  clearActivity,
-  busyAgeMs,
-  markBusy,
-  markOutput,
-  noteBurst,
-  outputAgeMs,
-} from "@/lib/activity";
+import { clearActivity, noteBurst } from "@/lib/activity";
+import { createTerminalActivity, AGENT_QUIET_MS } from "@/lib/termActivity";
 import { notify } from "@/store/notifications";
 import {
   hasVisibleOutput,
@@ -32,16 +26,6 @@ import {
 } from "@/lib/ansi";
 import { TerminalPane } from "./TerminalPane";
 import { TerminalTabs } from "./TerminalTabs";
-
-const ACTIVE_WINDOW_MS = 1000;
-
-// Bell debounce (mirrors TerminalPane): notify only after BELL_QUIET_MS of
-// silence; output past BELL_WINDOW_MS after the bell means it rang mid-action.
-const BELL_QUIET_MS = 1000;
-const BELL_WINDOW_MS = 4000;
-// Silence after a sustained work burst that means an agent is waiting for input
-// (mirrors TerminalPane).
-const AGENT_QUIET_MS = 3000;
 
 interface Rect {
   left: number;
@@ -319,37 +303,25 @@ function DaemonBackgroundListeners({
 }
 
 function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
-  const setAttention = useSessions((s) => s.setAttention);
   const setBusy = useSessions((s) => s.setBusy);
   const setProcTitle = useSessions((s) => s.setProcTitle);
   const closeTerminal = useSessions((s) => s.closeTerminal);
 
   useEffect(() => {
     let closed = false;
-    const idleTimer = { current: undefined as number | undefined };
     const agentTimer = { current: undefined as number | undefined };
     const agentArmed = { current: false };
-    const settleTimer = { current: undefined as number | undefined };
-    const bellTimer = { current: undefined as number | undefined };
-    const bellPending = { current: false };
-    const bellAt = { current: 0 };
-    const replaySettled = { current: false };
-    const busyRef = { current: false };
-    const workingRef = { current: false };
 
-    const settleFallback = window.setTimeout(() => {
-      replaySettled.current = true;
-    }, 3000);
-
-    const armBellTimer = () => {
-      window.clearTimeout(bellTimer.current);
-      bellTimer.current = window.setTimeout(() => {
-        bellPending.current = false;
-        if (closed) return;
-        setAttention(terminal.id, true);
-        notify(terminal.id, "bell");
-      }, BELL_QUIET_MS);
-    };
+    // The shared notification core (replay gate, bell debounce, idle alert,
+    // busy→working edge). A background listener is never watched, so watched()
+    // is () => false. The waiting-for-input heuristic below stays the listener's
+    // own: it has no screen buffer, so it works off output bursts.
+    const activity = createTerminalActivity({
+      id: terminal.id,
+      watched: () => false,
+      onNotify: (kind, text) => notify(terminal.id, kind, text),
+      onWorking: (working) => setBusy(terminal.id, working),
+    });
 
     // Best-effort waiting detection for background tabs (no screen buffer to
     // inspect, unlike a mounted pane): fires once a work burst falls quiet
@@ -357,9 +329,8 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
     const armAgentTimer = () => {
       window.clearTimeout(agentTimer.current);
       agentTimer.current = window.setTimeout(() => {
-        if (closed || !busyRef.current || bellPending.current) return;
+        if (closed || !activity.isBusy() || activity.isBellPending()) return;
         agentArmed.current = false;
-        setAttention(terminal.id, true);
         notify(terminal.id, "waiting");
       }, AGENT_QUIET_MS);
     };
@@ -380,65 +351,23 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
           const title = terminalTitleFromOutput(msg.data);
           if (title !== undefined) setProcTitle(terminal.id, title);
           const visible = hasVisibleOutput(msg.data);
-          // Output shortly after a bell (the agent repainting its prompt)
-          // postpones the notification until quiet; output still flowing past
-          // the window means a mid-action bell, so drop it.
-          if (visible && bellPending.current) {
-            if (Date.now() - bellAt.current > BELL_WINDOW_MS) {
-              bellPending.current = false;
-              window.clearTimeout(bellTimer.current);
-            } else {
-              armBellTimer();
-            }
-          }
-          // OSC notification requests carry their own message and fire at
-          // once (no quiet-wait); replay is gated like the bell. The bell
-          // check below uses the stripped rest so an OSC terminator byte
-          // doesn't also ring.
+          activity.absorbOutputBeforeWrite(visible);
+          // OSC notification requests carry their own message and fire at once;
+          // the bell check uses the stripped rest so an OSC terminator byte
+          // doesn't also ring. Both are gated by the replay state internally.
           const osc = oscNotifications(msg.data);
-          if (replaySettled.current) {
-            for (const text of osc.texts) {
-              setAttention(terminal.id, true);
-              notify(terminal.id, "message", text);
-            }
-          }
-          // Defer the bell notification until the terminal falls quiet: only a
-          // bell followed by silence means "done, wants you".
-          if (osc.rest.includes("\x07") && replaySettled.current) {
-            bellPending.current = true;
-            bellAt.current = Date.now();
-            armBellTimer();
-          }
-          if (!visible) return;
-          markOutput(terminal.id);
+          for (const text of osc.texts) activity.noteMessage(text);
+          if (osc.rest.includes("\x07")) activity.noteBell();
+          activity.noteOutput(visible);
           // Waiting-for-input fallback: a sustained work burst arms it, then
-          // AGENT_QUIET_MS of silence while still busy fires it once. This
-          // listener only runs for background tabs, so no watched() guard.
-          if (replaySettled.current) {
+          // AGENT_QUIET_MS of silence while still busy fires it once. No screen
+          // buffer here, so it works off output bursts rather than screen text.
+          if (visible && activity.isReplaySettled()) {
             if (noteBurst(terminal.id)) agentArmed.current = true;
             if (agentArmed.current) armAgentTimer();
           }
-          if (!replaySettled.current) {
-            window.clearTimeout(settleTimer.current);
-            settleTimer.current = window.setTimeout(() => {
-              replaySettled.current = true;
-            }, 250);
-          }
-          window.clearTimeout(idleTimer.current);
-          idleTimer.current = window.setTimeout(() => {
-            if (closed || busyRef.current) return;
-            if (busyAgeMs(terminal.id) > 8000) return;
-            setAttention(terminal.id, true);
-            notify(terminal.id, "idle");
-          }, 1000);
         } else if (msg.kind === "busy") {
-          busyRef.current = msg.busy;
-          if (msg.busy) markBusy(terminal.id);
-          const working = msg.busy && outputAgeMs(terminal.id) < ACTIVE_WINDOW_MS;
-          if (workingRef.current !== working) {
-            workingRef.current = working;
-            setBusy(terminal.id, working);
-          }
+          activity.noteBusy(msg.busy);
         } else {
           closeTerminal(terminal.id);
         }
@@ -447,17 +376,13 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
 
     return () => {
       closed = true;
-      window.clearTimeout(idleTimer.current);
       window.clearTimeout(agentTimer.current);
-      window.clearTimeout(settleTimer.current);
-      window.clearTimeout(bellTimer.current);
-      window.clearTimeout(settleFallback);
+      activity.dispose();
       clearActivity(terminal.id);
       closeSession(terminal.id).catch(() => {});
     };
   }, [
     closeTerminal,
-    setAttention,
     setBusy,
     setProcTitle,
     terminal.args,

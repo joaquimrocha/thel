@@ -19,15 +19,13 @@ import {
 } from "@/store/sessions";
 import { useUI } from "@/store/ui";
 import { notify, useNotifications } from "@/store/notifications";
+import { markInput, clearActivity } from "@/lib/activity";
 import {
-  markInput,
-  markOutput,
-  clearActivity,
-  busyAgeMs,
-  markBusy,
-  outputAgeMs,
-} from "@/lib/activity";
-import { appFocused } from "@/lib/focus";
+  createTerminalActivity,
+  AGENT_QUIET_MS,
+  type TerminalActivity,
+} from "@/lib/termActivity";
+import { appFocused, onFocusGained } from "@/lib/focus";
 import { copyText, pasteText, dedent } from "@/lib/clipboard";
 import { comboMatches } from "@/lib/keymap";
 import { effectiveCombo, shortcutLabel } from "@/store/keybindings";
@@ -48,23 +46,6 @@ import {
   zoomedFontSize,
 } from "@/lib/theme";
 import { hasVisibleOutput } from "@/lib/ansi";
-
-// A foreground command animates the dot only if it produced output this
-// recently; keeps a quiet resident program (claude, vim) from pulsing forever.
-const ACTIVE_WINDOW_MS = 1000;
-
-// Silence required after a bell before notifying.
-const BELL_QUIET_MS = 1000;
-
-// After a sustained work burst (an agent generating), this much silence while
-// still foreground means the turn ended and it's waiting for you. The bell and
-// OSC paths handle agents that signal explicitly; this is the fallback for the
-// ones (claude in a plain terminal) that don't.
-const AGENT_QUIET_MS = 3000;
-// Output continuing this long after a bell means it rang mid-action (agent
-// still working), not on completion; the pending notification is dropped.
-// A completion bell only has a short prompt repaint after it.
-const BELL_WINDOW_MS = 4000;
 
 // Transient "Copied" toast after a terminal copy, if the user enabled it.
 function notifyCopied(dedented: boolean) {
@@ -186,38 +167,23 @@ export function TerminalPane({
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
   const watched = () => visibleRef.current && appFocused();
-  // Fires when an unfocused terminal goes quiet after output (command done).
-  const idleTimer = useRef<number | undefined>(undefined);
+  // The shared notification state machine (replay gate, bell debounce, idle
+  // "finished" alert, busy→working edge). Created in the mount effect and fed by
+  // the session callbacks; the visibility/resize effects also reach it.
+  const activityRef = useRef<TerminalActivity | null>(null);
   // "Waiting for input" detection for resident agents: a periodic check watches
   // the visible screen *text*. An agent animates while working (a ticking
   // elapsed timer, a spinner) so the text keeps changing; when its turn ends
   // the text goes static even though the cursor stays visible (you can type
   // mid-turn) and a border may still shimmer in colour only. Static text while
   // busy = waiting for you. Cursor visibility can't tell the states apart here,
-  // so we don't use it. See the interval in the mount effect.
+  // so we don't use it. See the interval in the mount effect. This stays here
+  // (not in the shared core) because only a mounted pane has screen text.
   const agentCheck = useRef<number | undefined>(undefined);
   const lastScreen = useRef("");
   const screenChangedAt = useRef(0);
   const agentSawWork = useRef(false);
   const waitingNotified = useRef(false);
-  // Ignore attention from the redraw a resize (SIGWINCH) provokes until this ms.
-  const resizeQuietUntil = useRef(0);
-  // A reattaching session replays its whole screen as one output burst; a BEL
-  // byte in that replay must not read as a live bell. Stays false until the
-  // burst settles (settleTimer) or a fallback fires, gating the bell handler.
-  const replaySettled = useRef(false);
-  const settleTimer = useRef<number | undefined>(undefined);
-  // A bell is only a "wants attention" signal once the terminal falls quiet.
-  // Resident agents (claude) emit BELs mid-action too, so we defer notifying;
-  // output right after the bell postpones it, sustained output drops it (see
-  // the data handler and onBell below). bellAt anchors that window.
-  const bellTimer = useRef<number | undefined>(undefined);
-  const bellPending = useRef(false);
-  const bellAt = useRef(0);
-  // Latest foreground busy state, pushed by the daemon. Drives the "finished"
-  // heuristic; workingRef tracks the last animation value to avoid store churn.
-  const busyRef = useRef(false);
-  const workingRef = useRef(false);
 
   // Create the terminal + session exactly once; the pane is kept mounted
   // across tab switches so scrollback and PTY wiring survive.
@@ -306,24 +272,16 @@ export function TerminalPane({
       closeTerminal(tab.id);
     };
 
-    // Fallback: if a terminal replays nothing (empty snapshot), no output ever
-    // arrives to settle the burst, so arm the heuristic anyway after a beat.
-    // Long enough that a real snapshot burst settles first via settleTimer.
-    const settleFallback = window.setTimeout(() => {
-      replaySettled.current = true;
-    }, 3000);
-
-    // (Re)start the quiet timer behind a pending bell; fires the notification
-    // once the terminal has stayed silent for BELL_QUIET_MS.
-    const armBellTimer = () => {
-      window.clearTimeout(bellTimer.current);
-      bellTimer.current = window.setTimeout(() => {
-        bellPending.current = false;
-        if (closed || watched()) return;
-        setAttention(tab.id, true);
-        notify(tab.id, "bell");
-      }, BELL_QUIET_MS);
-    };
+    // The shared notification core: replay gate, bell debounce, idle "finished"
+    // alert, and the busy→working edge. watched() reads the same live refs as
+    // the rest of the pane; onNotify/onWorking bridge to the store.
+    const activity = createTerminalActivity({
+      id: tab.id,
+      watched,
+      onNotify: (kind, text) => notify(tab.id, kind, text),
+      onWorking: (working) => setBusy(tab.id, working),
+    });
+    activityRef.current = activity;
 
     // Snapshot of the current screen's visible text (colour/cursor ignored), so
     // an agent that only shimmers or blinks while idle reads as unchanged.
@@ -342,7 +300,7 @@ export function TerminalPane({
     // busy-but-static screen from the start (an editor sitting open) never
     // "saw work", so it doesn't fire. Skips reattach replay and bell handling.
     const agentCheckTick = () => {
-      if (watched() || !busyRef.current || !replaySettled.current) {
+      if (watched() || !activity.isBusy() || !activity.isReplaySettled()) {
         lastScreen.current = screenText();
         screenChangedAt.current = Date.now();
         agentSawWork.current = false;
@@ -359,11 +317,10 @@ export function TerminalPane({
       if (
         agentSawWork.current &&
         !waitingNotified.current &&
-        !bellPending.current &&
+        !activity.isBellPending() &&
         Date.now() - screenChangedAt.current >= AGENT_QUIET_MS
       ) {
         waitingNotified.current = true;
-        setAttention(tab.id, true);
         notify(tab.id, "waiting");
       }
     };
@@ -382,72 +339,15 @@ export function TerminalPane({
         if (closed) return;
         if (msg.kind === "data") {
           const visible = hasVisibleOutput(msg.data);
-          // Output shortly after a bell is the agent repainting its prompt
-          // (claude rings BEL, then renders): postpone the notification until
-          // quiet. Output still flowing past the window means the bell rang
-          // mid-action, so drop it. Checked before term.write so a bell inside
-          // THIS chunk (which onBell arms during the write) isn't judged by
-          // its own trailing text.
-          if (visible && bellPending.current) {
-            if (Date.now() - bellAt.current > BELL_WINDOW_MS) {
-              bellPending.current = false;
-              window.clearTimeout(bellTimer.current);
-            } else {
-              armBellTimer();
-            }
-          }
+          // Absorb into the bell window before the write, so a bell inside THIS
+          // chunk (armed by onBell during the write) isn't judged by its own
+          // trailing text.
+          activity.absorbOutputBeforeWrite(visible);
           term.write(msg.data);
-          // Control-only chunks (e.g. a cursor-visibility broadcast when another
-          // client attaches) aren't activity and must not trip the working
-          // animation or the finished heuristic.
-          if (!visible) return;
-          // Record output activity (unless it's an echo of the user's own
-          // typing) so the animation runs only while really working.
-          markOutput(tab.id);
-          // Treat the initial output burst as reattach replay: keep refreshing
-          // the settle timer while it flows, and mark it settled once it pauses.
-          if (!replaySettled.current) {
-            window.clearTimeout(settleTimer.current);
-            settleTimer.current = window.setTimeout(() => {
-              replaySettled.current = true;
-            }, 250);
-          }
-          // Flag the session once an unfocused terminal goes quiet after output.
-          // Skip output that's just a resize-triggered redraw.
-          if (!watched() && Date.now() >= resizeQuietUntil.current) {
-            window.clearTimeout(idleTimer.current);
-            idleTimer.current = window.setTimeout(() => {
-              if (closed || watched()) return;
-              // Only a real return to the shell prompt counts as "finished". A
-              // still-foreground process (an agent thinking, a dev server, an
-              // editor) isn't done and would otherwise fire a false alert every
-              // time it pauses. Resident agents like claude stay foreground
-              // between turns, so they signal turn-completion via the bell
-              // (onBell below), not this heuristic. busyRef is fed by the
-              // daemon's pushed busy state.
-              if (busyRef.current) return;
-              // Only signal "finished" if a foreground command actually ran and
-              // just ended. An idle shell that merely got a redraw (e.g. a
-              // repaint when a sibling terminal opened) was never busy, so it has
-              // nothing to report.
-              if (busyAgeMs(tab.id) > 8000) return;
-              setAttention(tab.id, true);
-              notify(tab.id, "idle");
-            }, 1000);
-          }
+          activity.noteOutput(visible);
         } else if (msg.kind === "busy") {
           // Pushed by the daemon (heartbeat while busy, once on going idle).
-          busyRef.current = msg.busy;
-          // The heartbeat keeps busyAgeMs fresh, so a long quiet command is still
-          // known to have been busy when it finishes.
-          if (msg.busy) markBusy(tab.id);
-          // Animate only while a foreground command is actively producing output;
-          // a quiet resident program (claude, vim) shouldn't pulse forever.
-          const working = msg.busy && outputAgeMs(tab.id) < ACTIVE_WINDOW_MS;
-          if (workingRef.current !== working) {
-            workingRef.current = working;
-            setBusy(tab.id, working);
-          }
+          activity.noteBusy(msg.busy);
         } else {
           handleExit();
         }
@@ -478,12 +378,7 @@ export function TerminalPane({
     // terminal to fall quiet; if fresh output follows first, the data handler
     // cancels this. Skip when focused, or when the BEL is just a byte in the
     // reattach replay burst (historical, not a live request).
-    const onBellDisp = term.onBell(() => {
-      if (watched() || !replaySettled.current) return;
-      bellPending.current = true;
-      bellAt.current = Date.now();
-      armBellTimer();
-    });
+    const onBellDisp = term.onBell(() => activity.noteBell());
 
     // Programs can request a desktop notification directly: OSC 9 (iTerm2,
     // what Claude Code's iterm2/auto channel emits), OSC 777;notify (rxvt),
@@ -491,10 +386,7 @@ export function TerminalPane({
     // message, so it fires immediately; the replay gate keeps a reattach
     // snapshot from re-notifying with stale messages.
     const oscNotify = (body: string): boolean => {
-      const text = body.trim();
-      if (!replaySettled.current || !text || watched()) return true;
-      setAttention(tab.id, true);
-      notify(tab.id, "message", text);
+      activity.noteMessage(body);
       return true;
     };
     const osc9Disp = term.parser.registerOscHandler(9, oscNotify);
@@ -522,7 +414,9 @@ export function TerminalPane({
       const ae = document.activeElement;
       if (!ae || ae === document.body) termRef.current?.focus();
     };
-    window.addEventListener("focus", onWindowFocus);
+    // Via the focus tracker (Tauri-authoritative) rather than the raw DOM
+    // `focus` event, which WebKitGTK doesn't reliably emit on OS refocus.
+    const offFocusGained = onFocusGained(onWindowFocus);
 
     // Clicking into the terminal attends it, so drop its attention dot (typing
     // already clears it via the key handler above). Bare window refocus does
@@ -539,8 +433,7 @@ export function TerminalPane({
         fit.fit();
         resizeSession(tab.id, term.cols, term.rows).catch(() => {});
         // The resize makes programs redraw; don't treat that as activity.
-        resizeQuietUntil.current = Date.now() + 1000;
-        window.clearTimeout(idleTimer.current);
+        activity.noteResize();
       });
     });
     ro.observe(containerRef.current!);
@@ -553,11 +446,8 @@ export function TerminalPane({
     return () => {
       closed = true;
       cancelAnimationFrame(raf);
-      window.clearTimeout(idleTimer.current);
       window.clearInterval(agentCheck.current);
-      window.clearTimeout(settleTimer.current);
-      window.clearTimeout(settleFallback);
-      window.clearTimeout(bellTimer.current);
+      activity.dispose();
       ro.disconnect();
       onDataDisp.dispose();
       onBellDisp.dispose();
@@ -566,7 +456,7 @@ export function TerminalPane({
       osc99Disp.dispose();
       onSelDisp.dispose();
       onTitleDisp.dispose();
-      window.removeEventListener("focus", onWindowFocus);
+      offFocusGained();
       container?.removeEventListener("mousedown", onPointerDown);
       clearActivity(tab.id);
       closeSession(tab.id).catch(() => {});
@@ -615,7 +505,7 @@ export function TerminalPane({
   // dimensions and stay fitted in the background.
   useEffect(() => {
     if (visible) {
-      window.clearTimeout(idleTimer.current);
+      activityRef.current?.cancelIdle();
       // Watching this pane; let the next work burst re-establish the baseline.
       agentSawWork.current = false;
       waitingNotified.current = false;

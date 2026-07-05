@@ -73,6 +73,26 @@ test("a background terminal's bell shows the blue attention dot", async ({
   await expect(firstSessionDot(page)).toBeVisible();
 });
 
+test("disabling the bell toggle suppresses the attention dot", async ({
+  page,
+}) => {
+  await gotoApp(page);
+  const firstId = await createBackgroundSession(page);
+
+  // Turn off "A program rings the terminal bell" in the Notifications tab.
+  await page.keyboard.press("Control+Comma");
+  await page.getByRole("tab", { name: "Notifications" }).click();
+  await page
+    .getByText("A program rings the terminal bell")
+    .click();
+  await page.keyboard.press("Escape");
+
+  await emitTerminal(page, firstId, "\x07");
+  // Give the deferred bell timer time to (not) fire.
+  await page.waitForTimeout(1300);
+  await expect(firstSessionDot(page)).toBeHidden();
+});
+
 test("an OSC 9 notification flags a background terminal", async ({
   page,
 }) => {

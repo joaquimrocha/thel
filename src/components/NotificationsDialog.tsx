@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Bell, Check, CircleX, AlertTriangle } from "lucide-react";
+import { Bell, Check, CircleX, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -24,8 +24,6 @@ function Icon({ kind }: { kind: Notification["kind"] }) {
   const cls = "size-4 shrink-0";
   if (kind === "bell") return <Bell className={cls + " text-blue-500"} />;
   if (kind === "idle") return <Check className={cls + " text-emerald-500"} />;
-  if (kind === "warn")
-    return <AlertTriangle className={cls + " text-amber-500"} />;
   return <CircleX className={cls + " text-muted-foreground"} />;
 }
 
@@ -59,13 +57,6 @@ export function NotificationsDialog() {
   }, [open, markAllRead]);
 
   const jump = (n: Notification) => {
-    // System warnings (backend failures) aren't tied to a terminal; open the
-    // Sessions health dialog instead.
-    if (n.kind === "warn") {
-      setOpen(false);
-      useUI.getState().openSessions();
-      return;
-    }
     activateNotification(n.sessionId, n.terminalId);
     setOpen(false);
   };
@@ -110,13 +101,25 @@ export function NotificationsDialog() {
           ))}
         </div>
 
-        {items.length > 0 && (
-          <DialogFooter>
+        <DialogFooter>
+          {items.length > 0 && (
             <Button variant="ghost" size="sm" onClick={clear}>
               Clear all
             </Button>
-          </DialogFooter>
-        )}
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs text-muted-foreground"
+            aria-label="Notification settings"
+            onClick={() => {
+              setOpen(false);
+              useUI.getState().openSettings("notifications");
+            }}
+          >
+            <Settings className="size-3.5" /> Settings
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

@@ -1,15 +1,10 @@
 import { create } from "zustand";
 import { useSessions, sessionTerminals, terminalDisplayTitle } from "./sessions";
+import { usePrefs } from "./prefs";
 import { systemNotify } from "@/lib/systemNotify";
 import { appFocused } from "@/lib/focus";
 
-export type NotificationKind =
-  | "bell"
-  | "idle"
-  | "exit"
-  | "warn"
-  | "message"
-  | "waiting";
+export type NotificationKind = "bell" | "idle" | "message" | "waiting";
 
 export function kindLabel(kind: NotificationKind, detail?: string): string {
   switch (kind) {
@@ -25,10 +20,6 @@ export function kindLabel(kind: NotificationKind, detail?: string): string {
       return "Waiting for input";
     case "idle":
       return "Command finished";
-    case "exit":
-      return detail ? `Exited (code ${detail})` : "Exited";
-    case "warn":
-      return detail ?? "Warning";
   }
 }
 
@@ -72,16 +63,25 @@ export const useNotifications = create<NotificationsState>((set) => ({
   clear: () => set({ items: [] }),
 }));
 
-/** Record a notification for a terminal, resolving its session/terminal names. */
+/** Record a notification for a terminal, resolving its session/terminal names.
+ * Raises the terminal's attention dot and, when the window is unfocused, an OS
+ * banner. Per-kind and desktop toggles (prefs) gate it centrally, so a disabled
+ * kind raises nothing (no dot, no list entry, no banner). */
 export function notify(
   terminalId: string,
   kind: NotificationKind,
   detail?: string,
 ) {
-  const { sessions } = useSessions.getState();
+  const p = usePrefs.getState();
+  if (kind === "bell" && !p.notifyBell) return;
+  if (kind === "waiting" && !p.notifyAgentWaiting) return;
+  if (kind === "idle" && !p.notifyCommandFinished) return;
+
+  const { sessions, setAttention } = useSessions.getState();
   for (const s of sessions) {
     const t = sessionTerminals(s).find((x) => x.id === terminalId);
     if (t) {
+      setAttention(terminalId, true);
       const title = terminalDisplayTitle(t);
       useNotifications.getState().add({
         sessionId: s.id,
@@ -91,9 +91,10 @@ export function notify(
         kind,
         detail,
       });
-      // Mirror to the OS only when the app isn't focused; otherwise the in-app
-      // dot/panel is enough. Pass the target so a click jumps to this terminal.
-      if (!appFocused()) {
+      // Mirror to the OS only when the app isn't focused and desktop
+      // notifications are enabled; otherwise the in-app dot/panel is enough.
+      // Pass the target so a click jumps to this terminal.
+      if (!appFocused() && p.notifyDesktop) {
         systemNotify(`${s.name} › ${title}`, kindLabel(kind, detail), {
           sessionId: s.id,
           terminalId,

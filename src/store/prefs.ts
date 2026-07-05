@@ -8,6 +8,10 @@ const ZOOM_KEY = "thel.terminalZoom";
 const CUSTOM_TITLEBAR_KEY = "thel.customTitlebar";
 const AUTO_START_KEY = "thel.autoStartTerminals";
 const USE_DAEMON_KEY = "thel.useDaemon";
+const NOTIFY_DESKTOP_KEY = "thel.notifyDesktop";
+const NOTIFY_BELL_KEY = "thel.notifyBell";
+const NOTIFY_WAITING_KEY = "thel.notifyAgentWaiting";
+const NOTIFY_FINISHED_KEY = "thel.notifyCommandFinished";
 
 // Prefs live in localStorage shared by every app window, but each window caches
 // them in its own store. We broadcast each change so the others update live
@@ -18,6 +22,24 @@ let applyingRemote = false;
 function broadcast(key: string, value: boolean | number): void {
   if (applyingRemote) return;
   void emit(SYNC_EVENT, { key, value }).catch(() => {});
+}
+
+function persistBool(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // ignore
+  }
+  broadcast(key, value);
+}
+
+function persistNum(key: string, value: number): void {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    // ignore
+  }
+  broadcast(key, value);
 }
 
 function readBool(key: string, def: boolean): boolean {
@@ -51,59 +73,68 @@ interface PrefsState {
   // app; off falls back to a direct, non-persistent PTY. Default on.
   useDaemon: boolean;
   setUseDaemon: (value: boolean) => void;
+  // Desktop (OS) notifications when the window is unfocused; the in-app
+  // notification list is unaffected. Master switch for the ones below.
+  notifyDesktop: boolean;
+  setNotifyDesktop: (value: boolean) => void;
+  // Notify when a program rings the terminal bell.
+  notifyBell: boolean;
+  setNotifyBell: (value: boolean) => void;
+  // Notify when a busy terminal (a resident agent) goes quiet, i.e. its turn
+  // ended. Best-effort screen-activity heuristic.
+  notifyAgentWaiting: boolean;
+  setNotifyAgentWaiting: (value: boolean) => void;
+  // Notify when a foreground command finishes in a background terminal.
+  notifyCommandFinished: boolean;
+  setNotifyCommandFinished: (value: boolean) => void;
 }
 
 export const usePrefs = create<PrefsState>((set) => ({
   copyToasts: readBool(COPY_TOASTS_KEY, true),
   setCopyToasts: (copyToasts) => {
-    try {
-      localStorage.setItem(COPY_TOASTS_KEY, copyToasts ? "1" : "0");
-    } catch {
-      // ignore
-    }
+    persistBool(COPY_TOASTS_KEY, copyToasts);
     set({ copyToasts });
-    broadcast(COPY_TOASTS_KEY, copyToasts);
   },
   terminalZoom: clampZoomOffset(readNum(ZOOM_KEY, 0)),
   setTerminalZoom: (value) => {
     const terminalZoom = clampZoomOffset(value);
-    try {
-      localStorage.setItem(ZOOM_KEY, String(terminalZoom));
-    } catch {
-      // ignore
-    }
+    persistNum(ZOOM_KEY, terminalZoom);
     set({ terminalZoom });
-    broadcast(ZOOM_KEY, terminalZoom);
   },
   customTitlebar: readBool(CUSTOM_TITLEBAR_KEY, true),
   setCustomTitlebar: (customTitlebar) => {
-    try {
-      localStorage.setItem(CUSTOM_TITLEBAR_KEY, customTitlebar ? "1" : "0");
-    } catch {
-      // ignore
-    }
+    persistBool(CUSTOM_TITLEBAR_KEY, customTitlebar);
     set({ customTitlebar });
-    broadcast(CUSTOM_TITLEBAR_KEY, customTitlebar);
   },
   autoStartTerminals: readBool(AUTO_START_KEY, false),
   setAutoStartTerminals: (autoStartTerminals) => {
-    try {
-      localStorage.setItem(AUTO_START_KEY, autoStartTerminals ? "1" : "0");
-    } catch {
-      // ignore
-    }
+    persistBool(AUTO_START_KEY, autoStartTerminals);
     set({ autoStartTerminals });
-    broadcast(AUTO_START_KEY, autoStartTerminals);
   },
   useDaemon: readBool(USE_DAEMON_KEY, true),
   setUseDaemon: (useDaemon) => {
-    try {
-      localStorage.setItem(USE_DAEMON_KEY, useDaemon ? "1" : "0");
-    } catch {
-      // ignore
-    }
+    persistBool(USE_DAEMON_KEY, useDaemon);
     set({ useDaemon });
-    broadcast(USE_DAEMON_KEY, useDaemon);
+  },
+  notifyDesktop: readBool(NOTIFY_DESKTOP_KEY, true),
+  setNotifyDesktop: (notifyDesktop) => {
+    persistBool(NOTIFY_DESKTOP_KEY, notifyDesktop);
+    set({ notifyDesktop });
+  },
+  notifyBell: readBool(NOTIFY_BELL_KEY, true),
+  setNotifyBell: (notifyBell) => {
+    persistBool(NOTIFY_BELL_KEY, notifyBell);
+    set({ notifyBell });
+  },
+  notifyAgentWaiting: readBool(NOTIFY_WAITING_KEY, true),
+  setNotifyAgentWaiting: (notifyAgentWaiting) => {
+    persistBool(NOTIFY_WAITING_KEY, notifyAgentWaiting);
+    set({ notifyAgentWaiting });
+  },
+  notifyCommandFinished: readBool(NOTIFY_FINISHED_KEY, true),
+  setNotifyCommandFinished: (notifyCommandFinished) => {
+    persistBool(NOTIFY_FINISHED_KEY, notifyCommandFinished);
+    set({ notifyCommandFinished });
   },
 }));
 
@@ -116,6 +147,11 @@ const REMOTE_APPLIERS: Record<string, (value: unknown) => void> = {
   [CUSTOM_TITLEBAR_KEY]: (v) => usePrefs.getState().setCustomTitlebar(Boolean(v)),
   [AUTO_START_KEY]: (v) => usePrefs.getState().setAutoStartTerminals(Boolean(v)),
   [USE_DAEMON_KEY]: (v) => usePrefs.getState().setUseDaemon(Boolean(v)),
+  [NOTIFY_DESKTOP_KEY]: (v) => usePrefs.getState().setNotifyDesktop(Boolean(v)),
+  [NOTIFY_BELL_KEY]: (v) => usePrefs.getState().setNotifyBell(Boolean(v)),
+  [NOTIFY_WAITING_KEY]: (v) => usePrefs.getState().setNotifyAgentWaiting(Boolean(v)),
+  [NOTIFY_FINISHED_KEY]: (v) =>
+    usePrefs.getState().setNotifyCommandFinished(Boolean(v)),
 };
 
 /** Mirror preference changes made in other app windows. No-op outside Tauri. */

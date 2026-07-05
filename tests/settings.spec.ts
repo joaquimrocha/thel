@@ -13,6 +13,7 @@ test("settings shows every tab", async ({ page }) => {
     "Appearance",
     "Terminal",
     "Sessions",
+    "Notifications",
     "Profiles",
     "Launchers",
     "Keyboard",
@@ -74,13 +75,19 @@ test("auto-start option appears when the daemon is off", async ({ page }) => {
   await expect(page.getByText("Start terminals automatically")).toBeVisible();
 });
 
-test("the sidebar Sessions button opens settings on the Sessions tab", async ({
-  page,
-}) => {
+test("the notifications dialog opens its settings", async ({ page }) => {
   await gotoApp(page);
-  await page.getByRole("button", { name: "Sessions settings" }).click();
-  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await page.getByRole("button", { name: "Notifications" }).first().click();
+  await page.getByRole("button", { name: "Notification settings" }).click();
   await expect(
-    page.getByRole("tab", { name: "Sessions", selected: true }),
+    page.getByRole("tab", { name: "Notifications", selected: true }),
+  ).toBeVisible();
+});
+
+test("the sidebar button opens the command palette", async ({ page }) => {
+  await gotoApp(page);
+  await page.getByRole("button", { name: "Command palette" }).click();
+  await expect(
+    page.getByPlaceholder("Type a command or search sessions..."),
   ).toBeVisible();
 });
