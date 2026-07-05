@@ -1,6 +1,7 @@
 #[cfg(unix)]
 mod daemon;
 mod git;
+mod notify_cmd;
 mod pty;
 
 use pty::{CreateOpts, SessionManager, TermMsg, TermStatus};
@@ -427,6 +428,14 @@ fn open_url(url: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // `thel notify [message]`: emit a notification escape for the current
+    // terminal and exit, before any GUI/daemon work.
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) == Some("notify") {
+        notify_cmd::run(&argv[2..]);
+        return;
+    }
+
     // Same binary, two modes: re-invoked with `__daemon`, become the session
     // daemon and never touch the webview (checked before any Tauri init).
     #[cfg(unix)]

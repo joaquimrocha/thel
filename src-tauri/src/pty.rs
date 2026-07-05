@@ -54,6 +54,55 @@ pub struct CreateOpts {
     pub use_daemon: Option<bool>,
 }
 
+/// Open a PTY and spawn `command` on its slave, returning the master (kept for
+/// resize/read/write) and the child. Shared by the direct-PTY fallback here and
+/// the daemon, so the standard environment (TERM + the THEL markers a program
+/// uses to detect thel and target `thel notify`) is set in one place. `cols`/
+/// `rows` are floored at 1 (a 0-size PTY confuses programs).
+pub(crate) fn spawn_pty(
+    command: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    env: Option<&HashMap<String, String>>,
+    cols: u16,
+    rows: u16,
+    id: &str,
+) -> Result<(Box<dyn MasterPty + Send>, Box<dyn Child + Send + Sync>), String> {
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: rows.max(1),
+            cols: cols.max(1),
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut cmd = CommandBuilder::new(command);
+    cmd.args(args);
+    if let Some(cwd) = cwd {
+        cmd.cwd(cwd);
+    }
+    // TERM is needed for most agents/shells to emit sane escape sequences.
+    cmd.env("TERM", "xterm-256color");
+    // Let programs detect thel and address `thel notify` at this tab (delivery
+    // is by PTY, so the id is informational).
+    cmd.env("THEL", "1");
+    cmd.env("THEL_TERMINAL_ID", id);
+    if let Some(env) = env {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| format!("failed to spawn '{command}': {e}"))?;
+    // Drop the slave so the master sees EOF when the child exits.
+    drop(pair.slave);
+    Ok((pair.master, child))
+}
+
 struct Session {
     // Kept for resize() and busy queries; MasterPty methods take &self.
     master: Box<dyn MasterPty + Send>,
@@ -88,37 +137,17 @@ impl SessionManager {
     }
 
     fn create_direct(&self, opts: CreateOpts, on_data: Channel<TermMsg>) -> Result<(), String> {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows: opts.rows.max(1),
-                cols: opts.cols.max(1),
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| e.to_string())?;
-
-        let mut cmd = CommandBuilder::new(&opts.command);
-        cmd.args(&opts.args);
-        if let Some(cwd) = &opts.cwd {
-            cmd.cwd(cwd);
-        }
-        // TERM is needed for most agents/shells to emit sane escape sequences.
-        cmd.env("TERM", "xterm-256color");
-        if let Some(env) = &opts.env {
-            for (k, v) in env {
-                cmd.env(k, v);
-            }
-        }
-
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| format!("failed to spawn '{}': {e}", opts.command))?;
-        // Drop the slave so the master sees EOF when the child exits.
-        drop(pair.slave);
-
+        let (master, child) = spawn_pty(
+            &opts.command,
+            &opts.args,
+            opts.cwd.as_deref(),
+            opts.env.as_ref(),
+            opts.cols,
+            opts.rows,
+            &opts.id,
+        )?;
         let pid = child.process_id();
-        self.spawn_session(opts.id, pair.master, child, pid, on_data)
+        self.spawn_session(opts.id, master, child, pid, on_data)
     }
 
     // Wire up the reader thread and register a direct session.

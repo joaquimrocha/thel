@@ -30,6 +30,21 @@ needs you.
 - **Profiles.** Independent profiles, each in its own window with its own layout
   and accent color.
 
+## Notifications from scripts
+
+Run `thel notify [message]` inside a thel terminal to raise a desktop
+notification for that terminal:
+
+```sh
+make && thel notify "build finished"
+```
+
+It writes a terminal escape to the current tty, so thel attributes it to the
+right terminal automatically. It needs a controlling terminal, so it works from
+interactive shells, Makefiles, and `&&` chains, but not from a process detached
+from the tty (e.g. an agent's completion hook that runs without one). thel also
+picks up bells and OSC 9 / 777 / 99 notification escapes from any program.
+
 ## Prerequisites
 
 - Node 18+ and pnpm

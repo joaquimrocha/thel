@@ -22,7 +22,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, MasterPty, PtySize};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
@@ -582,34 +582,20 @@ impl Daemon {
             return Ok(());
         }
 
-        // New tab: spawn the PTY + child, wire the VTE, attach the opener.
+        // New tab: spawn the PTY + child, wire the VTE, attach the opener. The
+        // parser needs the floored size too, so compute it here.
         let (cols, rows) = (cols.max(1), rows.max(1));
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| e.to_string())?;
-        let mut cb = CommandBuilder::new(&command);
-        cb.args(&args);
-        if let Some(cwd) = &cwd {
-            cb.cwd(cwd);
-        }
-        cb.env("TERM", "xterm-256color");
-        if let Some(env) = &env {
-            for (k, v) in env {
-                cb.env(k, v);
-            }
-        }
-        let child = pair
-            .slave
-            .spawn_command(cb)
-            .map_err(|e| format!("spawn '{command}': {e}"))?;
-        drop(pair.slave);
-        let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        let (master, child) = crate::pty::spawn_pty(
+            &command,
+            &args,
+            cwd.as_deref(),
+            env.as_ref(),
+            cols,
+            rows,
+            id,
+        )?;
+        let reader = master.try_clone_reader().map_err(|e| e.to_string())?;
+        let writer = master.take_writer().map_err(|e| e.to_string())?;
 
         let shared = Arc::new(Mutex::new(TabShared {
             parser: vt100::Parser::new(rows, cols, SCROLLBACK),
@@ -634,7 +620,7 @@ impl Daemon {
         self.tabs.lock().insert(
             id.to_string(),
             Tab {
-                master: pair.master,
+                master,
                 writer: Arc::new(Mutex::new(writer)),
                 child,
                 shared,
