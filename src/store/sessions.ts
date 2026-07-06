@@ -209,21 +209,54 @@ function neighborId<T extends { id: string }>(
   return remaining[Math.min(removedIdx, remaining.length - 1)]?.id;
 }
 
-// Apply a patch to one terminal wherever it lives, across all sessions/groups.
+// Apply `update` to every terminal, rebuilding only the groups and sessions
+// whose terminals actually change (and returning the same `sessions` array when
+// none do). `update` must return the same object it was given when it makes no
+// change, so a no-op update doesn't churn every subscriber's identity: a busy
+// edge or title change on one terminal re-renders that terminal's session, not
+// the whole sidebar/palette.
+function updateTerminals(
+  sessions: Session[],
+  update: (t: Terminal) => Terminal,
+): Session[] {
+  let sessionsChanged = false;
+  const next = sessions.map((ss) => {
+    let groupsChanged = false;
+    const groups = ss.groups.map((g) => {
+      let termsChanged = false;
+      const terminals = g.terminals.map((t) => {
+        const nt = update(t);
+        if (nt !== t) termsChanged = true;
+        return nt;
+      });
+      if (!termsChanged) return g;
+      groupsChanged = true;
+      return { ...g, terminals };
+    });
+    if (!groupsChanged) return ss;
+    sessionsChanged = true;
+    return { ...ss, groups };
+  });
+  return sessionsChanged ? next : sessions;
+}
+
+// Apply a patch to one terminal wherever it lives. Identity-preserving: the
+// target is rebuilt only when the patch changes a value, so a redundant update
+// (e.g. the same title, or busy:false when already idle) is a no-op.
 function patchTerminal(
   sessions: Session[],
   terminalId: string,
   patch: Partial<Terminal>,
 ): Session[] {
-  return sessions.map((ss) => ({
-    ...ss,
-    groups: ss.groups.map((g) => ({
-      ...g,
-      terminals: g.terminals.map((t) =>
-        t.id === terminalId ? { ...t, ...patch } : t,
-      ),
-    })),
-  }));
+  return updateTerminals(sessions, (t) => {
+    if (t.id !== terminalId) return t;
+    const current = t as unknown as Record<string, unknown>;
+    const changes = patch as Record<string, unknown>;
+    for (const k in changes) {
+      if (current[k] !== changes[k]) return { ...t, ...patch };
+    }
+    return t;
+  });
 }
 
 export const useSessions = create<SessionState>((set, get) => ({
@@ -571,16 +604,11 @@ export const useSessions = create<SessionState>((set, get) => ({
 
   clearAllAttention: () =>
     set((s) => ({
-      sessions: s.sessions.map((ss) => ({
-        ...ss,
-        groups: ss.groups.map((g) => ({
-          ...g,
-          // Only rewrite terminals that actually had it, to avoid churn.
-          terminals: g.terminals.map((t) =>
-            t.attention ? { ...t, attention: false } : t,
-          ),
-        })),
-      })),
+      // Only rewrite terminals that actually had it; updateTerminals then leaves
+      // untouched groups and sessions at their old identity.
+      sessions: updateTerminals(s.sessions, (t) =>
+        t.attention ? { ...t, attention: false } : t,
+      ),
     })),
 
   setBusy: (terminalId, value) =>
