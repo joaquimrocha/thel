@@ -3,14 +3,6 @@ import type { Page } from "@playwright/test";
 export interface MockConfig {
   // Window label this page reports (default "main" = the default profile).
   label?: string;
-  // Whether the backend reports availability.
-  backendAvailable?: boolean;
-  // Terminal ids whose backend session "survived" (for reattach on launch).
-  liveTerminals?: string[];
-  // Make create_session emit a backend attach failure (error text + exit).
-  backendError?: boolean;
-  // Emit the backend error phrase as ordinary output, with no exit (false alarm).
-  backendErrorNoExit?: boolean;
   // Whether dir_exists reports folders as existing (default true).
   dirExists?: boolean;
   // terminal_status responses.
@@ -131,17 +123,7 @@ function install(config: MockConfig) {
         if (ch && typeof ch.onmessage === "function") {
           const send = ch.onmessage;
           termChannels.set((args.opts as { id: string }).id, send);
-          if (m.backendError) {
-            // A real attach failure: the error text, then the client exits.
-            send({ kind: "data", data: "open terminal failed: not a terminal\r\n" });
-            setTimeout(() => send({ kind: "exit", code: 1 }), 0);
-          } else if (m.backendErrorNoExit) {
-            // The phrase as ordinary program output (no exit) must NOT warn.
-            setTimeout(
-              () => send({ kind: "data", data: "logs: open terminal failed: not a terminal\r\n" }),
-              0,
-            );
-          } else if (m.snapshotBytes && m.snapshotBytes > 0) {
+          if (m.snapshotBytes && m.snapshotBytes > 0) {
             // Simulate a reattach snapshot: a chunk xterm must parse on mount.
             const line = "restored scrollback line of terminal output\r\n";
             const data = line.repeat(Math.ceil(m.snapshotBytes / line.length));
@@ -158,19 +140,12 @@ function install(config: MockConfig) {
       case "kill_terminal_window":
         termChannels.delete(String(args.id));
         return null;
-      case "kill_backend":
-        (w.__MOCK__ as Record<string, unknown>).killedBackend = true;
-        return null;
       case "terminal_status":
         return {
           busy: m.terminalBusy ?? false,
           dead: m.terminalDead ?? false,
           code: m.terminalDead ? 0 : null,
         };
-      case "live_terminals":
-        return m.liveTerminals || [];
-      case "backend_available":
-        return m.backendAvailable !== undefined ? m.backendAvailable : true;
       case "scroll_terminal": {
         const store = w.__MOCK__ as Record<string, unknown>;
         const list = (store.scrolls as unknown[]) || [];

@@ -23,7 +23,7 @@ import { useUI } from "@/store/ui";
 import { useTheme } from "@/store/theme";
 import { usePrefs } from "@/store/prefs";
 import { zoomedFontSize } from "@/lib/theme";
-import { isWindows } from "@/lib/platform";
+import { isLinux } from "@/lib/platform";
 import { openUrl } from "@/lib/pty";
 import { Logo } from "@/components/Logo";
 import { ProfilesSettings } from "@/components/ProfilesSettings";
@@ -161,7 +161,7 @@ export function SettingsDialog() {
             </TabsContent>
 
             <TabsContent value="sessions" className="mt-0 space-y-4">
-              {!isWindows && (
+              {isLinux && (
                 <div className="space-y-1.5">
                   <label className="flex items-center gap-2 text-sm">
                     <Switch checked={useDaemon} onCheckedChange={setUseDaemon} />

@@ -451,8 +451,8 @@ function GroupChrome({
   );
 }
 
-// Shown while the saved layout is still loading:
-// the same expanding/fading dot as a running command, but gray.
+// Shown while the saved layout is still loading: the same expanding/fading dot
+// as a running command, but gray.
 function LoadingPulse() {
   return (
     <div className="absolute inset-0 flex items-center justify-center">

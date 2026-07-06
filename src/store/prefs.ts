@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { emit, listen } from "@tauri-apps/api/event";
 import { clampZoomOffset } from "@/lib/theme";
+import { isLinux } from "@/lib/platform";
 
 // Small persisted UI preferences (localStorage, like the theme).
 const COPY_TOASTS_KEY = "thel.copyToasts";
@@ -111,7 +112,9 @@ export const usePrefs = create<PrefsState>((set) => ({
     persistBool(AUTO_START_KEY, autoStartTerminals);
     set({ autoStartTerminals });
   },
-  useDaemon: readBool(USE_DAEMON_KEY, true),
+  // Linux-only. Off elsewhere regardless of any saved value, so Mac/Windows
+  // never activate the daemon (and never restore terminals expecting reattach).
+  useDaemon: isLinux && readBool(USE_DAEMON_KEY, true),
   setUseDaemon: (useDaemon) => {
     persistBool(USE_DAEMON_KEY, useDaemon);
     set({ useDaemon });

@@ -97,9 +97,9 @@ function getStore(): Promise<Store> {
 }
 
 /**
- * Load the saved layout into the store. Terminals whose backend session is still
- * running are restored already started, so they reattach immediately without
- * flashing their Start card; the rest come back not-started.
+ * Load the saved layout into the store. With the daemon (the default), restored
+ * terminals come back started so they reattach immediately without flashing
+ * their Start card; with a direct PTY they wait unless auto-start is on.
  */
 export async function hydrateSessions(): Promise<void> {
   if (hydrationStarted) return;
@@ -228,7 +228,7 @@ function remapLayout(node: LayoutNode, groupIds: Map<string, string>): LayoutNod
 
 // Build a persisted layout from live sessions with fresh ids, so a copied
 // profile is structurally identical but independent (its terminals are new and
-// won't reattach to the originals' backend sessions).
+// won't reattach to the originals' daemon sessions).
 function clonePersisted(sessions: Session[]): PersistedLayout {
   const out = sessions.map((s) => {
     const groupIds = new Map<string, string>();
