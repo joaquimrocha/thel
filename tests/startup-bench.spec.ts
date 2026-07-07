@@ -96,3 +96,100 @@ test("a split active session loads every pane's visible terminal", async ({
   // The hidden tabs behind each pane stay detached until selected.
   await expect(page.locator(".xterm")).toHaveCount(2);
 });
+
+// The headline scaling guard: launching with a large restored layout must not
+// mount an xterm per terminal. With the daemon, hidden tabs AND whole hidden
+// sessions stay detached, so exactly one xterm mounts whether you restored 16
+// terminals or 100. A regression that eagerly mounts every restored terminal
+// fails the count assertion (and the logged time balloons).
+const BIG_SESSIONS = 10;
+const BIG_TABS = 10;
+const BIG_TOTAL = BIG_SESSIONS * BIG_TABS; // 100
+
+function seedBig() {
+  const sessions = Array.from({ length: BIG_SESSIONS }, (_, i) => {
+    const terminals = Array.from({ length: BIG_TABS }, (_, j) => ({
+      id: `b${i}-${j}`,
+      title: "shell",
+      command: "bash",
+      args: [],
+    }));
+    return {
+      id: `bs${i}`,
+      name: `session ${i}`,
+      groups: [{ id: `bg${i}`, activeTerminalId: `b${i}-0`, terminals }],
+      layout: { t: "leaf", group: `bg${i}` },
+      activeGroupId: `bg${i}`,
+    };
+  });
+  return { activeSessionId: "bs0", sessions };
+}
+
+test(`startup stays flat with ${BIG_TOTAL} restored terminals (${BIG_SESSIONS}×${BIG_TABS})`, async ({
+  page,
+}) => {
+  await page.addInitScript((layout) => {
+    localStorage.setItem("__store__thel-layout.json", JSON.stringify({ layout }));
+    localStorage.setItem("thel.useDaemon", "1");
+  }, seedBig());
+
+  const t0 = Date.now();
+  await gotoApp(page, { snapshotBytes: 16 * 1024 });
+  await expect(page.locator(".xterm").first()).toBeVisible();
+  const activeMs = Date.now() - t0;
+
+  // The invariant: one xterm mounts, regardless of the 100 restored terminals.
+  await expect(page.locator(".xterm")).toHaveCount(1);
+  console.log(
+    `[startup-bench] ${BIG_TOTAL} terminals -> interactive ${activeMs}ms, 1 xterm mounted`,
+  );
+
+  // Switching to a hidden session mounts its terminal on demand and detaches the
+  // old one, so the mounted count tracks what's on screen, never the layout size.
+  await page.getByText("session 9", { exact: true }).click();
+  await expect(page.locator(".xterm")).toHaveCount(1);
+});
+
+// Companion to the session-spread case: 100 tabs in a SINGLE pane. This stresses
+// the tab strip (all 100 render as tabs) rather than the session list, and
+// confirms hidden tabs within a pane detach just like hidden sessions -- the
+// strip is cheap, but only the active tab's xterm mounts.
+const MANY_TABS = 100;
+
+test(`startup stays flat with ${MANY_TABS} tabs in one pane`, async ({ page }) => {
+  const terminals = Array.from({ length: MANY_TABS }, (_, j) => ({
+    id: `tab${j}`,
+    title: "shell",
+    command: "bash",
+    args: [],
+  }));
+  const layout = {
+    activeSessionId: "s0",
+    sessions: [
+      {
+        id: "s0",
+        name: "many tabs",
+        groups: [{ id: "g0", activeTerminalId: "tab0", terminals }],
+        layout: { t: "leaf", group: "g0" },
+        activeGroupId: "g0",
+      },
+    ],
+  };
+  await page.addInitScript((l) => {
+    localStorage.setItem("__store__thel-layout.json", JSON.stringify({ layout: l }));
+    localStorage.setItem("thel.useDaemon", "1");
+  }, layout);
+
+  const t0 = Date.now();
+  await gotoApp(page, { snapshotBytes: 16 * 1024 });
+  await expect(page.locator(".xterm").first()).toBeVisible();
+  const activeMs = Date.now() - t0;
+
+  // All 100 tabs render in the strip...
+  await expect(page.getByTestId("terminal-tab")).toHaveCount(MANY_TABS);
+  // ...but only the active tab's xterm mounts.
+  await expect(page.locator(".xterm")).toHaveCount(1);
+  console.log(
+    `[startup-bench] ${MANY_TABS} tabs in one pane -> interactive ${activeMs}ms, 1 xterm mounted`,
+  );
+});
