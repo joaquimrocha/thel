@@ -73,15 +73,41 @@ let storePromise: Promise<Store> | null = null;
 const getStore = () =>
   (storePromise ??= load(FILE, { autoSave: false, defaults: {} }));
 
+// True while applying a change synced in from another window, so the persistence
+// subscriber skips it -- otherwise the write-back would ping-pong between
+// windows forever. Set only around the synchronous hydrate() (zustand fires
+// subscribers within set()), so it can't straddle a user edit.
+let applyingRemote = false;
+let synced = false;
+
+function applyLaunchers(
+  launchers: Launcher[] | undefined,
+  def: string | undefined,
+) {
+  // undefined = nothing ever saved (keep the empty initial state);
+  // [] = a deliberately emptied list. Both mean no launchers.
+  if (!launchers) return;
+  applyingRemote = true;
+  useLaunchers.getState().hydrate(launchers, def ?? null);
+  applyingRemote = false;
+}
+
+const readLaunchers = async (store: Store) =>
+  applyLaunchers(
+    await store.get<Launcher[]>("launchers"),
+    await store.get<string>("defaultLauncherId"),
+  );
+
 export async function hydrateLaunchers(): Promise<void> {
   try {
     const store = await getStore();
-    // undefined = nothing ever saved (keep the empty initial state);
-    // [] = a deliberately emptied list. Both mean no launchers.
-    const launchers = await store.get<Launcher[]>("launchers");
-    if (launchers) {
-      const def = await store.get<string>("defaultLauncherId");
-      useLaunchers.getState().hydrate(launchers, def ?? null);
+    await readLaunchers(store);
+    // The store is shared across profile windows; re-read on any external change
+    // so a launcher edit in one window shows in all. Two keys, so onChange (any
+    // key) rather than onKeyChange. Subscribe once per window.
+    if (!synced) {
+      synced = true;
+      await store.onChange(() => void readLaunchers(store));
     }
   } catch (e) {
     console.error("failed to load launchers", e);
@@ -103,10 +129,11 @@ const writer = debouncedWriter<Pick<LauncherState, "launchers" | "defaultLaunche
 export const flushLaunchers = writer.flush;
 
 export function startLauncherPersistence(): () => void {
-  return useLaunchers.subscribe((state) =>
+  return useLaunchers.subscribe((state) => {
+    if (applyingRemote) return; // a synced-in change, not a local edit
     writer.schedule({
       launchers: state.launchers,
       defaultLauncherId: state.defaultLauncherId,
-    }),
-  );
+    });
+  });
 }

@@ -57,11 +57,29 @@ let storePromise: Promise<Store> | null = null;
 const getStore = () =>
   (storePromise ??= load(FILE, { autoSave: false, defaults: {} }));
 
+// True while applying a change synced in from another window, so the persistence
+// subscriber skips it and can't ping-pong the write back. Set only around the
+// synchronous hydrate() (zustand fires subscribers within set()).
+let applyingRemote = false;
+let synced = false;
+
+function applyOverrides(saved: Record<string, Combo> | undefined) {
+  if (!saved) return;
+  applyingRemote = true;
+  useKeybindings.getState().hydrate(saved);
+  applyingRemote = false;
+}
+
 export async function hydrateKeybindings(): Promise<void> {
   try {
     const store = await getStore();
-    const saved = await store.get<Record<string, Combo>>(KEY);
-    if (saved) useKeybindings.getState().hydrate(saved);
+    applyOverrides(await store.get<Record<string, Combo>>(KEY));
+    // The store is shared across profile windows; re-apply on external changes
+    // so a rebinding in one window reaches all. Subscribe once per window.
+    if (!synced) {
+      synced = true;
+      await store.onKeyChange<Record<string, Combo>>(KEY, applyOverrides);
+    }
   } catch (e) {
     console.error("failed to load keybindings", e);
   }
@@ -81,5 +99,8 @@ const writer = debouncedWriter<Record<string, Combo>>(async (overrides) => {
 export const flushKeybindings = writer.flush;
 
 export function startKeybindingPersistence(): () => void {
-  return useKeybindings.subscribe((state) => writer.schedule(state.overrides));
+  return useKeybindings.subscribe((state) => {
+    if (applyingRemote) return; // a synced-in change, not a local edit
+    writer.schedule(state.overrides);
+  });
 }

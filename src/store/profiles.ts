@@ -52,6 +52,9 @@ let storePromise: Promise<Store> | null = null;
 const getStore = () =>
   (storePromise ??= load(FILE, { autoSave: false, defaults: {} }));
 
+// Guards the one-time cross-window change subscription (see hydrate).
+let synced = false;
+
 // Labels whose window is mid-creation. getByLabel doesn't see a freshly-created
 // WebviewWindow until it registers, so two quick switchProfile calls (a
 // double-click, or a notification jump racing a manual switch) would otherwise
@@ -103,16 +106,26 @@ export const useProfiles = create<ProfilesState>((set, get) => ({
   hydrate: async () => {
     try {
       const store = await getStore();
-      const saved = (await store.get<Profile[]>(KEY)) ?? [];
       // The default profile always exists and stays first; a stored entry for it
       // carries its name/color overrides.
-      const savedDefault = saved.find((p) => p.id === "default");
-      set({
-        profiles: [
-          savedDefault ?? DEFAULT_PROFILE,
-          ...saved.filter((p) => p.id !== "default"),
-        ],
-      });
+      const apply = (saved: Profile[] | undefined) => {
+        const list = saved ?? [];
+        const savedDefault = list.find((p) => p.id === "default");
+        set({
+          profiles: [
+            savedDefault ?? DEFAULT_PROFILE,
+            ...list.filter((p) => p.id !== "default"),
+          ],
+        });
+      };
+      apply(await store.get<Profile[]>(KEY));
+      // The store is shared across profile windows, so a rename/add/remove in one
+      // emits a key change the others apply -- keeping every window's list live
+      // instead of stale until reload. Subscribe once per window.
+      if (!synced) {
+        synced = true;
+        await store.onKeyChange<Profile[]>(KEY, apply);
+      }
     } catch (e) {
       console.error("failed to load profiles", e);
     }

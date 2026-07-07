@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 // Reusable session-icon library. SVGs are stored as markup and rendered via an
 // <img> data URI (see SvgIcon), so this is data, not executable. Persisted in
@@ -42,6 +43,12 @@ function save(icons: string[]) {
   }
 }
 
+// localStorage is shared across profile windows, but its `storage` event is
+// unreliable in the webview, so a change in one window is broadcast explicitly:
+// each window re-reads on this event. Best-effort (no-op outside Tauri).
+const SYNC_EVENT = "thel://icon-library-changed";
+const broadcast = () => void emit(SYNC_EVENT).catch(() => {});
+
 interface IconLibrary {
   icons: string[];
   /** Add an SVG to the library (no-op if already present). */
@@ -57,10 +64,21 @@ export const useIconLibrary = create<IconLibrary>((set, get) => ({
     const next = [...get().icons, svg];
     save(next);
     set({ icons: next });
+    broadcast();
   },
   removeIcon: (svg) => {
     const next = get().icons.filter((s) => s !== svg);
     save(next);
     set({ icons: next });
+    broadcast();
   },
 }));
+
+// Subscribe once per window: re-read the shared library when another window
+// changes it. The re-read doesn't broadcast, so this can't loop. Returns an
+// unlisten fn.
+export async function startIconSync(): Promise<UnlistenFn> {
+  return listen(SYNC_EVENT, () => {
+    useIconLibrary.setState({ icons: load() });
+  });
+}

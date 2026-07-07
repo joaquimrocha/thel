@@ -22,6 +22,7 @@ import { hydrateSessions, startPersistence, flushSessions } from "@/lib/persiste
 import { checkDaemon, daemonOptedOut } from "@/lib/pty";
 import { hydrateLaunchers, startLauncherPersistence, flushLaunchers } from "@/store/launchers";
 import { hydrateKeybindings, startKeybindingPersistence, flushKeybindings } from "@/store/keybindings";
+import { startIconSync } from "@/store/icons";
 import { refreshSessionGit } from "@/lib/launch";
 import { useGlobalShortcuts } from "@/lib/useGlobalShortcuts";
 import { initFocusTracking, appFocused } from "@/lib/focus";
@@ -137,6 +138,13 @@ export default function App() {
       unsubscribe = startKeybindingPersistence();
     });
     return () => unsubscribe();
+  }, []);
+
+  // Keep the icon library in sync across profile windows.
+  useEffect(() => {
+    let unlisten = () => {};
+    startIconSync().then((u) => (unlisten = u));
+    return () => unlisten();
   }, []);
 
   // Keep the active session's git branch/dirty state fresh: immediately when it
