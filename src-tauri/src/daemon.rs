@@ -160,6 +160,13 @@ enum Command {
     Kill {
         id: String,
     },
+    /// Post a notification for a tab, addressed by id. Lets `thel notify` deliver
+    /// out-of-band (a program's hook may have no controlling tty to write the OSC
+    /// to); the daemon forwards it to the tab's GUI as a TabNotify event.
+    Notify {
+        id: String,
+        message: String,
+    },
     /// Busy state of every tab the daemon owns (foreground pgrp != shell). The
     /// reply is a StatusReply; used for the GUI's working-dot poll.
     Status,
@@ -172,6 +179,9 @@ enum Event {
     // A tab's foreground state changed (or a heartbeat while busy). The GUI uses
     // this to drive the working animation and the "command finished" heuristic.
     TabBusy { id: String, busy: bool },
+    // An out-of-band notification for a tab (from `thel notify`), delivered to the
+    // GUI regardless of the caller's tty.
+    TabNotify { id: String, message: String },
     Error { id: String, message: String },
 }
 
@@ -627,6 +637,7 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>) {
         Command::Resize { id, cols, rows } => daemon.resize(&id, cols, rows),
         Command::Detach { id } => daemon.detach(&id, client),
         Command::Kill { id } => daemon.kill(&id),
+        Command::Notify { id, message } => daemon.notify_tab(&id, message),
         Command::Status => {
             let busy = daemon.statuses();
             client.enqueue(Arc::new(control_json(&StatusReply { busy })));
@@ -727,6 +738,23 @@ impl Daemon {
                 .lock()
                 .subscribers
                 .retain(|c| !Arc::ptr_eq(c, client));
+        }
+    }
+
+    // Forward an out-of-band notification to a tab's GUI subscribers. No-op if the
+    // tab is unknown (e.g. a stale id). Mirrors busy_monitor's send: snapshot the
+    // subscribers under the tabs lock, then enqueue.
+    fn notify_tab(&self, id: &str, message: String) {
+        let subs = match self.tabs.lock().get(id) {
+            Some(t) => t.shared.lock().subscribers.clone(),
+            None => return,
+        };
+        let ev = Arc::new(control_json(&Event::TabNotify {
+            id: id.to_string(),
+            message,
+        }));
+        for c in &subs {
+            c.enqueue(ev.clone());
         }
     }
 
@@ -1038,6 +1066,37 @@ pub fn statuses() -> std::collections::HashMap<String, bool> {
     }
 }
 
+/// Post a notification for `id` through the daemon (out-of-band, no tty needed).
+/// Short-lived connection like statuses(): Hello, then one Notify command, then
+/// close. Returns whether it was handed off. Used by `thel notify` when a running
+/// daemon owns the tab.
+pub fn send_notify(id: &str, message: &str) -> bool {
+    let Ok(mut stream) = UnixStream::connect(socket_path()) else {
+        return false;
+    };
+    let hello = serde_json::to_vec(&Hello {
+        protocol: PROTOCOL_VERSION,
+        build: build_version(),
+    })
+    .unwrap_or_default();
+    if write_frame(&mut stream, CONTROL, &hello).is_err() {
+        return false;
+    }
+    match read_frame(&mut stream) {
+        Ok((CONTROL, p)) => match parse_json::<HelloReply>(&p) {
+            Some(r) if r.ok => {}
+            _ => return false,
+        },
+        _ => return false,
+    }
+    let cmd = serde_json::to_vec(&Command::Notify {
+        id: id.to_string(),
+        message: message.to_string(),
+    })
+    .unwrap_or_default();
+    write_frame(&mut stream, CONTROL, &cmd).is_ok()
+}
+
 fn client_read_loop(mut r: UnixStream, routes: Arc<Mutex<HashMap<String, Channel<TermMsg>>>>) {
     // Per-tab UTF-8 carry: tabs interleave on this one connection, so a
     // multibyte char split across OUTPUT frames must be reassembled per id.
@@ -1065,6 +1124,11 @@ fn client_read_loop(mut r: UnixStream, routes: Arc<Mutex<HashMap<String, Channel
                 Some(Event::TabBusy { id, busy }) => {
                     if let Some(ch) = routes.lock().get(&id) {
                         let _ = ch.send(TermMsg::Busy { busy });
+                    }
+                }
+                Some(Event::TabNotify { id, message }) => {
+                    if let Some(ch) = routes.lock().get(&id) {
+                        let _ = ch.send(TermMsg::Notify { message });
                     }
                 }
                 Some(Event::Error { id, message }) => {

@@ -26,6 +26,9 @@ pub enum TermMsg {
     Data { data: String },
     // Foreground busy state, pushed by the daemon so the GUI doesn't poll.
     Busy { busy: bool },
+    // An out-of-band notification for this tab (from `thel notify`), forwarded by
+    // the daemon so it reaches the GUI even when the caller has no tty.
+    Notify { message: String },
     Exit { code: Option<i32> },
 }
 

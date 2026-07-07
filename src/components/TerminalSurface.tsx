@@ -356,6 +356,7 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
           // the bell check uses the stripped rest so an OSC terminator byte
           // doesn't also ring. Both are gated by the replay state internally.
           const osc = oscNotifications(msg.data);
+          if (osc.texts.length || osc.rest.includes("\x07"))
           for (const text of osc.texts) activity.noteMessage(text);
           if (osc.rest.includes("\x07")) activity.noteBell();
           activity.noteOutput(visible);
@@ -368,6 +369,10 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
           }
         } else if (msg.kind === "busy") {
           activity.noteBusy(msg.busy);
+        } else if (msg.kind === "notify") {
+          // `thel notify` via the daemon: a background tab is never watched, so
+          // deliver it straight through (skips the replay gate -- it's live).
+          notify(terminal.id, "message", msg.message);
         } else {
           closeTerminal(terminal.id);
         }

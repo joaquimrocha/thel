@@ -38,6 +38,18 @@ pub fn run(args: &[String]) {
     if std::env::var_os("THEL").is_none() {
         eprintln!("thel notify: not running inside a thel terminal; sending anyway");
     }
+
+    // Preferred path: hand the message to the daemon, addressed by this tab's id.
+    // It reaches thel out-of-band, so it works even when this process has no
+    // controlling tty (e.g. an agent's Stop hook), which the OSC-to-/dev/tty path
+    // below cannot. Falls through if there's no daemon (direct-PTY mode).
+    #[cfg(unix)]
+    if let Some(id) = std::env::var_os("THEL_TERMINAL_ID").and_then(|s| s.into_string().ok()) {
+        if crate::daemon::send_notify(&id, &msg) {
+            return;
+        }
+    }
+
     let seq = osc9(&msg);
     // Write to the controlling terminal, not stdout, so a redirected stdout
     // (`thel notify done > log`) doesn't swallow the sequence. Fall back to

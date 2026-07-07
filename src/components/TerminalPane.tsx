@@ -348,6 +348,11 @@ export function TerminalPane({
         } else if (msg.kind === "busy") {
           // Pushed by the daemon (heartbeat while busy, once on going idle).
           activity.noteBusy(msg.busy);
+        } else if (msg.kind === "notify") {
+          // `thel notify` routed through the daemon (out-of-band, tty-independent).
+          // It's a live, explicit request, so it skips the replay gate; suppress
+          // only while watched, matching the OSC message path.
+          if (!watched()) notify(tab.id, "message", msg.message);
         } else {
           handleExit();
         }
