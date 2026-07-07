@@ -81,6 +81,12 @@ export function notify(
   for (const s of sessions) {
     const t = sessionTerminals(s).find((x) => x.id === terminalId);
     if (t) {
+      // Swallow a bell from a terminal the user hasn't engaged yet. A re-run
+      // program rings once as it goes ready (a shell drawing its prompt, an
+      // agent finishing startup) -- restoring ~100 terminals storms these ~15s
+      // in, none asked for. Once the user has typed into it, a bell is a real
+      // "wants input"/done signal (e.g. Claude finishing a task).
+      if (kind === "bell" && !t.interacted) return;
       setAttention(terminalId, true);
       const title = terminalDisplayTitle(t);
       useNotifications.getState().add({

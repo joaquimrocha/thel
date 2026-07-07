@@ -358,8 +358,16 @@ export function TerminalPane({
       markExited(tab.id, null);
     });
 
+    // Once the user types into a terminal, its bells become real "wants
+    // input"/done signals (see notify's startup-bell filter). Set the flag once;
+    // markInteracted is idempotent, so the local guard just avoids re-dispatch.
+    let interacted = false;
     const onDataDisp = term.onData((d) => {
       markInput(tab.id);
+      if (!interacted) {
+        interacted = true;
+        useSessions.getState().markInteracted(tab.id);
+      }
       writeSession(tab.id, d).catch(() => {});
     });
 

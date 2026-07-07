@@ -26,6 +26,11 @@ export interface Terminal {
   // Runtime-only: a foreground process is running (vs an idle shell). Driven by
   // the daemon's pushed busy events (see TerminalPane's channel handler).
   busy?: boolean;
+  // Runtime-only: the user has typed into this terminal since it started, so a
+  // bell is now a real "wants input"/done signal rather than a re-run program's
+  // startup bell (which storms on a 100-terminal restore). Reset on reload since
+  // it isn't persisted. See notify().
+  interacted?: boolean;
   // Per-terminal zoom as a px offset from the system font size; persisted so a
   // terminal reopens at its set zoom. Undefined falls back to the default zoom.
   zoom?: number;
@@ -197,6 +202,7 @@ export interface SessionState {
   // notifications panel).
   clearAllAttention: () => void;
   setBusy: (terminalId: string, value: boolean) => void;
+  markInteracted: (terminalId: string) => void;
   // zoom = undefined resets the terminal to the default zoom.
   setZoom: (terminalId: string, zoom: number | undefined) => void;
 }
@@ -614,6 +620,11 @@ export const useSessions = create<SessionState>((set, get) => ({
   setBusy: (terminalId, value) =>
     set((s) => ({
       sessions: patchTerminal(s.sessions, terminalId, { busy: value }),
+    })),
+
+  markInteracted: (terminalId) =>
+    set((s) => ({
+      sessions: patchTerminal(s.sessions, terminalId, { interacted: true }),
     })),
 }));
 
