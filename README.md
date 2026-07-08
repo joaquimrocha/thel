@@ -11,6 +11,14 @@ needs you.
 > Windows are a goal, but untested for now, so expect rough edges in those
 > platforms.
 
+## Screenshots
+
+|  |  |
+| :--: | :--: |
+| <img src="docs/screenshots/split-panes.png" alt="Split panes with a coding agent and a shell" width="100%"><br>**Split panes:** a coding agent beside a shell | <img src="docs/screenshots/command-palette.png" alt="Command palette" width="100%"><br>**Command palette:** jump to any session or launcher |
+| <img src="docs/screenshots/new-session-worktree.png" alt="New session on a git worktree" width="100%"><br>**Git worktrees:** anchor a session to a new worktree | <img src="docs/screenshots/launchers.png" alt="Launcher editor" width="100%"><br>**Launchers:** saved commands with session variables |
+| <img src="docs/screenshots/profiles.png" alt="Profiles settings" width="100%"><br>**Profiles:** separate windows, each with its own accent | <img src="docs/screenshots/notifications.png" alt="Notifications panel" width="100%"><br>**Notifications:** activity in terminals you weren't watching |
+
 ## Features
 
 - **Persistent sessions.** A built-in background daemon owns the PTYs and an
