@@ -1,3 +1,5 @@
+<img src="src-tauri/icons/128x128@2x.png" alt="thel" width="96" />
+
 # thel
 
 The terminal app built for AI coding agents and other long-running sessions. thel
