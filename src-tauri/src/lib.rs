@@ -426,14 +426,41 @@ fn open_url(url: String) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+fn print_help() {
+    print!(
+        "thel - Terminal helper built for AI coding agents and other long-running sessions
+
+Usage:
+  thel                Launch the app
+  thel notify [MSG]   Post a desktop notification for the current terminal
+                      (run from inside a thel terminal; MSG is optional)
+
+Options:
+  -h, --help          Show this help and exit
+  -V, --version       Show the version and exit
+"
+    );
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // `thel notify [message]`: emit a notification escape for the current
-    // terminal and exit, before any GUI/daemon work.
+    // CLI dispatch, handled before any GUI/daemon work so these exit immediately.
     let argv: Vec<String> = std::env::args().collect();
-    if argv.get(1).map(String::as_str) == Some("notify") {
-        notify_cmd::run(&argv[2..]);
-        return;
+    match argv.get(1).map(String::as_str) {
+        // `thel notify [message]`: post a notification for the current terminal.
+        Some("notify") => {
+            notify_cmd::run(&argv[2..]);
+            return;
+        }
+        Some("-h" | "--help") => {
+            print_help();
+            return;
+        }
+        Some("-V" | "--version") => {
+            println!("thel {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        _ => {}
     }
 
     // Same binary, two modes: re-invoked with `__daemon`, become the session
