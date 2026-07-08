@@ -5,8 +5,9 @@ keeps each session alive in the background and can anchor it to its own git
 worktree, so you can run a fleet of them at once and tell at a glance which one
 needs you.
 
-> **Beta.** thel builds for Linux, macOS, and Windows, but it is currently only
-> tested on Linux. Expect rough edges.
+> **Beta.** At the moment thel is developed and tested only on Linux. macOS and
+> Windows are a goal, but untested for now, so expect rough edges in those
+> platforms.
 
 ## Features
 
@@ -17,11 +18,13 @@ needs you.
   create a new worktree right from the New Session dialog.
 - **Splits and tabs.** Divide a session into split panes, each with its own tab
   strip of terminals. Drag tabs to reorder them or move them between panes.
-- **Status and notifications.** A live "working" dot while a command runs and an
-  attention dot when a background terminal rings the bell or exits, with matching
-  in-app and OS notifications when the window is unfocused.
-- **Command palette and shortcuts.** Fuzzy palette with quick filters and a
-  rebindable, persisted keymap for sessions, terminals, and app actions.
+- **Status and notifications.** A live "working" dot while a command runs, and
+  auto-detected attention: a finished command, a bell, a coding agent that's done
+  and waiting, or an exit. Raises an in-app dot plus an OS banner when the window
+  is unfocused; tune which events notify in settings.
+- **Keyboard-friendly.** Every major action is reachable from the keyboard,
+  through a fuzzy command palette with quick filters or direct shortcuts, and the
+  keymap is fully rebindable and persisted.
 - **Session icons.** Assign custom icons to your sessions to quickly identify
   them at a glance in the sidebar.
 - **Launchers.** Save the commands you start often (e.g. an AI agent) and pick a
@@ -30,20 +33,40 @@ needs you.
 - **Profiles.** Independent profiles, each in its own window with its own layout
   and accent color.
 
-## Notifications from scripts
+## Notifications
 
-Run `thel notify [message]` inside a thel terminal to raise a desktop
-notification for that terminal:
+thel notices when a terminal wants your attention and tells you: a command
+finishing, a bell, a coding agent going quiet while it waits for input, or a
+process exiting. Each shows an in-app dot, plus an OS banner that jumps you to
+the terminal when the window is unfocused. Pick which events notify in Settings.
+
+Programs can also notify explicitly with `thel notify [message]`:
 
 ```sh
 make && thel notify "build finished"
 ```
 
-It writes a terminal escape to the current tty, so thel attributes it to the
-right terminal automatically. It needs a controlling terminal, so it works from
-interactive shells, Makefiles, and `&&` chains, but not from a process detached
-from the tty (e.g. an agent's completion hook that runs without one). thel also
-picks up bells and OSC 9 / 777 / 99 notification escapes from any program.
+It's delivered over the session daemon (falling back to a terminal escape), so
+it works from shells, Makefiles, `&&` chains, and hooks that run without a
+controlling terminal. Point a coding agent's completion hook at it, e.g. Claude
+Code in `settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "thel notify 'Claude is done'" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Now every finished task pings you in Claude's tab, even in the background. thel
+also picks up bells and OSC 9 / 777 / 99 notification escapes from any program.
 
 See [docs/notifications.md](docs/notifications.md) for the full details.
 
