@@ -1,0 +1,26 @@
+name: build
+
+# Build the Linux binary on every pull request and on main, and upload it as a
+# run artifact you can download from the workflow run.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
+
+      - id: build
+        uses: ./.github/actions/build-binary
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: thel-linux-x86_64
+          path: ${{ steps.build.outputs.tarball }}
+          retention-days: 14
