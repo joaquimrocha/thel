@@ -21,55 +21,25 @@ jobs:
     steps:
       - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
 
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - id: build
+        uses: ./.github/actions/build-binary
         with:
-          version: 10
+          version: ${{ inputs.release }}
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 20
-          cache: pnpm
-
-      # Tauri 2 system libraries the binary links against.
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev \
-            libssl-dev libayatana-appindicator3-dev \
-            build-essential pkg-config
-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-        with:
-          workspaces: src-tauri
-
-      - run: pnpm install --frozen-lockfile
-
-      # Bundling is off in tauri.conf (bundle.active=false), so this just compiles
-      # the release binary; --no-bundle makes that explicit. beforeBuildCommand
-      # (pnpm build = tsc + vite) runs as part of it.
-      - run: pnpm tauri build --no-bundle
-
-      - name: Package and attach the binary
+      - name: Attach the binary to the release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE: ${{ inputs.release }}
           REPO: ${{ github.repository }}
+          TARBALL: ${{ steps.build.outputs.tarball }}
         run: |
-          # Portable binary as a tar.xz (keeps the executable bit).
-          bin=src-tauri/target/release/thel
-          test -f "$bin" || { echo "binary not found at $bin" >&2; exit 1; }
-          tarball="thel-${RELEASE}-linux-x86_64.tar.xz"
-          tar -cJf "$tarball" -C "$(dirname "$bin")" "$(basename "$bin")"
-
           # `gh release upload <tag>` resolves via the tags API, which doesn't
           # return drafts, so find the release by its title (name) in the list.
           id=$(gh api "repos/$REPO/releases?per_page=100" \
             --jq "map(select(.name==\"$RELEASE\" or .tag_name==\"$RELEASE\")) | .[0].id // empty")
           [ -n "$id" ] || { echo "no release titled '$RELEASE' found (is the draft created?)" >&2; exit 1; }
 
-          name=$(basename "$tarball")
+          name=$(basename "$TARBALL")
           # Replace an existing asset of the same name so re-runs are idempotent.
           old=$(gh api "repos/$REPO/releases/$id/assets?per_page=100" \
             --jq "map(select(.name==\"$name\")) | .[0].id // empty")
@@ -79,5 +49,5 @@ jobs:
           curl -fsSL -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Content-Type: application/octet-stream" \
-            --data-binary @"$tarball" \
+            --data-binary @"$TARBALL" \
             "https://uploads.github.com/repos/$REPO/releases/$id/assets?name=$name" >/dev/null
