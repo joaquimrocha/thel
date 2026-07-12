@@ -323,7 +323,7 @@ fn notify(
 
             let mut cmd = std::process::Command::new("notify-send");
             cmd.arg("--app-name=thel")
-                .arg("--hint=string:desktop-entry:com.joaquimrocha.thel")
+                .arg("--hint=string:desktop-entry:dev.thel.Thel")
                 .arg("--wait")
                 .arg("--action=default=Open");
             if have_pipe {
