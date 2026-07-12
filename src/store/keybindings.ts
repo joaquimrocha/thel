@@ -1,8 +1,8 @@
 import { create } from "zustand";
-import { load, type Store } from "@tauri-apps/plugin-store";
+import { type Store } from "@tauri-apps/plugin-store";
 import { SHORTCUTS, comboToString, type Combo } from "@/lib/keymap";
 import { debouncedWriter } from "@/lib/persistDebounce";
-import { storeFile } from "@/lib/storeFile";
+import { load } from "@/lib/storeFile";
 
 interface KeybindingsState {
   // Per-shortcut overrides of the default combo.
@@ -50,7 +50,7 @@ export function shortcutLabel(id: string): string | undefined {
   return c ? comboToString(c) : undefined;
 }
 
-const FILE = storeFile("thel-keybindings.json");
+const FILE = "thel-keybindings.json";
 const KEY = "overrides";
 
 let storePromise: Promise<Store> | null = null;
