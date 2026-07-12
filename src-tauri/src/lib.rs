@@ -426,6 +426,21 @@ fn open_url(url: String) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// The files on the clipboard (a file-manager "Copy"), as paths. Empty when
+/// the clipboard holds no file list, so a paste can fall back to text.
+#[tauri::command]
+fn clipboard_files() -> Vec<String> {
+    arboard::Clipboard::new()
+        .and_then(|mut c| c.get().file_list())
+        .map(|paths| {
+            paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn print_help() {
     print!(
         "thel - Terminal helper built for AI coding agents and other long-running sessions
@@ -510,6 +525,7 @@ pub fn run() {
             monospace_font,
             notify,
             open_url,
+            clipboard_files,
             git::git_info,
             git::worktree_info,
             git::list_worktrees,

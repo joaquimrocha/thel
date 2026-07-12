@@ -26,7 +26,14 @@ import {
   type TerminalActivity,
 } from "@/lib/termActivity";
 import { appFocused, onFocusGained } from "@/lib/focus";
-import { copyText, pasteText, dedent } from "@/lib/clipboard";
+import {
+  copyText,
+  pasteText,
+  dedent,
+  clipboardFiles,
+  shellQuote,
+} from "@/lib/clipboard";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { comboMatches } from "@/lib/keymap";
 import { effectiveCombo, shortcutLabel } from "@/store/keybindings";
 import { usePrefs } from "@/store/prefs";
@@ -69,10 +76,18 @@ function copyTermSelection(term: Terminal, mode: "raw" | "dedent") {
 }
 
 // Paste the clipboard into the terminal, shared by the paste shortcut and menu.
+// Copied files paste as their shell-quoted paths. Checked before text because
+// file managers set both (the text form is file:// URIs, useless in a shell).
 function pasteIntoTerm(term: Terminal) {
-  void pasteText().then((t) => {
+  void (async () => {
+    const files = await clipboardFiles();
+    if (files.length) {
+      term.paste(files.map(shellQuote).join(" "));
+      return;
+    }
+    const t = await pasteText();
     if (t) term.paste(t);
-  });
+  })();
 }
 
 // Construct an xterm with thel's addons (fit, system-browser links, Unicode 11
@@ -438,6 +453,22 @@ export function TerminalPane({
     const onPointerDown = () => clearAttention();
     container?.addEventListener("mousedown", onPointerDown);
 
+    // Dropping files onto this pane pastes their shell-quoted paths. The
+    // webview swallows native HTML5 drops, so the real paths arrive via
+    // Tauri's drag-drop event; it's webview-global, so hit-test the (physical)
+    // drop position against this pane and ignore drops elsewhere.
+    const unlistenDrop = getCurrentWebview().onDragDropEvent((e) => {
+      if (e.payload.type !== "drop" || !visibleRef.current) return;
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const x = e.payload.position.x / window.devicePixelRatio;
+      const y = e.payload.position.y / window.devicePixelRatio;
+      if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom)
+        return;
+      term.paste(e.payload.paths.map(shellQuote).join(" "));
+      term.focus();
+    });
+
     let raf = 0;
     const ro = new ResizeObserver(() => {
       // Coalesce bursts of resize events into one fit per frame.
@@ -471,6 +502,7 @@ export function TerminalPane({
       onTitleDisp.dispose();
       offFocusGained();
       container?.removeEventListener("mousedown", onPointerDown);
+      unlistenDrop.then((f) => f()).catch(() => {});
       clearActivity(tab.id);
       closeSession(tab.id).catch(() => {});
       term.dispose();

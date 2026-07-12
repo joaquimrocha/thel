@@ -1,4 +1,5 @@
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { invoke } from "@tauri-apps/api/core";
 
 // Clipboard via the Tauri plugin (reliable under WebKitGTK, where the browser
 // Clipboard API is restricted). Best-effort: failures are swallowed.
@@ -17,6 +18,22 @@ export async function pasteText(): Promise<string> {
   } catch {
     return "";
   }
+}
+
+// The files on the clipboard (a file-manager "Copy"), as paths; empty when
+// the clipboard holds none.
+export async function clipboardFiles(): Promise<string[]> {
+  try {
+    return await invoke<string[]>("clipboard_files");
+  } catch {
+    return [];
+  }
+}
+
+// Quote a path for the shell, only when it contains characters that need it.
+export function shellQuote(path: string): string {
+  if (/^[\w@%+=:,./-]+$/.test(path)) return path;
+  return `'${path.replace(/'/g, "'\\''")}'`;
 }
 
 /**
