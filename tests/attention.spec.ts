@@ -44,12 +44,21 @@ async function waitTerminalListener(page: Page, id: string): Promise<void> {
   await page.waitForTimeout(350);
 }
 
+// Bells from a terminal the user never typed into are swallowed as startup
+// noise, so a test must engage the terminal with a keystroke before a bell
+// can flag it.
+async function engageActiveTerminal(page: Page) {
+  await page.locator(".xterm").first().click();
+  await page.keyboard.type("x");
+}
+
 async function createBackgroundSession(page: Page): Promise<string> {
   await createSession(page);
   const firstId = await page
     .getByTestId("terminal-tab")
     .first()
     .getAttribute("data-tab-id");
+  await engageActiveTerminal(page);
   await createSession(page);
   await waitTerminalListener(page, firstId!);
   return firstId!;
@@ -143,6 +152,7 @@ test("the active terminal's dot survives a window refocus, clears on typing", as
     .first()
     .getAttribute("data-tab-id");
   await waitTerminalListener(page, activeId!);
+  await engageActiveTerminal(page);
 
   // Bell while the window is unfocused, then refocus. The dot must remain so you
   // can still see which terminal wanted you (regression: the visible terminal's
@@ -170,6 +180,7 @@ test("clicking the terminal clears its attention dot (no typing needed)", async 
     .first()
     .getAttribute("data-tab-id");
   await waitTerminalListener(page, activeId!);
+  await engageActiveTerminal(page);
 
   await fireWindow(page, "blur");
   await emitTerminal(page, activeId!, "\x07");
