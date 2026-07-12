@@ -49,8 +49,8 @@ const ICON_HEX: Record<Exclude<DotState, "busy">, string> = {
 };
 
 // `className` carries the size (e.g. "size-2"); defaults to the tab/row size.
-// `icon` (an SVG string, sessions only) replaces the dot while idle; a running
-// command still shows the pulsing dot so work stays obvious.
+// `icon` (an SVG string, sessions only) replaces the dot in every state; when
+// busy it pulses green so active work stays obvious.
 export function StatusDot({
   state,
   className,
@@ -63,6 +63,36 @@ export function StatusDot({
   onIconError?: () => void;
 }) {
   const size = className ?? "size-1.5";
+  if (icon) {
+    const color = ICON_HEX[state === "busy" ? "running" : state];
+    if (state === "busy") {
+      // Same effect as the busy dot: an expanding, fading echo of the icon
+      // behind the solid one.
+      return (
+        <span className="relative flex size-4 shrink-0">
+          <SvgIcon
+            svg={icon}
+            color={color}
+            className="absolute inset-0 animate-ping opacity-75"
+          />
+          <SvgIcon
+            svg={icon}
+            color={color}
+            onError={onIconError}
+            className="relative size-4"
+          />
+        </span>
+      );
+    }
+    return (
+      <SvgIcon
+        svg={icon}
+        color={color}
+        onError={onIconError}
+        className="size-4 shrink-0"
+      />
+    );
+  }
   if (state === "busy") {
     // Solid dot under an expanding, fading ring to signal active work.
     return (
@@ -70,16 +100,6 @@ export function StatusDot({
         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
         <span className="relative inline-flex h-full w-full rounded-full bg-emerald-500" />
       </span>
-    );
-  }
-  if (icon) {
-    return (
-      <SvgIcon
-        svg={icon}
-        color={ICON_HEX[state]}
-        onError={onIconError}
-        className="size-4 shrink-0"
-      />
     );
   }
   return <span className={cn("shrink-0 rounded-full", size, COLOR[state])} />;
