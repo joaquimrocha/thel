@@ -135,6 +135,33 @@ test("collapsed fly-out hides only after a delay once the mouse leaves", async (
   await expect(list).toBeHidden({ timeout: 1500 }); // gone after the delay
 });
 
+test("opening a row's context menu keeps the collapsed fly-out open", async ({
+  page,
+}) => {
+  await gotoApp(page);
+  await createSession(page);
+  await page.keyboard.press("Control+Shift+B"); // collapse to the rail
+  const list = page.locator("[data-session-list]");
+  await expect(list).toBeHidden();
+
+  await page.mouse.move(24, 300); // enter the rail -> fly-out opens
+  await expect(list).toBeVisible();
+
+  await list.locator("[data-row-id]").click({ button: "right" });
+  const menuItem = page.getByRole("menuitem", { name: "Settings" });
+  await expect(menuItem).toBeVisible();
+  await page.waitForTimeout(350); // past the 200ms hide window
+  await expect(list).toBeVisible();
+  await expect(menuItem).toBeVisible();
+
+  await page.keyboard.press("Escape"); // dismiss; pointer still on the fly-out
+  await page.waitForTimeout(350);
+  await expect(list).toBeVisible(); // stays open under the pointer
+
+  await page.mouse.move(900, 400); // leave -> hides after the delay
+  await expect(list).toBeHidden({ timeout: 1500 });
+});
+
 test("re-entering the collapsed rail cancels the pending hide", async ({
   page,
 }) => {

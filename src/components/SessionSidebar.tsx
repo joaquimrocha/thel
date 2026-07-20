@@ -20,6 +20,12 @@ import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder
 import { StatusDot, sessionDotState } from "./StatusDot";
 import { ActionTooltip } from "./ActionTooltip";
 import { Logo } from "./Logo";
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+} from "@/components/ui/context-menu";
 
 export function SessionSidebar() {
   const sessions = useSessions((s) => s.sessions);
@@ -49,6 +55,25 @@ export function SessionSidebar() {
     }
   };
   useEffect(() => cancelHide, []);
+  // A row's context menu portals its content and puts pointer-events:none on
+  // the body, which fires a spurious mouseleave on the rail that would hide
+  // the fly-out (and the menu anchored in it). Hold it open while a menu is
+  // up; on close, hide unless the pointer is back over the rail.
+  const rowMenuOpen = useRef(false);
+  const railRef = useRef<HTMLDivElement>(null);
+  const onRowMenuOpenChange = (open: boolean) => {
+    rowMenuOpen.current = open;
+    if (open) {
+      cancelHide();
+      return;
+    }
+    cancelHide();
+    hideTimer.current = window.setTimeout(() => {
+      // Checked inside the timeout: by then Radix has restored the body's
+      // pointer events, so :hover is reliable again.
+      if (!railRef.current?.matches(":hover")) setHovered(false);
+    }, 200);
+  };
   // Keyboard navigation cursor while the list is focused.
   const [navFocused, setNavFocused] = useState(false);
   const [highlight, setHighlight] = useState(0);
@@ -255,6 +280,7 @@ export function SessionSidebar() {
             onClose={() => closeSessionConfirmed(session.id)}
             onDragStart={(e) => startRowDrag(e, session.id)}
             onDragOver={(e) => onRowDragOver(e, session.id, i)}
+            onMenuOpenChange={onRowMenuOpenChange}
           />
         ))}
       </div>
@@ -301,6 +327,7 @@ export function SessionSidebar() {
 
   return (
     <div
+      ref={railRef}
       className="relative flex w-12 shrink-0 flex-col items-center border-r border-border bg-background"
       // Don't fly the sidebar open mid-drag (e.g. selecting terminal text that
       // crosses onto the rail); only on a plain hover with no button held.
@@ -316,6 +343,7 @@ export function SessionSidebar() {
         // don't let approaching the edge snap the fly-out shut.
         if ((e.relatedTarget as Element | null)?.closest?.("[data-window-resize]"))
           return;
+        if (rowMenuOpen.current) return;
         setSuppressOverlay(false);
         cancelHide();
         hideTimer.current = window.setTimeout(() => setHovered(false), 200);
@@ -383,6 +411,7 @@ function SessionRow({
   onClose,
   onDragStart,
   onDragOver,
+  onMenuOpenChange,
 }: {
   session: Session;
   active: boolean;
@@ -393,9 +422,12 @@ function SessionRow({
   onClose: () => void;
   onDragStart: (e: React.DragEvent) => void;
   onDragOver: (e: React.DragEvent) => void;
+  onMenuOpenChange: (open: boolean) => void;
 }) {
   const openSessionSettings = useUI((s) => s.openSessionSettings);
   return (
+    <ContextMenu onOpenChange={onMenuOpenChange}>
+      <ContextMenuTrigger asChild>
     <div
       data-row-id={session.id}
       onClick={onSelect}
@@ -468,5 +500,19 @@ function SessionRow({
         </button>
       </ActionTooltip>
     </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        {/* Both items open a dialog; defer past the menu's own close so its
+            exit animation doesn't race the dialog's pointer-events lock. */}
+        <ContextMenuItem
+          onSelect={() => setTimeout(() => openSessionSettings(session.id), 0)}
+        >
+          Settings
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => setTimeout(onClose, 0)}>
+          Close
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }

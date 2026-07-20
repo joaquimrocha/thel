@@ -80,6 +80,26 @@ test("closing a session returns to the empty state", async ({ page }) => {
   await expect(page.getByText("No sessions open.")).toBeVisible();
 });
 
+test("session row context menu: Settings opens the dialog, Close closes", async ({
+  page,
+}) => {
+  await gotoApp(page);
+  await createSession(page);
+  const row = page.locator("[data-session-list] [data-row-id]");
+  await row.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "Done" }).click();
+
+  await row.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Close" }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close session" })
+    .click();
+  await expect(page.getByText("No sessions open.")).toBeVisible();
+});
+
 test("Ctrl+Shift+T adds a terminal to the pane", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
