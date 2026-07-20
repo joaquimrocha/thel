@@ -23,6 +23,31 @@ test("rename a session (double-click opens settings)", async ({ page }) => {
   await expect(page.locator("[data-session-list]")).toContainText("MySession");
 });
 
+test("rename a terminal tab from its context menu", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await page.locator('[data-testid="terminal-tab"]').click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Rename" }).click();
+  const input = page.locator("input:focus");
+  await input.fill("MenuTerm");
+  await input.press("Enter");
+  await expect(
+    page.locator('[data-testid="terminal-tab"]', { hasText: "MenuTerm" }),
+  ).toBeVisible();
+});
+
+test("close a terminal tab from its context menu", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  const tab = page.locator('[data-testid="terminal-tab"]');
+  await tab.click({ button: "right" });
+  const close = page.getByRole("menuitem", { name: "Close" });
+  // The menu item shows the close-terminal shortcut.
+  await expect(close).toContainText("Ctrl");
+  await close.click();
+  await expect(tab).toHaveCount(0);
+});
+
 test("rename a terminal tab (double-click the title)", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);

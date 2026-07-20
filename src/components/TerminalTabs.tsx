@@ -17,6 +17,14 @@ import { addTerminal, splitPane } from "@/lib/launch";
 import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
 import { closeTerminalConfirmed, closeAllTerminals } from "@/lib/actions";
 import { useUI } from "@/store/ui";
+import { shortcutLabel } from "@/store/keybindings";
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuShortcut,
+} from "@/components/ui/context-menu";
 import { EditableLabel } from "./EditableLabel";
 import { StatusDot, terminalDotState } from "./StatusDot";
 import { ActionTooltip } from "./ActionTooltip";
@@ -47,6 +55,10 @@ export function TerminalTabs({
   // over; disarm on any drag and re-arm on the next real pointer move, which
   // re-establishes the correct :hover.
   const [hoverArmed, setHoverArmed] = useState(true);
+  // Which tab's label should enter rename mode, bumped per request.
+  const [renameReq, setRenameReq] = useState<{ id: string; nonce: number } | null>(
+    null,
+  );
   const stripRef = useRef<HTMLDivElement>(null);
   const prevLefts = useRef<Map<string, number>>(new Map());
 
@@ -231,8 +243,9 @@ export function TerminalTabs({
         className="no-scrollbar relative flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1 py-1"
       >
         {group.terminals.map((t, i) => (
+          <ContextMenu key={t.id}>
+            <ContextMenuTrigger asChild>
           <div
-            key={t.id}
             data-testid="terminal-tab"
             data-tab-id={t.id}
             draggable
@@ -267,6 +280,7 @@ export function TerminalTabs({
               value={terminalDisplayTitle(t)}
               onCommit={(v) => renameTerminal(t.id, v)}
               fallback={t.defaultTitle}
+              editSignal={renameReq?.id === t.id ? renameReq.nonce : undefined}
               className={cn(
                 "truncate",
                 groupActive && t.id === group.activeTerminalId && "font-semibold",
@@ -290,6 +304,29 @@ export function TerminalTabs({
               </button>
             </ActionTooltip>
           </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem
+                onSelect={() => {
+                  // Defer past the menu's close-and-refocus, which would
+                  // otherwise blur the rename input right after it mounts.
+                  setTimeout(() => {
+                    setRenameReq((r) => ({ id: t.id, nonce: (r?.nonce ?? 0) + 1 }));
+                  }, 0);
+                }}
+              >
+                Rename
+              </ContextMenuItem>
+              <ContextMenuItem
+                // May open a confirm dialog; defer past the menu's close like
+                // the session menu items.
+                onSelect={() => setTimeout(() => void closeTerminalConfirmed(t.id), 0)}
+              >
+                Close
+                <ContextMenuShortcut>{shortcutLabel("close-terminal")}</ContextMenuShortcut>
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
         ))}
       </div>
     </div>

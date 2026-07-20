@@ -12,16 +12,28 @@ export function EditableLabel({
   onCommit,
   fallback,
   className,
+  editSignal,
 }: {
   value: string;
   onCommit: (value: string) => void;
   /** When the field is cleared, revert to this default instead of keeping the old value. */
   fallback?: string;
   className?: string;
+  /** Bump to a new number to start editing from outside (e.g. a context menu). */
+  editSignal?: number;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editSignal !== undefined) {
+      setDraft(value);
+      setEditing(true);
+    }
+    // Only react to the signal, not to value changes while editing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editSignal]);
 
   useEffect(() => {
     if (editing) {
