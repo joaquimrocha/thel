@@ -678,7 +678,12 @@ impl Daemon {
             // lock, so it precedes any live output (tab_reader clones the
             // subscriber list under the same lock).
             client.enqueue(Arc::new(frame_bytes(OUTPUT, &id_payload(id, &snap))));
-            sh.subscribers.push(client.clone());
+            // A client re-opening a tab it already subscribes to (e.g. after a
+            // webview reload over the same connection) must not be added twice,
+            // or it receives every output frame once per entry.
+            if !sh.subscribers.iter().any(|c| Arc::ptr_eq(c, client)) {
+                sh.subscribers.push(client.clone());
+            }
             drop(sh);
             return Ok(());
         }
