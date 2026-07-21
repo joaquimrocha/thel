@@ -40,8 +40,11 @@ const hasTerminalChannel = (page: Page, id: string) =>
 async function waitTerminalListener(page: Page, id: string): Promise<void> {
   await expect.poll(() => hasTerminalChannel(page, id)).toBe(true);
   // TerminalPane and the background daemon listener suppress BEL during the
-  // initial reattach replay; the mock prompt settles after the same short pause.
-  await page.waitForTimeout(350);
+  // initial reattach replay; a pre-settle bell is dropped, not retried. The
+  // channel poll above is satisfied by the pane's channel (same id), so this
+  // pause must also cover the listener mounting, the mock prompt arriving, and
+  // the 250ms settle window. 350ms flaked on slower machines.
+  await page.waitForTimeout(1000);
 }
 
 // Bells from a terminal the user never typed into are swallowed as startup
