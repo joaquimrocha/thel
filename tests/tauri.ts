@@ -51,6 +51,17 @@ function install(config: MockConfig) {
   // (e.g. React StrictMode) replaces the dead one. A test pushes output (e.g. a
   // bell) into a terminal by creation order (see __emitTerminal).
   const termChannels = new Map<string, (m: unknown) => void>();
+  // The Channel's registered callback id per terminal. Real Tauri unregisters a
+  // channel's callback when the Rust side drops it (close/kill); without doing
+  // the same here, every closed terminal's channel closure (which holds the
+  // xterm instance) stays in `callbacks` forever and reads as an app leak.
+  const termCbIds = new Map<string, number>();
+  const dropTermChannel = (id: string) => {
+    termChannels.delete(id);
+    const cbId = termCbIds.get(id);
+    if (cbId !== undefined) callbacks.delete(cbId);
+    termCbIds.delete(id);
+  };
 
   // --- store plugin (persists in localStorage so it survives reloads) ---
   const ridToPath = new Map<number, string>();
@@ -119,10 +130,19 @@ function install(config: MockConfig) {
     const m = (w.__MOCK__ || {}) as MockConfig;
     switch (cmd) {
       case "create_session": {
-        const ch = args.onData as { onmessage?: (msg: unknown) => void } | undefined;
+        const ch = args.onData as
+          | { onmessage?: (msg: unknown) => void; id?: number }
+          | undefined;
         if (ch && typeof ch.onmessage === "function") {
           const send = ch.onmessage;
-          termChannels.set((args.opts as { id: string }).id, send);
+          const termId = (args.opts as { id: string }).id;
+          // A remount replaces the old channel in place (set() keeps Map order,
+          // which __emitTerminal's creation-order indexing relies on); only the
+          // stale callback registration is dropped.
+          const oldCb = termCbIds.get(termId);
+          if (oldCb !== undefined) callbacks.delete(oldCb);
+          termChannels.set(termId, send);
+          if (typeof ch.id === "number") termCbIds.set(termId, ch.id);
           if (m.snapshotBytes && m.snapshotBytes > 0) {
             // Simulate a reattach snapshot: a chunk xterm must parse on mount.
             const line = "restored scrollback line of terminal output\r\n";
@@ -135,10 +155,10 @@ function install(config: MockConfig) {
         return null;
       }
       case "close_session":
-        termChannels.delete(String(args.id));
+        dropTermChannel(String(args.id));
         return null;
       case "kill_terminal_window":
-        termChannels.delete(String(args.id));
+        dropTermChannel(String(args.id));
         return null;
       case "terminal_status":
         return {
