@@ -505,6 +505,11 @@ export function TerminalPane({
       unlistenDrop.then((f) => f()).catch(() => {});
       clearActivity(tab.id);
       closeSession(tab.id).catch(() => {});
+      // Upstream leak: WebglRenderer never disposes its CursorBlinkStateManager
+      // (the one MutableDisposable it does not register()), so the blink
+      // interval survives dispose() and retains the whole terminal. Flipping
+      // the option off first makes the renderer clear it.
+      term.options.cursorBlink = false;
       term.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
