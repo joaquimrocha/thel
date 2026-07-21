@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 const REPO = "https://github.com/joaquimrocha/thel";
+const BREW_CMD = "brew install --cask joaquimrocha/tap/thel";
 
 type Feature = {
   title: string;
@@ -131,6 +132,7 @@ function Hero() {
   // upgrades to a direct download of the release tarball (its filename embeds
   // the version, so it can't be hardcoded).
   const [tarball, setTarball] = useState(`${REPO}/releases/latest`);
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
     fetch("https://api.github.com/repos/joaquimrocha/thel/releases/latest")
       .then((r) => (r.ok ? r.json() : null))
@@ -171,15 +173,36 @@ function Hero() {
         >
           Download for Linux
         </a>
-        <a
-          href={REPO}
-          target="_blank"
-          rel="noopener"
-          className="font-mono text-sm text-ink-muted transition-colors hover:text-accent"
-        >
-          or view on GitHub ↗
-        </a>
       </div>
+      <p className="mt-6 font-mono text-sm text-ink-muted">
+        or with Homebrew on Linux:{" "}
+        <code className="select-all rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-[13px] text-ink-bright">
+          {BREW_CMD}
+        </code>{" "}
+        <button
+          onClick={() =>
+            navigator.clipboard.writeText(BREW_CMD).then(() => {
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 2000);
+            })
+          }
+          aria-label={copied ? "Copied" : "Copy install command"}
+          aria-live="polite"
+          className="cursor-pointer rounded-md border border-white/10 p-1.5 align-middle text-ink-faint transition-colors hover:text-accent"
+        >
+          {/* Lucide "check" / "copy", inlined to keep the site dependency-free */}
+          {copied ? (
+            <svg viewBox="0 0 24 24" className="size-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+              <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+            </svg>
+          )}
+        </button>
+      </p>
       <p className="mt-8">
         <span className="rounded-full border border-white/10 px-3 py-1.5 font-mono text-xs text-ink-faint">
           Beta: Linux only; Mac + Windows coming soon
