@@ -247,6 +247,11 @@ function install(config: MockConfig) {
       // Capture the close-requested handler so a test can fire the OS close flow.
       if (cmd === "plugin:event|listen" && a.event === "tauri://close-requested")
         closeReqHandlerId = a.handler as number;
+      // Real Tauri returns the listener's id; the api hands it back to
+      // unregisterListener on unlisten(). Returning null here would make every
+      // unlisten a no-op, leaking each handler (and whatever its closure holds,
+      // e.g. an xterm) in `callbacks`.
+      if (cmd === "plugin:event|listen") return Promise.resolve(a.handler);
       // Record the window destroy the API issues after the close handler runs.
       if (cmd === "plugin:window|destroy")
         (w.__MOCK__ as Record<string, unknown>).destroyed = true;
