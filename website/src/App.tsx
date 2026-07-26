@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 
 const REPO = "https://github.com/joaquimrocha/thel";
 const BREW_CMD = "brew install --cask joaquimrocha/tap/thel";
+// Set to the announcement post URL once it is published; null hides the banner.
+const POST_URL: string | null = "https://joaquimrocha.com/announcing-thel/";
 
 type Feature = {
   title: string;
@@ -166,7 +168,20 @@ function Hero() {
         long. Anchor each to its own git worktree, run a fleet of them at
         once, and tell at a glance which one needs you.
       </p>
-      <div className="mt-9 flex flex-wrap items-center justify-center gap-4">
+      {POST_URL && (
+        <p className="mt-8">
+          <a
+            href={POST_URL}
+            target="_blank"
+            rel="noopener"
+            className="inline-flex items-center gap-2 rounded-full border border-accent/30 bg-accent/10 px-4 py-1.5 font-mono text-xs text-ink transition-colors hover:border-accent/60"
+          >
+            <span className="font-semibold text-accent">New</span>
+            Read the announcement post by the author ↗
+          </a>
+        </p>
+      )}
+      <div className="mt-5 flex flex-wrap items-center justify-center gap-4">
         <a
           href={tarball}
           className="inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-3 font-mono text-sm font-semibold text-on-accent transition-[filter] hover:brightness-110"
