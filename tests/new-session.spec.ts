@@ -80,6 +80,34 @@ test("a duplicate branch is blocked in the create-worktree tab", async ({
   ).toBeDisabled();
 });
 
+test("a worktree session prefills the repo it came from", async ({ page }) => {
+  await gotoApp(page, {
+    worktreeInfo: {
+      is_linked: true,
+      path: "/home/test/thel.my-worktree",
+      main: "/home/test/thel",
+    },
+  });
+  await openNew(page);
+  await expect(page.getByPlaceholder("/path/to/folder")).toHaveValue(
+    "~/thel",
+  );
+});
+
+// Only a linked worktree redirects: a plain subdirectory of a repo reports the
+// repo root as `main` too, and must still prefill the folder we started from.
+test("a non-worktree session prefills its own folder", async ({ page }) => {
+  await gotoApp(page, {
+    worktreeInfo: {
+      is_linked: false,
+      path: "/home/test",
+      main: "/home/test/thel",
+    },
+  });
+  await openNew(page);
+  await expect(page.getByPlaceholder("/path/to/folder")).toHaveValue("~");
+});
+
 test("directory autocomplete shows suggestions while typing", async ({
   page,
 }) => {

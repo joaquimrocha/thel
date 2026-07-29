@@ -13,7 +13,14 @@ import {
   DialogClose,
 } from "@/components/ui/dialog";
 import { homeDir, dirExists } from "@/lib/pty";
-import { listWorktrees, gitInfo, branches, createWorktree, type Worktree } from "@/lib/git";
+import {
+  listWorktrees,
+  gitInfo,
+  branches,
+  createWorktree,
+  worktreeInfo,
+  type Worktree,
+} from "@/lib/git";
 import { createSessionInDir, basename, sessionNameForDir } from "@/lib/launch";
 import { abbreviatePath, expandPath } from "@/lib/paths";
 import { useUI } from "@/store/ui";
@@ -105,7 +112,9 @@ export function NewSessionDialog() {
   };
 
   // On open, reset and default the suggested directory to the path of the
-  // session we were just in, falling back to $HOME.
+  // session we were just in, falling back to $HOME. A linked worktree resolves
+  // to the repo it came from, so a new session starts from the project rather
+  // than from a sibling branch's checkout.
   useEffect(() => {
     if (!open_) return;
     setPathInput("");
@@ -126,8 +135,11 @@ export function NewSessionDialog() {
     void (async () => {
       const { sessions, activeSessionId } = useSessions.getState();
       const prev = sessions.find((s) => s.id === activeSessionId)?.cwd;
-      const dir = prev ?? (await homeDir().catch(() => null));
-      if (cancelled || !dir) return;
+      const start = prev ?? (await homeDir().catch(() => null));
+      if (cancelled || !start) return;
+      const wt = await worktreeInfo(start).catch(() => null);
+      if (cancelled) return;
+      const dir = wt?.is_linked ? wt.main : start;
       setPathInput(abbreviatePath(dir));
       await loadDir(dir);
     })();
