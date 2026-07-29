@@ -48,7 +48,10 @@ export function NewSessionDialog() {
   const [selected, setSelected] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
 
-  const [tab, setTab] = useState<"use" | "create">("use");
+  const [tab, setTab] = useState<"create" | "use">("create");
+  // The branch field only grabs focus once the user picks the tab, so that a
+  // repo resolving while they type a path doesn't pull the caret out of it.
+  const [tabPicked, setTabPicked] = useState(false);
   const [showOpts, setShowOpts] = useState(false);
   const [newBranch, setNewBranch] = useState("");
   const [base, setBase] = useState("");
@@ -64,7 +67,8 @@ export function NewSessionDialog() {
   // Anchor to a directory: select it and load its git state (if any).
   const loadDir = async (dir: string) => {
     const req = ++loadReq.current;
-    setTab("use");
+    setTab("create");
+    setTabPicked(false);
     setNewBranch("");
     setBase("");
     setWtPathEdited(false);
@@ -123,7 +127,8 @@ export function NewSessionDialog() {
     setWorktrees([]);
     setBranchList([]);
     setSelected(null);
-    setTab("use");
+    setTab("create");
+    setTabPicked(false);
     setShowOpts(false);
     setNewBranch("");
     setBase("");
@@ -292,45 +297,25 @@ export function NewSessionDialog() {
 
               <Tabs
                 value={tab}
-                onValueChange={(v) => setTab(v as "use" | "create")}
+                onValueChange={(v) => {
+                  setTab(v as "create" | "use");
+                  setTabPicked(true);
+                }}
                 className="space-y-3"
               >
                 <TabsList className="w-full">
-                  <TabsTrigger value="use" className="flex-1">
-                    Use Worktree
-                  </TabsTrigger>
                   <TabsTrigger value="create" className="flex-1">
                     Create Worktree
                   </TabsTrigger>
+                  <TabsTrigger value="use" className="flex-1">
+                    Use Worktree
+                  </TabsTrigger>
                 </TabsList>
-
-                <TabsContent value="use">
-                  <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border border-border p-1">
-                    {!folderIsWorktree && cwd && (
-                      <SelectRow
-                        selected={selected === cwd}
-                        onSelect={() => setSelected(cwd)}
-                        primary="Selected folder"
-                        secondary={abbreviatePath(cwd)}
-                      />
-                    )}
-                    {worktrees.map((w) => (
-                      <SelectRow
-                        key={w.path}
-                        selected={selected === w.path}
-                        onSelect={() => setSelected(w.path)}
-                        primary={w.branch ?? "(detached)"}
-                        secondary={abbreviatePath(w.path)}
-                        badge={w.is_main ? "main" : undefined}
-                      />
-                    ))}
-                  </div>
-                </TabsContent>
 
                 <TabsContent value="create" className="space-y-3">
                   <Field label="Branch">
                     <input
-                      autoFocus
+                      autoFocus={tabPicked}
                       placeholder="my-new-branch"
                       value={newBranch}
                       onChange={(e) => setNewBranch(e.target.value)}
@@ -380,6 +365,29 @@ export function NewSessionDialog() {
                       {blockReason || error}
                     </p>
                   )}
+                </TabsContent>
+
+                <TabsContent value="use">
+                  <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border border-border p-1">
+                    {!folderIsWorktree && cwd && (
+                      <SelectRow
+                        selected={selected === cwd}
+                        onSelect={() => setSelected(cwd)}
+                        primary="Selected folder"
+                        secondary={abbreviatePath(cwd)}
+                      />
+                    )}
+                    {worktrees.map((w) => (
+                      <SelectRow
+                        key={w.path}
+                        selected={selected === w.path}
+                        onSelect={() => setSelected(w.path)}
+                        primary={w.branch ?? "(detached)"}
+                        secondary={abbreviatePath(w.path)}
+                        badge={w.is_main ? "main" : undefined}
+                      />
+                    ))}
+                  </div>
                 </TabsContent>
               </Tabs>
             </div>

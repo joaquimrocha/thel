@@ -95,7 +95,7 @@ test("use-worktree: pick a worktree and create the session", async ({
     },
   });
   await page.keyboard.press("Control+Shift+N");
-  await expect(page.getByRole("tab", { name: "Use Worktree" })).toBeVisible();
+  await page.getByRole("tab", { name: "Use Worktree" }).click();
   await page.getByRole("button", { name: /feat/ }).click();
   await page.getByRole("button", { name: "Create session" }).click();
   await expect(

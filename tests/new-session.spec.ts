@@ -52,6 +52,29 @@ test("a git repo shows the worktree tabs", async ({ page }) => {
   await expect(page.getByRole("tab", { name: "Create Worktree" })).toBeVisible();
 });
 
+test("Create Worktree is the tab a git repo opens on", async ({ page }) => {
+  await gotoApp(page, { git: gitRepo });
+  await openNew(page);
+  await expect(
+    page.getByRole("tab", { name: "Create Worktree" }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByPlaceholder("my-new-branch")).toBeVisible();
+});
+
+test("resolving a repo while typing leaves the caret in the path", async ({
+  page,
+}) => {
+  await gotoApp(page, { git: gitRepo });
+  await openNew(page);
+  const path = page.getByPlaceholder("/path/to/folder");
+  await path.click();
+  await path.fill("/home/test");
+  // The Create Worktree tab mounts once the repo resolves; its branch field
+  // must not steal focus from the path the user is still editing.
+  await expect(page.getByPlaceholder("my-new-branch")).toBeVisible();
+  await expect(path).toBeFocused();
+});
+
 test("create a worktree-backed session calls create_worktree", async ({
   page,
 }) => {
