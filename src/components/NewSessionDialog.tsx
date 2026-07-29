@@ -64,8 +64,11 @@ export function NewSessionDialog() {
   // Guards against out-of-order resolution when the user keeps typing.
   const loadReq = useRef(0);
 
-  // Anchor to a directory: select it and load its git state (if any).
-  const loadDir = async (dir: string) => {
+  // Anchor to a directory: select it and load its git state (if any). Paths
+  // arrive with a trailing slash from the default and from completions; strip
+  // it so the anchored path compares equal to the ones git reports.
+  const loadDir = async (raw: string) => {
+    const dir = raw.length > 1 ? raw.replace(/\/+$/, "") : raw;
     const req = ++loadReq.current;
     setTab("create");
     setTabPicked(false);
@@ -145,7 +148,10 @@ export function NewSessionDialog() {
       const wt = await worktreeInfo(start).catch(() => null);
       if (cancelled) return;
       const dir = wt?.is_linked ? wt.main : start;
-      setPathInput(abbreviatePath(dir));
+      // Trailing slash: it reads as a folder, and it keeps the completion menu
+      // shut when the dialog hands the input focus (there's no partial segment
+      // left to complete).
+      setPathInput(abbreviatePath(dir) + "/");
       await loadDir(dir);
     })();
     return () => {

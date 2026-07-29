@@ -112,9 +112,7 @@ test("a worktree session prefills the repo it came from", async ({ page }) => {
     },
   });
   await openNew(page);
-  await expect(page.getByPlaceholder("/path/to/folder")).toHaveValue(
-    "~/thel",
-  );
+  await expect(page.getByPlaceholder("/path/to/folder")).toHaveValue("~/thel/");
 });
 
 // Only a linked worktree redirects: a plain subdirectory of a repo reports the
@@ -128,7 +126,26 @@ test("a non-worktree session prefills its own folder", async ({ page }) => {
     },
   });
   await openNew(page);
-  await expect(page.getByPlaceholder("/path/to/folder")).toHaveValue("~");
+  await expect(page.getByPlaceholder("/path/to/folder")).toHaveValue("~/");
+});
+
+// The prefill has to be a real subdirectory: a bare "~" has no segment to
+// complete, so it would pass whether or not the trailing slash is there.
+test("the completion menu stays shut when the dialog opens", async ({
+  page,
+}) => {
+  await gotoApp(page, {
+    worktreeInfo: {
+      is_linked: true,
+      path: "/home/test/thel.my-worktree",
+      main: "/home/test/thel",
+    },
+    completeDir: ["/home/test/thelma", "/home/test/thelonious"],
+  });
+  await openNew(page);
+  // The dialog focuses the path input, which would otherwise open the menu.
+  await expect(page.getByPlaceholder("/path/to/folder")).toBeFocused();
+  await expect(page.getByText(/thelonious/)).toHaveCount(0);
 });
 
 test("directory autocomplete shows suggestions while typing", async ({
