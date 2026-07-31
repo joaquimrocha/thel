@@ -540,6 +540,7 @@ function SessionRow({
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => setTimeout(onClose, 0)}>
           Close
+          <ContextMenuShortcut>{shortcutLabel("close-session")}</ContextMenuShortcut>
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
