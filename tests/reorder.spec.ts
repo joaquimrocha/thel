@@ -89,6 +89,25 @@ test("dragging a tab onto another pane moves it and collapses the empty pane", a
   await expect(tabs).toHaveCount(2);
 });
 
+test("Ctrl+Alt+] moves the active terminal to the next pane", async ({
+  page,
+}) => {
+  await gotoApp(page);
+  await createSession(page);
+  await page.keyboard.press("Control+Shift+D"); // split into two panes
+
+  const panes = page.locator("[data-pane-group]");
+  const tabs = page.getByTestId("terminal-tab");
+  await expect(panes).toHaveCount(2);
+  await expect(tabs).toHaveCount(2);
+
+  // The split's new terminal is active; moving it empties its pane, which
+  // collapses, leaving both tabs in one pane.
+  await page.keyboard.press("Control+Alt+BracketRight");
+  await expect(panes).toHaveCount(1);
+  await expect(tabs).toHaveCount(2);
+});
+
 test("a tab dragged to another pane and back stays visible", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
