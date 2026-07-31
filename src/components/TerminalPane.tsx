@@ -30,6 +30,7 @@ import {
   copyText,
   pasteText,
   dedent,
+  paragraphs,
   clipboardFiles,
   shellQuote,
 } from "@/lib/clipboard";
@@ -54,10 +55,18 @@ import {
 } from "@/lib/theme";
 import { hasVisibleOutput } from "@/lib/ansi";
 
+type CopyMode = "raw" | "dedent" | "paragraph";
+
+const COPY_TOAST: Record<CopyMode, string> = {
+  raw: "Copied",
+  dedent: "Copied (no indentation)",
+  paragraph: "Copied (as paragraph)",
+};
+
 // Transient "Copied" toast after a terminal copy, if the user enabled it.
-function notifyCopied(dedented: boolean) {
+function notifyCopied(mode: CopyMode) {
   if (usePrefs.getState().copyToasts) {
-    toast(dedented ? "Copied (no indentation)" : "Copied", {
+    toast(COPY_TOAST[mode], {
       duration: 1500,
       // Semi-transparent (! overrides the Toaster's solid bg-popover) so the
       // brief copy confirmation is less obtrusive over terminal output.
@@ -68,11 +77,13 @@ function notifyCopied(dedented: boolean) {
 
 // Copy the terminal's selection (optionally dedented), shared by the copy
 // shortcut and the right-click menu.
-function copyTermSelection(term: Terminal, mode: "raw" | "dedent") {
+function copyTermSelection(term: Terminal, mode: CopyMode) {
   const sel = term.getSelection();
   if (!sel) return;
-  void copyText(mode === "dedent" ? dedent(sel) : sel);
-  notifyCopied(mode === "dedent");
+  void copyText(
+    mode === "dedent" ? dedent(sel) : mode === "paragraph" ? paragraphs(sel) : sel,
+  );
+  notifyCopied(mode);
 }
 
 // Paste the clipboard into the terminal, shared by the paste shortcut and menu.
@@ -259,6 +270,11 @@ export function TerminalPane({
       if (matches(e, "terminal-copy-dedent")) {
         e.preventDefault();
         copyTermSelection(term, "dedent");
+        return false;
+      }
+      if (matches(e, "terminal-copy-paragraph")) {
+        e.preventDefault();
+        copyTermSelection(term, "paragraph");
         return false;
       }
       if (matches(e, "terminal-copy")) {
@@ -580,7 +596,7 @@ export function TerminalPane({
   }, [focusNonce, focused]);
 
   // Right-click menu acts on this exact pane's terminal.
-  const copySelection = (mode: "raw" | "dedent") => {
+  const copySelection = (mode: CopyMode) => {
     if (termRef.current) copyTermSelection(termRef.current, mode);
   };
   const pasteClipboard = () => {
@@ -606,7 +622,7 @@ export function TerminalPane({
             <ContextMenuItem
               onSelect={() => {
                 void copyText(linkUrl);
-                notifyCopied(false);
+                notifyCopied("raw");
               }}
             >
               Copy URL
@@ -624,6 +640,13 @@ export function TerminalPane({
         >
           Copy without indentation
           <ContextMenuShortcut>{shortcutLabel("terminal-copy-dedent")}</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!hasSelection}
+          onSelect={() => copySelection("paragraph")}
+        >
+          Copy as paragraph
+          <ContextMenuShortcut>{shortcutLabel("terminal-copy-paragraph")}</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={pasteClipboard}>
