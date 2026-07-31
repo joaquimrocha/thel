@@ -172,6 +172,14 @@ test("Ctrl+Shift+D splits into a second pane", async ({ page }) => {
   await expect(page.locator("[data-pane-group]")).toHaveCount(2);
 });
 
+test("Ctrl+Alt+D splits into a pane below", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await expect(page.locator("[data-pane-group]")).toHaveCount(1);
+  await page.keyboard.press("Control+Alt+KeyD");
+  await expect(page.locator("[data-pane-group]")).toHaveCount(2);
+});
+
 test("closing a pane's terminals collapses the split", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
