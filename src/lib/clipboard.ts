@@ -37,6 +37,26 @@ export function shellQuote(path: string): string {
 }
 
 /**
+ * Reflow copied text into paragraphs: consecutive lines join into one line
+ * with their indentation collapsed to a single space, and blank lines become
+ * paragraph breaks (one newline). Undoes the hard wrapping + indentation of
+ * quoted output (man pages, commit messages, agent replies).
+ */
+export function paragraphs(text: string): string {
+  return text
+    .split(/\n[ \t]*\n/)
+    .map((p) =>
+      p
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .join(" "),
+    )
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
  * Left-align a copied indented block (code, log output) while keeping relative
  * indentation. The dedent width is the smallest indent of the lines *after* the
  * first non-blank line, so the body de-indents to meet the first line even when
