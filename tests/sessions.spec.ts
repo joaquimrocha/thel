@@ -172,6 +172,17 @@ test("Ctrl+Shift+D splits into a second pane", async ({ page }) => {
   await expect(page.locator("[data-pane-group]")).toHaveCount(2);
 });
 
+test("Ctrl+Shift+Comma opens the active session's settings", async ({
+  page,
+}) => {
+  await gotoApp(page);
+  await createSession(page);
+  await page.keyboard.press("Control+Shift+Comma");
+  await expect(
+    page.getByRole("dialog").getByText("Session Settings"),
+  ).toBeVisible();
+});
+
 test("Ctrl+Alt+D splits into a pane below", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
