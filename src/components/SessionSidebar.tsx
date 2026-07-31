@@ -479,7 +479,7 @@ function SessionRow({
             openSessionSettings(session.id);
           }}
           className={cn(
-            "shrink-0 rounded opacity-0 hover:bg-background/60",
+            "shrink-0 rounded opacity-0 focus-visible:opacity-100 hover:bg-background/60",
             hoverArmed && "group-hover:opacity-100",
           )}
           aria-label="Session settings"
@@ -494,7 +494,7 @@ function SessionRow({
             onClose();
           }}
           className={cn(
-            "shrink-0 rounded opacity-0 hover:bg-background/60",
+            "shrink-0 rounded opacity-0 focus-visible:opacity-100 hover:bg-background/60",
             hoverArmed && "group-hover:opacity-100",
           )}
           aria-label="Close session"
