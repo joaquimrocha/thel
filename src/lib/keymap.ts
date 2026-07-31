@@ -89,6 +89,16 @@ export const SHORTCUTS: Shortcut[] = [
     repeatThrottleMs: 500,
   },
   {
+    id: "split-pane-down",
+    description: "Split down",
+    defaultCombo: def(
+      { code: "KeyD", meta: true, shift: true },
+      { code: "KeyD", ctrl: true, alt: true },
+    ),
+    run: () => void splitPane(undefined, "col"),
+    repeatThrottleMs: 500,
+  },
+  {
     id: "close-terminal",
     description: "Close terminal",
     defaultCombo: def(

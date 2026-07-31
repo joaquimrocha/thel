@@ -201,7 +201,7 @@ export function TerminalTabs({
               <SplitSquareHorizontal className="size-4" />
             </Button>
           </ActionTooltip>
-          <ActionTooltip label="Split down" side="right">
+          <ActionTooltip label="Split down" shortcutId="split-pane-down" side="right">
             <Button
               variant="ghost"
               size="icon"
