@@ -209,6 +209,23 @@ export function moveTerminal(dir: 1 | -1) {
   reorderTerminal(s.id, g.id, g.activeTerminalId, i + dir);
 }
 
+/** Move the active terminal to the next (1) or previous (-1) pane, wrapping.
+ * The moved terminal stays active, now in the target pane. */
+export function moveTerminalToPane(dir: 1 | -1) {
+  const { sessions, activeSessionId, moveTerminalToGroup } =
+    useSessions.getState();
+  const s = sessions.find((x) => x.id === activeSessionId);
+  const g = s && activeGroupOf(s);
+  if (!s || !g || !g.activeTerminalId) return;
+  const ids = layoutLeafIds(s.layout); // visual order
+  if (ids.length <= 1) return;
+  const i = ids.indexOf(g.id);
+  const targetId = ids[(i + dir + ids.length) % ids.length];
+  const target = s.groups.find((x) => x.id === targetId);
+  if (!target) return;
+  moveTerminalToGroup(s.id, g.activeTerminalId, targetId, target.terminals.length);
+}
+
 /** Move the active session up (-1) or down (1) in the sidebar. */
 export function moveSession(dir: 1 | -1) {
   const { sessions, activeSessionId, reorderSession } = useSessions.getState();

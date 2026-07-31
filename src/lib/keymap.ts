@@ -11,6 +11,7 @@ import {
   moveSession,
   renameActiveTerminal,
   openActiveSessionSettings,
+  moveTerminalToPane,
 } from "@/lib/actions";
 
 export interface Combo {
@@ -215,6 +216,26 @@ export const SHORTCUTS: Shortcut[] = [
     description: "Move terminal left",
     defaultCombo: { code: "PageUp", ctrl: true, shift: true },
     run: () => moveTerminal(-1),
+  },
+  {
+    id: "move-terminal-next-pane",
+    description: "Move terminal to next pane",
+    defaultCombo: def(
+      { code: "BracketRight", meta: true, alt: true },
+      { code: "BracketRight", ctrl: true, alt: true },
+    ),
+    run: () => moveTerminalToPane(1),
+    repeatThrottleMs: 500,
+  },
+  {
+    id: "move-terminal-prev-pane",
+    description: "Move terminal to previous pane",
+    defaultCombo: def(
+      { code: "BracketLeft", meta: true, alt: true },
+      { code: "BracketLeft", ctrl: true, alt: true },
+    ),
+    run: () => moveTerminalToPane(-1),
+    repeatThrottleMs: 500,
   },
   {
     id: "move-session-down",
