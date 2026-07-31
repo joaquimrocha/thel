@@ -36,6 +36,17 @@ test("palette opens the launchers manager", async ({ page }) => {
   ).toBeVisible();
 });
 
+test("sidebar resize handle works with arrow keys", async ({ page }) => {
+  await gotoApp(page);
+  const handle = page.getByRole("separator", { name: "Resize sidebar" });
+  await handle.focus();
+  const before = Number(await handle.getAttribute("aria-valuenow"));
+  await handle.press("ArrowRight");
+  await expect(handle).toHaveAttribute("aria-valuenow", String(before + 16));
+  await handle.press("ArrowLeft");
+  await expect(handle).toHaveAttribute("aria-valuenow", String(before));
+});
+
 test("Ctrl+B toggles the sidebar's session list", async ({ page }) => {
   await gotoApp(page);
   await expect(page.locator("[data-session-list]")).toBeVisible();
