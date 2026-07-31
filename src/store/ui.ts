@@ -60,8 +60,10 @@ interface UIState {
   toggleProfileMenu: () => void;
 
   // Bumped to ask the active terminal to refocus (e.g. leaving sidebar nav).
+  // Cleared once served, so a later remount of the pane can't replay it.
   focusNonce: number;
   focusTerminal: () => void;
+  clearFocusRequest: () => void;
 
   // Which terminal's tab label should enter rename mode, bumped per request
   // (null = none). Lives here so the rename shortcut and the tab context menu
@@ -165,6 +167,7 @@ export const useUI = create<UIState>((set) => ({
 
   focusNonce: 0,
   focusTerminal: () => set((s) => ({ focusNonce: s.focusNonce + 1 })),
+  clearFocusRequest: () => set({ focusNonce: 0 }),
 
   renameTerminalReq: null,
   requestTerminalRename: (terminalId) =>
