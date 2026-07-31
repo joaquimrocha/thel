@@ -183,6 +183,14 @@ test("Ctrl+Shift+Comma opens the active session's settings", async ({
   ).toBeVisible();
 });
 
+test("Ctrl+Alt+Shift+W closes the active session", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await page.keyboard.press("Control+Alt+Shift+W");
+  await page.getByRole("button", { name: "Close session" }).click();
+  await expect(page.getByText("No sessions open.")).toBeVisible();
+});
+
 test("Ctrl+Alt+D splits into a pane below", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);

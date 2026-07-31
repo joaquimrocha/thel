@@ -160,6 +160,12 @@ function activeTerminalId(): string | undefined {
   return (s && activeGroupOf(s))?.activeTerminalId;
 }
 
+/** Close the active session (with the usual confirmation). */
+export function closeActiveSession() {
+  const { activeSessionId } = useSessions.getState();
+  if (activeSessionId) void closeSessionConfirmed(activeSessionId);
+}
+
 /** Open the settings dialog (name + icon) of the active session. */
 export function openActiveSessionSettings() {
   const { activeSessionId } = useSessions.getState();

@@ -12,6 +12,7 @@ import {
   renameActiveTerminal,
   openActiveSessionSettings,
   moveTerminalToPane,
+  closeActiveSession,
 } from "@/lib/actions";
 
 export interface Combo {
@@ -126,6 +127,16 @@ export const SHORTCUTS: Shortcut[] = [
     // Shift so plain F2 still reaches TUI apps (htop, mc) in the terminal.
     defaultCombo: { code: "F2", shift: true },
     run: () => renameActiveTerminal(),
+  },
+  {
+    id: "close-session",
+    description: "Close session",
+    defaultCombo: def(
+      { code: "KeyW", meta: true, alt: true },
+      { code: "KeyW", ctrl: true, alt: true, shift: true },
+    ),
+    run: () => closeActiveSession(),
+    repeatThrottleMs: 500,
   },
   {
     id: "terminal-copy",
