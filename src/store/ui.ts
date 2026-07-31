@@ -63,6 +63,15 @@ interface UIState {
   focusNonce: number;
   focusTerminal: () => void;
 
+  // Which terminal's tab label should enter rename mode, bumped per request
+  // (null = none). Lives here so the rename shortcut and the tab context menu
+  // share one trigger.
+  renameTerminalReq: { id: string; nonce: number } | null;
+  requestTerminalRename: (terminalId: string) => void;
+  // Clear when editing ends (commit or cancel) so a remounted tab strip does
+  // not replay the request.
+  clearTerminalRename: () => void;
+
   sidebarWidth: number;
   setSidebarWidth: (w: number) => void;
   sidebarCollapsed: boolean;
@@ -156,6 +165,16 @@ export const useUI = create<UIState>((set) => ({
 
   focusNonce: 0,
   focusTerminal: () => set((s) => ({ focusNonce: s.focusNonce + 1 })),
+
+  renameTerminalReq: null,
+  requestTerminalRename: (terminalId) =>
+    set((s) => ({
+      renameTerminalReq: {
+        id: terminalId,
+        nonce: (s.renameTerminalReq?.nonce ?? 0) + 1,
+      },
+    })),
+  clearTerminalRename: () => set({ renameTerminalReq: null }),
 
   sidebarWidth: readWidth(),
   setSidebarWidth: (w) => {
