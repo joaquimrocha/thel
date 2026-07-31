@@ -16,6 +16,7 @@ import { usePrefs } from "@/store/prefs";
 import { useNotifications } from "@/store/notifications";
 import { useUI } from "@/store/ui";
 import { closeSessionConfirmed } from "@/lib/actions";
+import { shortcutLabel } from "@/store/keybindings";
 import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
 import { StatusDot, sessionDotState } from "./StatusDot";
 import { ActionTooltip } from "./ActionTooltip";
@@ -25,6 +26,7 @@ import {
   ContextMenuTrigger,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuShortcut,
 } from "@/components/ui/context-menu";
 
 export function SessionSidebar() {
@@ -470,7 +472,7 @@ function SessionRow({
           </span>
         )}
       </div>
-      <ActionTooltip label="Session settings">
+      <ActionTooltip label="Session settings" shortcutId="session-settings">
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -509,6 +511,7 @@ function SessionRow({
           onSelect={() => setTimeout(() => openSessionSettings(session.id), 0)}
         >
           Settings
+          <ContextMenuShortcut>{shortcutLabel("session-settings")}</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuItem
           onSelect={() =>

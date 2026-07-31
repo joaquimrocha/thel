@@ -160,6 +160,12 @@ function activeTerminalId(): string | undefined {
   return (s && activeGroupOf(s))?.activeTerminalId;
 }
 
+/** Open the settings dialog (name + icon) of the active session. */
+export function openActiveSessionSettings() {
+  const { activeSessionId } = useSessions.getState();
+  if (activeSessionId) useUI.getState().openSessionSettings(activeSessionId);
+}
+
 /** Start renaming the active terminal's tab label. */
 export function renameActiveTerminal() {
   const id = activeTerminalId();

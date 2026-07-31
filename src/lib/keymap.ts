@@ -10,6 +10,7 @@ import {
   moveTerminal,
   moveSession,
   renameActiveTerminal,
+  openActiveSessionSettings,
 } from "@/lib/actions";
 
 export interface Combo {
@@ -284,6 +285,15 @@ export const SHORTCUTS: Shortcut[] = [
     description: "Settings",
     defaultCombo: def({ code: "Comma", meta: true }, { code: "Comma", ctrl: true }),
     run: () => ui().openSettings(),
+  },
+  {
+    id: "session-settings",
+    description: "Session settings",
+    defaultCombo: def(
+      { code: "Comma", meta: true, shift: true },
+      { code: "Comma", ctrl: true, shift: true },
+    ),
+    run: () => openActiveSessionSettings(),
   },
   {
     id: "help",
