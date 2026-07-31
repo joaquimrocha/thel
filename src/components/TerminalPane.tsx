@@ -592,7 +592,10 @@ export function TerminalPane({
   // Refocus the active terminal on request (e.g. leaving sidebar navigation).
   const focusNonce = useUI((s) => s.focusNonce);
   useEffect(() => {
-    if (focused && focusNonce) termRef.current?.focus();
+    if (focused && focusNonce) {
+      termRef.current?.focus();
+      useUI.getState().clearFocusRequest();
+    }
   }, [focusNonce, focused]);
 
   // Right-click menu acts on this exact pane's terminal.
