@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { useSessions, revertBrokenIcon, type Session } from "@/store/sessions";
 import { usePrefs } from "@/store/prefs";
 import { useNotifications } from "@/store/notifications";
-import { useUI } from "@/store/ui";
+import { useUI, SIDEBAR_MIN, SIDEBAR_MAX } from "@/store/ui";
 import { closeSessionConfirmed } from "@/lib/actions";
 import { shortcutLabel } from "@/store/keybindings";
 import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
@@ -319,9 +319,21 @@ export function SessionSidebar() {
       >
         {body}
         <div
-          onMouseDown={startResize}
-          className="absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize hover:bg-border"
+          role="separator"
+          aria-orientation="vertical"
           aria-label="Resize sidebar"
+          aria-valuenow={width}
+          aria-valuemin={SIDEBAR_MIN}
+          aria-valuemax={SIDEBAR_MAX}
+          tabIndex={0}
+          onMouseDown={startResize}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+              e.preventDefault();
+              setSidebarWidth(width + (e.key === "ArrowRight" ? 16 : -16));
+            }
+          }}
+          className="absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize outline-none hover:bg-border focus-visible:bg-ring"
         />
       </aside>
     );
