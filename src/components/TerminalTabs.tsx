@@ -291,7 +291,7 @@ export function TerminalTabs({
                   void closeTerminalConfirmed(t.id);
                 }}
                 className={cn(
-                  "ml-1 rounded opacity-0 hover:bg-background/60",
+                  "ml-1 rounded opacity-0 focus-visible:opacity-100 hover:bg-background/60",
                   // Only reveal on hover when not dragging and not in the brief
                   // window after a drag before the pointer moves (stuck :hover).
                   hoverArmed && "group-hover:opacity-100",
