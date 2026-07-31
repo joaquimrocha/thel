@@ -9,6 +9,7 @@ import {
   cyclePane,
   moveTerminal,
   moveSession,
+  renameActiveTerminal,
 } from "@/lib/actions";
 
 export interface Combo {
@@ -106,6 +107,13 @@ export const SHORTCUTS: Shortcut[] = [
     ),
     run: () => closeAllTerminals(),
     repeatThrottleMs: 500,
+  },
+  {
+    id: "rename-terminal",
+    description: "Rename terminal",
+    // Shift so plain F2 still reaches TUI apps (htop, mc) in the terminal.
+    defaultCombo: { code: "F2", shift: true },
+    run: () => renameActiveTerminal(),
   },
   {
     id: "terminal-copy",

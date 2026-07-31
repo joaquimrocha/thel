@@ -13,6 +13,7 @@ export function EditableLabel({
   fallback,
   className,
   editSignal,
+  onEditEnd,
 }: {
   value: string;
   onCommit: (value: string) => void;
@@ -21,6 +22,8 @@ export function EditableLabel({
   className?: string;
   /** Bump to a new number to start editing from outside (e.g. a context menu). */
   editSignal?: number;
+  /** Called when editing stops, whether committed or cancelled. */
+  onEditEnd?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -51,6 +54,7 @@ export function EditableLabel({
       onCommit(fallback);
     }
     setEditing(false);
+    onEditEnd?.();
   };
 
   if (editing) {
@@ -65,7 +69,10 @@ export function EditableLabel({
         onKeyDown={(e) => {
           e.stopPropagation();
           if (e.key === "Enter") commit();
-          else if (e.key === "Escape") setEditing(false);
+          else if (e.key === "Escape") {
+            setEditing(false);
+            onEditEnd?.();
+          }
         }}
         className={cn(
           // w-full so the input fills its column instead of falling back to the

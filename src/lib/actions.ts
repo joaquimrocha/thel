@@ -160,6 +160,12 @@ function activeTerminalId(): string | undefined {
   return (s && activeGroupOf(s))?.activeTerminalId;
 }
 
+/** Start renaming the active terminal's tab label. */
+export function renameActiveTerminal() {
+  const id = activeTerminalId();
+  if (id) useUI.getState().requestTerminalRename(id);
+}
+
 /** Zoom the active terminal in (+1) or out (-1), one px step per press. */
 export function zoomActiveTerminal(delta: 1 | -1) {
   const id = activeTerminalId();

@@ -36,6 +36,36 @@ test("rename a terminal tab from its context menu", async ({ page }) => {
   ).toBeVisible();
 });
 
+test("rename a terminal tab with Shift+F2", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await page.keyboard.press("Shift+F2");
+  const input = page.locator("input:focus");
+  await input.fill("KeyTerm");
+  await input.press("Enter");
+  await expect(
+    page.locator('[data-testid="terminal-tab"]', { hasText: "KeyTerm" }),
+  ).toBeVisible();
+});
+
+test("a cancelled rename does not re-open when revisiting the session", async ({
+  page,
+}) => {
+  await gotoApp(page);
+  await createSession(page);
+  await page.keyboard.press("Shift+F2");
+  await expect(page.locator("input:focus")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("input:focus")).toHaveCount(0);
+
+  // Cycling to another session unmounts the tab strip; coming back remounts
+  // it, which must not replay the cancelled rename request.
+  await createSession(page); // a second session, now active
+  await page.keyboard.press("Control+Alt+PageDown"); // wraps back to the first
+  await expect(page.getByTestId("terminal-tab")).toBeVisible();
+  await expect(page.getByTestId("terminal-tab").locator("input")).toHaveCount(0);
+});
+
 test("close a terminal tab from its context menu", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);

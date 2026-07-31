@@ -55,10 +55,7 @@ export function TerminalTabs({
   // over; disarm on any drag and re-arm on the next real pointer move, which
   // re-establishes the correct :hover.
   const [hoverArmed, setHoverArmed] = useState(true);
-  // Which tab's label should enter rename mode, bumped per request.
-  const [renameReq, setRenameReq] = useState<{ id: string; nonce: number } | null>(
-    null,
-  );
+  const renameReq = useUI((s) => s.renameTerminalReq);
   const stripRef = useRef<HTMLDivElement>(null);
   const prevLefts = useRef<Map<string, number>>(new Map());
 
@@ -281,6 +278,7 @@ export function TerminalTabs({
               onCommit={(v) => renameTerminal(t.id, v)}
               fallback={t.defaultTitle}
               editSignal={renameReq?.id === t.id ? renameReq.nonce : undefined}
+              onEditEnd={() => useUI.getState().clearTerminalRename()}
               className={cn(
                 "truncate",
                 groupActive && t.id === group.activeTerminalId && "font-semibold",
@@ -311,11 +309,12 @@ export function TerminalTabs({
                   // Defer past the menu's close-and-refocus, which would
                   // otherwise blur the rename input right after it mounts.
                   setTimeout(() => {
-                    setRenameReq((r) => ({ id: t.id, nonce: (r?.nonce ?? 0) + 1 }));
+                    useUI.getState().requestTerminalRename(t.id);
                   }, 0);
                 }}
               >
                 Rename
+                <ContextMenuShortcut>{shortcutLabel("rename-terminal")}</ContextMenuShortcut>
               </ContextMenuItem>
               <ContextMenuItem
                 // May open a confirm dialog; defer past the menu's close like
