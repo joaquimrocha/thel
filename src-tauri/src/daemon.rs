@@ -369,6 +369,10 @@ fn strip_queries(input: &[u8]) -> Vec<u8> {
                         }
                         i = j + 1;
                         continue;
+                    } else {
+                        // Incomplete CSI sequence at end of chunk: preserve intact.
+                        out.extend_from_slice(&input[i..]);
+                        break;
                     }
                 }
                 b']' => {
@@ -392,10 +396,15 @@ fn strip_queries(input: &[u8]) -> Vec<u8> {
                         }
                         j += 1;
                     }
-                    let body_end = j.min(input.len()).saturating_sub(term_len);
+                    if term_len == 0 {
+                        // Incomplete OSC sequence at end of chunk: preserve intact.
+                        out.extend_from_slice(&input[i..]);
+                        break;
+                    }
+                    let body_end = j.saturating_sub(term_len);
                     let is_query = input[i + 2..body_end].ends_with(b";?");
                     if !is_query {
-                        out.extend_from_slice(&input[i..j.min(input.len())]);
+                        out.extend_from_slice(&input[i..j]);
                     }
                     i = j;
                     continue;
@@ -1399,6 +1408,20 @@ mod tests {
         assert_eq!(strip_queries(&link), link);
         let title = b"\x1b]0;ready?\x07ok".to_vec();
         assert_eq!(strip_queries(&title), title);
+    }
+
+    #[test]
+    fn preserves_incomplete_escape_sequences_at_chunk_boundaries() {
+        // Truncated CSI sequence at end of chunk.
+        let csi = b"hello\x1b[6".to_vec();
+        assert_eq!(strip_queries(&csi), csi);
+
+        // Truncated OSC sequence at end of chunk (no BEL or ST yet).
+        let osc = b"hello\x1b]11;?".to_vec();
+        assert_eq!(strip_queries(&osc), osc);
+
+        let osc_title = b"hello\x1b]0;title".to_vec();
+        assert_eq!(strip_queries(&osc_title), osc_title);
     }
 
     // ---- wire protocol framing: [u8 type][u32 LE len][payload] ----
