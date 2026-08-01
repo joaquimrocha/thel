@@ -74,6 +74,17 @@ fn terminal_status(state: State<SessionManager>, id: String) -> TermStatus {
 }
 
 /// Permanently destroy a terminal (the user closed the tab).
+/// CPU time and memory of each terminal's process tree. Sampled only while the
+/// session usage dialog is open; `async` keeps the /proc walk off the main
+/// thread, where it would compete with terminal input.
+#[tauri::command(async)]
+fn session_usage(
+    state: State<SessionManager>,
+    ids: Vec<String>,
+) -> std::collections::HashMap<String, pty::Usage> {
+    state.usage(&ids)
+}
+
 #[tauri::command]
 fn kill_terminal_window(state: State<SessionManager>, session_id: String, id: String) {
     state.kill_window(&session_id, &id);
@@ -513,6 +524,7 @@ pub fn run() {
             resize_session,
             close_session,
             terminal_status,
+            session_usage,
             kill_terminal_window,
             check_daemon,
             restart_daemon,

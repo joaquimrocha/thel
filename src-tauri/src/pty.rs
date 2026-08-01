@@ -296,6 +296,149 @@ impl SessionManager {
         }
     }
 
+    /// Resource use of the given terminals, keyed by id. Daemon tabs are resolved
+    /// by the daemon (it owns those processes); the rest are direct PTYs owned
+    /// here. Ids with no live process are simply absent from the result.
+    pub fn usage(&self, ids: &[String]) -> HashMap<String, Usage> {
+        let mut out = HashMap::new();
+        #[cfg(unix)]
+        {
+            let daemon_ids = self.daemon_ids.lock();
+            let mine: Vec<&String> = ids.iter().filter(|i| daemon_ids.contains(i.as_str())).collect();
+            let want = !mine.is_empty();
+            drop(daemon_ids);
+            if want {
+                let all = crate::daemon::usages();
+                out.extend(
+                    ids.iter()
+                        .filter_map(|id| Some((id.clone(), *all.get(id)?))),
+                );
+            }
+        }
+        let map = self.sessions.lock();
+        let roots: Vec<(String, u32)> = ids
+            .iter()
+            .filter(|id| !out.contains_key(*id))
+            .filter_map(|id| Some((id.clone(), map.get(id)?.pid?)))
+            .collect();
+        drop(map);
+        out.extend(process_tree_usage(&roots));
+        out
+    }
+}
+
+/// Resource use of one terminal's process tree. `cpu_seconds` is cumulative CPU
+/// time since the processes started, not a rate: the frontend turns successive
+/// samples into a percentage, so nothing here has to sample over time.
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Usage {
+    pub cpu_seconds: f64,
+    pub rss_bytes: u64,
+}
+
+#[cfg(target_os = "linux")]
+fn clock_ticks() -> f64 {
+    let t = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if t > 0 {
+        t as f64
+    } else {
+        100.0
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn page_size() -> u64 {
+    let p = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if p > 0 {
+        p as u64
+    } else {
+        4096
+    }
+}
+
+/// CPU time and resident memory for each root's whole process tree, so a shell
+/// running an agent reports the agent's cost too. One pass over /proc serves
+/// every root, since the alternative walks it once per terminal.
+///
+/// ponytail: RSS is summed naively, so pages shared between a parent and its
+/// children are counted more than once; read PSS from /proc/<pid>/smaps_rollup
+/// instead if the number ever has to be exact.
+#[cfg(target_os = "linux")]
+pub(crate) fn process_tree_usage(roots: &[(String, u32)]) -> HashMap<String, Usage> {
+    // pid -> (ppid, cpu ticks, rss pages)
+    let mut procs: HashMap<u32, (u32, u64, u64)> = HashMap::new();
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return HashMap::new();
+    };
+    for entry in dir.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        // Racy by nature: a process can exit between the readdir and this read.
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // comm (field 2) is parenthesised and may itself contain spaces and
+        // parens, so fields are counted from its *last* closing paren onwards,
+        // where index 0 is field 3.
+        let Some((_, rest)) = stat.rsplit_once(')') else {
+            continue;
+        };
+        let f: Vec<&str> = rest.split_ascii_whitespace().collect();
+        let at = |i: usize| f.get(i).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        // 1-based ppid=4, utime=14, stime=15, all shifted down by 3.
+        // RSS comes from statm, not stat's field 24: that one undercounts (its
+        // own man page calls it inaccurate), and statm's matches VmRSS, which is
+        // what ps and top show. Disagreeing with those would just look wrong.
+        let rss = std::fs::read_to_string(entry.path().join("statm"))
+            .ok()
+            .and_then(|m| m.split_ascii_whitespace().nth(1)?.parse::<u64>().ok())
+            .unwrap_or(0);
+        procs.insert(pid, (at(1) as u32, at(11) + at(12), rss));
+    }
+
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (pid, (ppid, _, _)) in &procs {
+        children.entry(*ppid).or_default().push(*pid);
+    }
+
+    let (ticks, page) = (clock_ticks(), page_size());
+    roots
+        .iter()
+        .map(|(id, root)| {
+            let (mut cpu, mut rss) = (0u64, 0u64);
+            let mut stack = vec![*root];
+            let mut seen = HashSet::new();
+            while let Some(pid) = stack.pop() {
+                // pid reuse could in principle close a loop; the guard is cheap.
+                if !seen.insert(pid) {
+                    continue;
+                }
+                if let Some((_, c, r)) = procs.get(&pid) {
+                    cpu += c;
+                    rss += r;
+                }
+                if let Some(kids) = children.get(&pid) {
+                    stack.extend(kids);
+                }
+            }
+            (
+                id.clone(),
+                Usage {
+                    cpu_seconds: cpu as f64 / ticks,
+                    rss_bytes: rss * page,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Reads /proc, so macOS and Windows report nothing until they get their own
+/// implementation; the dialog shows the terminals with no numbers.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn process_tree_usage(_roots: &[(String, u32)]) -> HashMap<String, Usage> {
+    HashMap::new()
 }
 
 /// A foreground command is running when the PTY's foreground process group isn't
@@ -372,6 +515,23 @@ fn read_loop(
 #[cfg(test)]
 mod tests {
     use super::decode_utf8_stream;
+
+    /// The /proc parse is easy to get subtly wrong (comm can contain spaces and
+    /// parens, and the field offsets shift past it), so pin it against the one
+    /// tree the test can be sure about: its own.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reads_a_process_tree_from_proc() {
+        let me = std::process::id();
+        let out = super::process_tree_usage(&[
+            ("self".to_string(), me),
+            // No such pid: must contribute nothing rather than be omitted or panic.
+            ("gone".to_string(), u32::MAX),
+        ]);
+        assert!(out["self"].rss_bytes > 0, "our own process has resident memory");
+        assert_eq!(out["gone"].rss_bytes, 0);
+        assert_eq!(out["gone"].cpu_seconds, 0.0);
+    }
 
     #[test]
     fn carries_a_multibyte_char_split_across_chunks() {

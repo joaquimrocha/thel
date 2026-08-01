@@ -170,6 +170,10 @@ enum Command {
     /// Busy state of every tab the daemon owns (foreground pgrp != shell). The
     /// reply is a StatusReply; used for the GUI's working-dot poll.
     Status,
+    /// CPU time and memory of every tab the daemon owns. The reply is a
+    /// UsageReply; asked for on demand by the GUI's session usage dialog, so
+    /// nothing samples this in the background.
+    Usage,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -189,6 +193,12 @@ enum Event {
 #[derive(Serialize, Deserialize)]
 struct StatusReply {
     busy: HashMap<String, bool>,
+}
+
+/// Reply to Command::Usage: tab id -> its process tree's CPU time and memory.
+#[derive(Serialize, Deserialize)]
+struct UsageReply {
+    usage: HashMap<String, crate::pty::Usage>,
 }
 
 fn frame_bytes(ty: u8, payload: &[u8]) -> Vec<u8> {
@@ -642,6 +652,10 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>) {
             let busy = daemon.statuses();
             client.enqueue(Arc::new(control_json(&StatusReply { busy })));
         }
+        Command::Usage => {
+            let usage = daemon.usages();
+            client.enqueue(Arc::new(control_json(&UsageReply { usage })));
+        }
     }
 }
 
@@ -805,6 +819,18 @@ impl Daemon {
             .iter()
             .map(|(id, t)| (id.clone(), tab_busy(t)))
             .collect()
+    }
+
+    fn usages(&self) -> HashMap<String, crate::pty::Usage> {
+        // Snapshot the pids under the lock and walk /proc outside it: the walk is
+        // slow enough that holding `tabs` would stall the PTY readers.
+        let roots: Vec<(String, u32)> = {
+            let tabs = self.tabs.lock();
+            tabs.iter()
+                .filter_map(|(id, t)| Some((id.clone(), t.child.lock().process_id()?)))
+                .collect()
+        };
+        crate::pty::process_tree_usage(&roots)
     }
 
     /// Idle-exit when nothing uses the daemon: no clients AND no tabs. A live tab
@@ -1067,6 +1093,39 @@ pub fn statuses() -> std::collections::HashMap<String, bool> {
     }
     match read_frame(&mut stream) {
         Ok((CONTROL, p)) => parse_json::<StatusReply>(&p).map(|r| r.busy).unwrap_or(empty),
+        _ => empty,
+    }
+}
+
+/// CPU time and memory of every daemon tab, for the GUI's session usage dialog.
+/// Short-lived query connection like statuses(); empty on any error, so the
+/// dialog shows the terminals without numbers rather than failing.
+pub fn usages() -> std::collections::HashMap<String, crate::pty::Usage> {
+    let empty = std::collections::HashMap::new();
+    let Ok(mut stream) = UnixStream::connect(socket_path()) else {
+        return empty;
+    };
+    let hello = serde_json::to_vec(&Hello {
+        protocol: PROTOCOL_VERSION,
+        build: build_version(),
+    })
+    .unwrap_or_default();
+    if write_frame(&mut stream, CONTROL, &hello).is_err() {
+        return empty;
+    }
+    match read_frame(&mut stream) {
+        Ok((CONTROL, p)) => match parse_json::<HelloReply>(&p) {
+            Some(r) if r.ok => {}
+            _ => return empty,
+        },
+        _ => return empty,
+    }
+    let cmd = serde_json::to_vec(&Command::Usage).unwrap_or_default();
+    if write_frame(&mut stream, CONTROL, &cmd).is_err() {
+        return empty;
+    }
+    match read_frame(&mut stream) {
+        Ok((CONTROL, p)) => parse_json::<UsageReply>(&p).map(|r| r.usage).unwrap_or(empty),
         _ => empty,
     }
 }
