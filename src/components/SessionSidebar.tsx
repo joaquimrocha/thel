@@ -537,6 +537,7 @@ function SessionRow({
           }
         >
           Resource usage
+          <ContextMenuShortcut>{shortcutLabel("session-usage")}</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => setTimeout(onClose, 0)}>
           Close

@@ -172,6 +172,18 @@ export function openActiveSessionSettings() {
   if (activeSessionId) useUI.getState().openSessionSettings(activeSessionId);
 }
 
+// Toggle rather than open: the panel is non-modal and has no overlay, so the
+// same shortcut is the natural way to dismiss it.
+export function toggleActiveSessionUsage() {
+  const ui = useUI.getState();
+  if (ui.sessionUsage) {
+    ui.closeSessionUsage();
+    return;
+  }
+  const { activeSessionId } = useSessions.getState();
+  if (activeSessionId) ui.openSessionUsage(activeSessionId);
+}
+
 /** Start renaming the active terminal's tab label. */
 export function renameActiveTerminal() {
   const id = activeTerminalId();

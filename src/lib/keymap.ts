@@ -11,6 +11,7 @@ import {
   moveSession,
   renameActiveTerminal,
   openActiveSessionSettings,
+  toggleActiveSessionUsage,
   moveTerminalToPane,
   closeActiveSession,
 } from "@/lib/actions";
@@ -336,6 +337,15 @@ export const SHORTCUTS: Shortcut[] = [
       { code: "Comma", ctrl: true, shift: true },
     ),
     run: () => openActiveSessionSettings(),
+  },
+  {
+    id: "session-usage",
+    description: "Session resource usage",
+    defaultCombo: def(
+      { code: "KeyR", meta: true, shift: true },
+      { code: "KeyR", ctrl: true, shift: true },
+    ),
+    run: () => toggleActiveSessionUsage(),
   },
   {
     id: "help",
