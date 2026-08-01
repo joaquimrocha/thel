@@ -166,6 +166,19 @@ function install(config: MockConfig) {
           dead: m.terminalDead ?? false,
           code: m.terminalDead ? 0 : null,
         };
+      case "session_usage": {
+        // Climbing CPU seconds, so successive samples produce a rate the panel
+        // can actually render rather than a flat zero.
+        const store = w.__MOCK__ as Record<string, unknown>;
+        const n = ((store.usageTick as number) ?? 0) + 1;
+        store.usageTick = n;
+        return Object.fromEntries(
+          ((args.ids as string[]) || []).map((id) => [
+            id,
+            { cpuSeconds: n * 0.5, rssBytes: 64 * 1024 * 1024 },
+          ]),
+        );
+      }
       case "scroll_terminal": {
         const store = w.__MOCK__ as Record<string, unknown>;
         const list = (store.scrolls as unknown[]) || [];
