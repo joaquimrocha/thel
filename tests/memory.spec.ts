@@ -103,6 +103,83 @@ test("tab churn: open/pump/close terminals returns memory", async ({ page }) => 
   expect(perCycleKB).toBeLessThan(250);
 });
 
+// Close the only session via the sidebar button, accepting the confirm dialog.
+async function closeActiveSession(page: Page) {
+  await page.getByRole("button", { name: "Close session" }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close session" })
+    .click();
+  await expect(page.getByText("No sessions open.")).toBeVisible();
+}
+
+test("session churn: create/close plain sessions returns memory", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await gotoApp(page);
+  const cdp = await newCdp(page);
+
+  const cycle = async () => {
+    await createSession(page);
+    await pump(page, 256);
+    await closeActiveSession(page);
+  };
+
+  for (let i = 0; i < 3; i++) await cycle(); // warm-up
+  const h1 = await gcHeapMB(page, cdp);
+  const CYCLES = Number(process.env.MEM_CYCLES) || 10;
+  for (let i = 0; i < CYCLES; i++) await cycle();
+  const h2 = await gcHeapMB(page, cdp);
+
+  const perCycleKB = ((h2 - h1) * 1024) / CYCLES;
+  console.log(
+    `[memory] session churn: ${h1.toFixed(1)} -> ${h2.toFixed(1)} MB over ${CYCLES} cycles (${perCycleKB.toFixed(0)} KB/cycle)`,
+  );
+  expect(perCycleKB).toBeLessThan(250);
+});
+
+test("worktree session churn: create/close worktree sessions returns memory", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await gotoApp(page, {
+    git: {
+      root: "/home/test",
+      branch: "main",
+      branches: ["main", "dev"],
+      worktrees: [{ path: "/home/test", branch: "main", is_main: true }],
+    },
+    // Closing reports the session dir as a linked worktree, exercising the
+    // remove-worktree offer in the close dialog (left unchecked).
+    worktreeInfo: { is_linked: true, path: "/wt", main: "/home/test" },
+  });
+  const cdp = await newCdp(page);
+
+  let n = 0;
+  const cycle = async () => {
+    await page.keyboard.press("Control+Shift+N");
+    await page.getByRole("tab", { name: "Create Worktree" }).click();
+    await page.getByPlaceholder("my-new-branch").fill(`bench-${n++}`);
+    await page.getByRole("button", { name: "Create session" }).click();
+    await expect(page.locator(".xterm").first()).toBeVisible();
+    await pump(page, 256);
+    await closeActiveSession(page);
+  };
+
+  for (let i = 0; i < 3; i++) await cycle(); // warm-up
+  const h1 = await gcHeapMB(page, cdp);
+  const CYCLES = Number(process.env.MEM_CYCLES) || 10;
+  for (let i = 0; i < CYCLES; i++) await cycle();
+  const h2 = await gcHeapMB(page, cdp);
+
+  const perCycleKB = ((h2 - h1) * 1024) / CYCLES;
+  console.log(
+    `[memory] worktree churn: ${h1.toFixed(1)} -> ${h2.toFixed(1)} MB over ${CYCLES} cycles (${perCycleKB.toFixed(0)} KB/cycle)`,
+  );
+  expect(perCycleKB).toBeLessThan(250);
+});
+
 test("launcher churn: launching an app via a launcher stays clean", async ({
   page,
 }) => {
@@ -132,7 +209,7 @@ test("launcher churn: launching an app via a launcher stays clean", async ({
 
   for (let i = 0; i < 3; i++) await cycle(); // warm-up
   const h1 = await gcHeapMB(page, cdp);
-  const CYCLES = 10;
+  const CYCLES = Number(process.env.MEM_CYCLES) || 10;
   for (let i = 0; i < CYCLES; i++) await cycle();
   const h2 = await gcHeapMB(page, cdp);
 
