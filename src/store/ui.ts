@@ -73,6 +73,12 @@ interface UIState {
   openSessionSettings: (sessionId: string) => void;
   closeSessionSettings: () => void;
 
+  // The session whose resource usage dialog is open (null = closed). Nothing is
+  // sampled unless this is set.
+  sessionUsage: string | null;
+  openSessionUsage: (sessionId: string) => void;
+  closeSessionUsage: () => void;
+
   // The "add an icon to the library" dialog (global, not session-specific).
   addIconOpen: boolean;
   setAddIconOpen: (open: boolean) => void;
@@ -168,6 +174,10 @@ export const useUI = create<UIState>((set) => ({
   sessionSettings: null,
   openSessionSettings: (sessionId) => set({ sessionSettings: sessionId }),
   closeSessionSettings: () => set({ sessionSettings: null }),
+
+  sessionUsage: null,
+  openSessionUsage: (sessionId) => set({ sessionUsage: sessionId }),
+  closeSessionUsage: () => set({ sessionUsage: null }),
 
   addIconOpen: false,
   setAddIconOpen: (open) => set({ addIconOpen: open }),

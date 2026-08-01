@@ -425,6 +425,7 @@ function SessionRow({
   onMenuOpenChange: (open: boolean) => void;
 }) {
   const openSessionSettings = useUI((s) => s.openSessionSettings);
+  const openSessionUsage = useUI((s) => s.openSessionUsage);
   return (
     <ContextMenu onOpenChange={onMenuOpenChange}>
       <ContextMenuTrigger asChild>
@@ -508,6 +509,19 @@ function SessionRow({
           onSelect={() => setTimeout(() => openSessionSettings(session.id), 0)}
         >
           Settings
+        </ContextMenuItem>
+        <ContextMenuItem
+          onSelect={() =>
+            setTimeout(() => {
+              // The panel is docked beside the session it reports and closes
+              // when you navigate away, so bring that session up rather than
+              // describing one that isn't on screen.
+              onSelect();
+              openSessionUsage(session.id);
+            }, 0)
+          }
+        >
+          Resource usage
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => setTimeout(onClose, 0)}>
           Close

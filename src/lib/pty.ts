@@ -51,6 +51,18 @@ export const terminalStatus = (id: string) =>
 export const terminalBusy = (id: string) =>
   terminalStatus(id).then((s) => s.busy);
 
+export interface TerminalUsage {
+  // Cumulative CPU seconds of the terminal's whole process tree, not a rate:
+  // two samples make a percentage.
+  cpuSeconds: number;
+  rssBytes: number;
+}
+
+/** Resource use per terminal, sampled on demand. Ids whose process is gone are
+ * absent from the result. */
+export const sessionUsage = (ids: string[]) =>
+  invoke<Record<string, TerminalUsage>>("session_usage", { ids });
+
 /** Permanently destroy a terminal (kills its process; the user closed the tab). */
 export const killTerminalWindow = (sessionId: string, id: string) =>
   invoke<void>("kill_terminal_window", { sessionId, id });
