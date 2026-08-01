@@ -350,8 +350,8 @@ fn snapshot(sh: &TabShared) -> Vec<u8> {
     }
 }
 
-/// Remove terminal *query* sequences (DSR/CPR `ESC[…n`, DA `ESC[…c`, OSC
-/// color/etc queries containing `?`) from replayed scrollback. They produce no
+/// Remove terminal *query* sequences (DSR/CPR `ESC[…n`, DA `ESC[…c`, DECRQM
+/// `ESC[…$p`, OSC color/etc queries containing `?`) from replayed scrollback. They produce no
 /// visible output; their only effect is to make the reattaching xterm answer and
 /// send the reply as INPUT to the live shell, which lands as gibberish on the
 /// prompt (`11;rgb:…`, a stray CPR `R`). Their answers only mattered when the
@@ -369,7 +369,12 @@ fn strip_queries(input: &[u8]) -> Vec<u8> {
                         j += 1;
                     }
                     if j < input.len() {
-                        let drop = input[j] == b'n' || input[j] == b'c';
+                        // `$p` is DECRQM (mode query, e.g. the ?2026 sync-output
+                        // probe); xterm answers it with `…$y` on replay. j >= i+2,
+                        // so j-1 is at worst the `[`.
+                        let drop = input[j] == b'n'
+                            || input[j] == b'c'
+                            || (input[j] == b'p' && input[j - 1] == b'$');
                         if !drop {
                             out.extend_from_slice(&input[i..=j]);
                         }
@@ -1436,6 +1441,17 @@ mod tests {
             b"hi\x1b]11;?\x07there\x1b[6n\x1b[0mdone\x1b]10;?\x1b\\!\x1b[c".to_vec();
         let out = strip_queries(&input);
         assert_eq!(out, b"hithere\x1b[0mdone!");
+    }
+
+    #[test]
+    fn strips_decrqm_mode_queries_keeps_other_p_finals() {
+        // The synchronized-output probe (DECRQM): replaying it makes xterm
+        // answer `ESC[?2026;0$y` into the live shell.
+        let input = b"a\x1b[?2026$pb\x1b[4$pc".to_vec();
+        assert_eq!(strip_queries(&input), b"abc");
+        // DECSTR (soft reset, `!p`) is not a query and must survive.
+        let reset = b"\x1b[!pok".to_vec();
+        assert_eq!(strip_queries(&reset), reset);
     }
 
     #[test]
