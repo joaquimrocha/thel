@@ -924,6 +924,9 @@ fn kill_session_and_reap(child: &Arc<Mutex<Box<dyn Child + Send + Sync>>>) {
 /// session). A job that detached with setsid/nohup left the session and is
 /// spared, matching a normal terminal.
 fn kill_session(sid: i32) {
+    if sid <= 1 {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return;
     };
@@ -935,7 +938,11 @@ fn kill_session(sid: i32) {
         else {
             continue;
         };
-        if unsafe { libc::getsid(pid) } == sid {
+        if pid <= 1 {
+            continue;
+        }
+        let session_id = unsafe { libc::getsid(pid) };
+        if session_id > 0 && session_id == sid {
             unsafe { libc::kill(pid, libc::SIGKILL) };
         }
     }
@@ -1462,7 +1469,6 @@ mod tests {
         assert_eq!(strip_queries(&osc_title), osc_title);
     }
 
-
     #[test]
     fn subscriber_ref_counting_handles_overlapping_attach_detach() {
         let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -1507,6 +1513,14 @@ mod tests {
             }
         }
         assert_eq!(sh.subscribers.len(), 0);
+    }
+
+    #[test]
+    fn kill_session_rejects_invalid_sids() {
+        // Must safely return without attempting to signal PID 0 or PID 1.
+        kill_session(-1);
+        kill_session(0);
+        kill_session(1);
     }
 
     // ---- wire protocol framing: [u8 type][u32 LE len][payload] ----
