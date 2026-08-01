@@ -324,13 +324,19 @@ impl Client {
 
 // ---- daemon state ---------------------------------------------------------
 
+#[derive(Clone)]
+struct Subscriber {
+    client: Arc<Client>,
+    count: usize,
+}
+
 struct TabShared {
     parser: vt100::Parser,
     // Raw output captured while on the normal screen, replayed on reattach so the
     // client has scrollback. Alt-screen output is excluded (it has no scrollback
     // and the VTE snapshot covers it).
     scrollback: VecDeque<u8>,
-    subscribers: Vec<Arc<Client>>,
+    subscribers: Vec<Subscriber>,
 }
 
 /// What to send a (re)attaching client: the raw scrollback on the normal screen,
@@ -504,7 +510,8 @@ fn busy_monitor(daemon: Arc<Daemon>) {
                     if let Ok(Some(status)) = t.child.lock().try_wait() {
                         exited.push((id.clone(), Some(status.exit_code() as i32)));
                     }
-                    (id.clone(), tab_busy(t), t.shared.lock().subscribers.clone())
+                    let subs = t.shared.lock().subscribers.iter().map(|s| s.client.clone()).collect();
+                    (id.clone(), tab_busy(t), subs)
                 })
                 .collect()
         };
@@ -634,7 +641,7 @@ fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
 
     let shareds: Vec<_> = daemon.tabs.lock().values().map(|t| t.shared.clone()).collect();
     for sh in shareds {
-        sh.lock().subscribers.retain(|c| !Arc::ptr_eq(c, &client));
+        sh.lock().subscribers.retain(|s| !Arc::ptr_eq(&s.client, &client));
     }
 }
 
@@ -701,11 +708,13 @@ impl Daemon {
             // lock, so it precedes any live output (tab_reader clones the
             // subscriber list under the same lock).
             client.enqueue(Arc::new(frame_bytes(OUTPUT, &id_payload(id, &snap))));
-            // A client re-opening a tab it already subscribes to (e.g. after a
-            // webview reload over the same connection) must not be added twice,
-            // or it receives every output frame once per entry.
-            if !sh.subscribers.iter().any(|c| Arc::ptr_eq(c, client)) {
-                sh.subscribers.push(client.clone());
+            if let Some(sub) = sh.subscribers.iter_mut().find(|s| Arc::ptr_eq(&s.client, client)) {
+                sub.count += 1;
+            } else {
+                sh.subscribers.push(Subscriber {
+                    client: client.clone(),
+                    count: 1,
+                });
             }
             drop(sh);
             return Ok(());
@@ -733,6 +742,28 @@ impl Daemon {
         }));
         let child = Arc::new(Mutex::new(child));
 
+        let mut tabs = self.tabs.lock();
+        if let Some(existing_tab) = tabs.get(id) {
+            // Concurrent open call raced and created this tab first.
+            // Kill extra child process and reattach to existing tab.
+            kill_session_and_reap(&child);
+            let shared = existing_tab.shared.clone();
+            drop(tabs);
+            let mut sh = shared.lock();
+            let snap = snapshot(&sh);
+            client.enqueue(Arc::new(frame_bytes(OUTPUT, &id_payload(id, &snap))));
+            if let Some(sub) = sh.subscribers.iter_mut().find(|s| Arc::ptr_eq(&s.client, client)) {
+                sub.count += 1;
+            } else {
+                sh.subscribers.push(Subscriber {
+                    client: client.clone(),
+                    count: 1,
+                });
+            }
+            drop(sh);
+            return Ok(());
+        }
+
         std::thread::spawn({
             let (id, shared, child, daemon) =
                 (id.to_string(), shared.clone(), child.clone(), self.clone());
@@ -743,10 +774,13 @@ impl Daemon {
             let mut sh = shared.lock();
             let snap = snapshot(&sh);
             client.enqueue(Arc::new(frame_bytes(OUTPUT, &id_payload(id, &snap))));
-            sh.subscribers.push(client.clone());
+            sh.subscribers.push(Subscriber {
+                client: client.clone(),
+                count: 1,
+            });
             drop(sh);
         }
-        self.tabs.lock().insert(
+        tabs.insert(
             id.to_string(),
             Tab {
                 master,
@@ -755,6 +789,7 @@ impl Daemon {
                 shared,
             },
         );
+        drop(tabs);
         self.generation.fetch_add(1, Ordering::SeqCst);
         eprintln!("[thel-daemon] spawned tab {id} ('{command}')");
         Ok(())
@@ -762,10 +797,13 @@ impl Daemon {
 
     fn detach(&self, id: &str, client: &Arc<Client>) {
         if let Some(t) = self.tabs.lock().get(id) {
-            t.shared
-                .lock()
-                .subscribers
-                .retain(|c| !Arc::ptr_eq(c, client));
+            let mut sh = t.shared.lock();
+            if let Some(pos) = sh.subscribers.iter().position(|s| Arc::ptr_eq(&s.client, client)) {
+                sh.subscribers[pos].count = sh.subscribers[pos].count.saturating_sub(1);
+                if sh.subscribers[pos].count == 0 {
+                    sh.subscribers.swap_remove(pos);
+                }
+            }
         }
     }
 
@@ -774,7 +812,7 @@ impl Daemon {
     // subscribers under the tabs lock, then enqueue.
     fn notify_tab(&self, id: &str, message: String) {
         let subs = match self.tabs.lock().get(id) {
-            Some(t) => t.shared.lock().subscribers.clone(),
+            Some(t) => t.shared.lock().subscribers.iter().map(|s| s.client.clone()).collect::<Vec<_>>(),
             None => return,
         };
         let ev = Arc::new(control_json(&Event::TabNotify {
@@ -914,7 +952,7 @@ fn finish_tab(daemon: &Arc<Daemon>, id: &str, code: Option<i32>) {
         return; // already finished by another path
     };
     kill_session_and_reap(&t.child);
-    let subs = t.shared.lock().subscribers.clone();
+    let subs = t.shared.lock().subscribers.iter().map(|s| s.client.clone()).collect::<Vec<_>>();
     let ev = Arc::new(control_json(&Event::TabExited {
         id: id.to_string(),
         code,
@@ -953,7 +991,7 @@ fn tab_reader(
                             sh.scrollback.drain(0..over);
                         }
                     }
-                    sh.subscribers.clone()
+                    sh.subscribers.iter().map(|s| s.client.clone()).collect::<Vec<_>>()
                 };
                 let frame = Arc::new(frame_bytes(OUTPUT, &id_payload(&id, &buf[..n])));
                 for c in &subs {
@@ -1422,6 +1460,53 @@ mod tests {
 
         let osc_title = b"hello\x1b]0;title".to_vec();
         assert_eq!(strip_queries(&osc_title), osc_title);
+    }
+
+
+    #[test]
+    fn subscriber_ref_counting_handles_overlapping_attach_detach() {
+        let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let client = Client::spawn(&a).unwrap();
+
+        let mut sh = TabShared {
+            parser: vt100::Parser::new(24, 80, 100),
+            scrollback: VecDeque::new(),
+            subscribers: Vec::new(),
+        };
+
+        // Attach from background listener (count 1).
+        sh.subscribers.push(Subscriber {
+            client: client.clone(),
+            count: 1,
+        });
+        assert_eq!(sh.subscribers.len(), 1);
+        assert_eq!(sh.subscribers[0].count, 1);
+
+        // Attach from active pane (count 2).
+        if let Some(sub) = sh.subscribers.iter_mut().find(|s| Arc::ptr_eq(&s.client, &client)) {
+            sub.count += 1;
+        }
+        assert_eq!(sh.subscribers.len(), 1);
+        assert_eq!(sh.subscribers[0].count, 2);
+
+        // Detach from background listener (count 1, remains subscribed).
+        if let Some(pos) = sh.subscribers.iter().position(|s| Arc::ptr_eq(&s.client, &client)) {
+            sh.subscribers[pos].count = sh.subscribers[pos].count.saturating_sub(1);
+            if sh.subscribers[pos].count == 0 {
+                sh.subscribers.swap_remove(pos);
+            }
+        }
+        assert_eq!(sh.subscribers.len(), 1);
+        assert_eq!(sh.subscribers[0].count, 1);
+
+        // Detach from active pane (count 0, removed).
+        if let Some(pos) = sh.subscribers.iter().position(|s| Arc::ptr_eq(&s.client, &client)) {
+            sh.subscribers[pos].count = sh.subscribers[pos].count.saturating_sub(1);
+            if sh.subscribers[pos].count == 0 {
+                sh.subscribers.swap_remove(pos);
+            }
+        }
+        assert_eq!(sh.subscribers.len(), 0);
     }
 
     // ---- wire protocol framing: [u8 type][u32 LE len][payload] ----
