@@ -29,6 +29,19 @@ test("resource panel reports the session it was opened for", async ({
   await expect(panel.getByText("%", { exact: false }).first()).toBeVisible();
 });
 
+test("Ctrl+Shift+R toggles the panel for the active session", async ({
+  page,
+}) => {
+  await gotoApp(page);
+  await createSession(page);
+  const panel = page.getByRole("dialog");
+
+  await page.keyboard.press("Control+Shift+R");
+  await expect(panel).toBeVisible();
+  await page.keyboard.press("Control+Shift+R");
+  await expect(panel).toBeHidden();
+});
+
 test("opening the panel selects the session it reports", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
