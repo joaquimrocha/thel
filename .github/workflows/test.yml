@@ -24,6 +24,8 @@ jobs:
 
       - run: pnpm typecheck
 
+      - run: pnpm test:unit
+
       - run: pnpm exec playwright install --with-deps chromium
 
       - run: pnpm test

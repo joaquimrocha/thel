@@ -1,7 +1,8 @@
 name: build
 
-# Build the Linux binary on every pull request and on main, and upload it as a
-# run artifact you can download from the workflow run.
+# Build the Linux binary on every pull request and on main, upload it as a run
+# artifact you can download from the workflow run, and report its size: to the
+# job summary always, and as a pull request comment when the token allows.
 on:
   pull_request:
   push:
@@ -13,11 +14,64 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Needed to post the size comment. GitHub grants this only to pull
+      # requests from branches in this repo; see the guard on the comment step.
+      pull-requests: write
     steps:
       - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
 
       - id: build
         uses: ./.github/actions/build-binary
+
+      - id: measure
+        env:
+          TARBALL: ${{ steps.build.outputs.tarball }}
+        run: |
+          bin=src-tauri/target/release/thel
+          test -f "$bin" || { echo "binary not found at $bin" >&2; exit 1; }
+          human() { numfmt --to=iec-i --suffix=B --format='%.2f' "$1"; }
+          bin_bytes=$(stat -c%s "$bin")
+          tar_bytes=$(stat -c%s "$TARBALL")
+          {
+            echo '<!-- build:binary-size -->'
+            echo '### Binary size'
+            echo
+            echo '| Artifact | Size | Bytes |'
+            echo '| --- | ---: | ---: |'
+            echo "| \`thel\` | $(human "$bin_bytes") | $bin_bytes |"
+            echo "| \`$(basename "$TARBALL")\` | $(human "$tar_bytes") | $tar_bytes |"
+            echo
+            echo "<sub>built from ${GITHUB_SHA:0:7}</sub>"
+          } > size-comment.md
+          # The summary always gets the numbers, so a push to main and a fork's
+          # pull request still report the size even with no comment to post to.
+          cat size-comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Only pull requests have somewhere to comment, and a fork's GITHUB_TOKEN
+      # is read-only whatever `permissions` says, so the API call would 403.
+      # Skip rather than fail a build that is otherwise fine.
+      - if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          marker='<!-- build:binary-size -->'
+          # Edit this workflow's own comment instead of adding one per push.
+          # --paginate runs the filter once per page, so this emits one id per
+          # line; take the first rather than risk two ids in the URL.
+          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq "map(select(.body | startswith(\"$marker\"))) | .[].id" \
+            | head -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@size-comment.md
+          else
+            gh pr comment "$PR" --body-file size-comment.md
+          fi
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
