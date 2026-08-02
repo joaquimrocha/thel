@@ -7,9 +7,8 @@ keeps each session alive in the background and can anchor it to its own git
 worktree, so you can run a fleet of them at once and tell at a glance which one
 needs you.
 
-> **Beta.** At the moment thel is developed and tested only on Linux. macOS and
-> Windows are a goal, but untested for now, so expect rough edges in those
-> platforms.
+> **Beta.** thel runs on Linux and macOS. Windows is a goal but untested for
+> now, so expect rough edges there.
 
 ## Screenshots
 
