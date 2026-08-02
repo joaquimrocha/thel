@@ -13,5 +13,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // Pin navigator.platform before any test module loads, so platform-branching
+    // logic (keymap Cmd-vs-Ctrl) is deterministic on any host, not just Linux CI.
+    setupFiles: ["src/test-setup.ts"],
   },
 });
