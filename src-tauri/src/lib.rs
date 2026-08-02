@@ -176,21 +176,41 @@ fn spawn_detached(command: String, args: Vec<String>, cwd: Option<String>) -> Re
     use std::process::{Command, Stdio};
     #[cfg(unix)]
     {
-        // setsid forks the target into a new session and exits, so the target
-        // reparents to init -- detached from thel's terminal and lifecycle, with
-        // no zombie left here (we reap the short-lived setsid).
-        let mut cmd = Command::new("setsid");
-        cmd.arg(&command).args(&args);
+        use std::os::unix::process::CommandExt;
+        // Detach the target into its own session and reparent it to init, so it
+        // outlives thel and any tab close, leaving no zombie here. We do it in a
+        // pre_exec hook -- setsid(2) then a double fork -- rather than shelling
+        // out to a `setsid` binary, which Linux has (util-linux) but macOS lacks.
+        let mut cmd = Command::new(&command);
+        cmd.args(&args);
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        unsafe {
+            cmd.pre_exec(|| {
+                // Between fork and exec: async-signal-safe calls only. New session
+                // (drops the controlling tty); the caller is a fresh child, not a
+                // group leader, so setsid succeeds.
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Fork again and exit the intermediate, so the process that goes on
+                // to exec the target has no living parent here and reparents to
+                // init. thel is left with only the short-lived intermediate.
+                match libc::fork() {
+                    -1 => return Err(std::io::Error::last_os_error()),
+                    0 => Ok(()),             // grandchild: fall through to exec
+                    _ => libc::_exit(0),     // intermediate: exit, target reparents
+                }
+            });
+        }
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("failed to launch '{command}': {e}"))?;
-        let _ = child.wait();
+        let _ = child.wait(); // reap the short-lived intermediate
         Ok(())
     }
     #[cfg(not(unix))]
@@ -466,6 +486,46 @@ Options:
   -V, --version       Show the version and exit
 "
     );
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawn_detached_launches_a_process_without_the_setsid_binary() {
+        // Regression: the old impl shelled out to `setsid`, which macOS does not
+        // ship, so every no-shell app launcher failed there. Prove a real command
+        // both returns Ok and actually executes -- have the detached process
+        // create a file, then wait for it to appear.
+        let dir = std::env::temp_dir();
+        let marker = dir.join(format!("thel_detached_{}.marker", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+
+        let r = spawn_detached(
+            "/bin/sh".into(),
+            vec!["-c".into(), format!("touch {}", marker.display())],
+            None,
+        );
+        assert!(r.is_ok(), "detached launch failed: {r:?}");
+
+        let mut appeared = false;
+        for _ in 0..100 {
+            if marker.exists() {
+                appeared = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_file(&marker);
+        assert!(appeared, "detached process never ran (marker not created)");
+    }
+
+    #[test]
+    fn spawn_detached_reports_a_missing_program() {
+        let r = spawn_detached("/no/such/thel-test-binary".into(), vec![], None);
+        assert!(r.is_err(), "expected an error for a missing program");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
