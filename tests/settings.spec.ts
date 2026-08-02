@@ -38,7 +38,9 @@ test("appearance tab has theme and title-bar options", async ({ page }) => {
   await openSettings(page);
   await expect(page.getByRole("button", { name: "Light" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Dark" })).toBeVisible();
-  await expect(page.getByText("Use the app's own title bar")).toBeVisible();
+  await expect(
+    page.getByText("Use thel's own window decoration"),
+  ).toBeVisible();
 });
 
 test("copy-toast toggle persists across reload", async ({ page }) => {

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { emit, listen } from "@tauri-apps/api/event";
 import { clampZoomOffset } from "@/lib/theme";
-import { runsDaemon } from "@/lib/platform";
+import { isMac, runsDaemon } from "@/lib/platform";
 
 // Small persisted UI preferences (localStorage, like the theme).
 const COPY_TOASTS_KEY = "thel.copyToasts";
@@ -63,7 +63,7 @@ interface PrefsState {
   // user hasn't individually zoomed.
   terminalZoom: number;
   setTerminalZoom: (value: number) => void;
-  // Use the app's own title bar (OS decorations off) vs the native title bar.
+  // Use thel's own window decoration (OS decorations off) vs the native one.
   customTitlebar: boolean;
   setCustomTitlebar: (value: boolean) => void;
   // When the daemon is off, auto-start restored terminals on launch instead of
@@ -102,7 +102,9 @@ export const usePrefs = create<PrefsState>((set) => ({
     persistNum(ZOOM_KEY, terminalZoom);
     set({ terminalZoom });
   },
-  customTitlebar: readBool(CUSTOM_TITLEBAR_KEY, true),
+  // Defaults off on macOS, whose native window carries traffic lights and the
+  // menu bar, and on elsewhere, where the WM's own decorations are plainer.
+  customTitlebar: readBool(CUSTOM_TITLEBAR_KEY, !isMac),
   setCustomTitlebar: (customTitlebar) => {
     persistBool(CUSTOM_TITLEBAR_KEY, customTitlebar);
     set({ customTitlebar });

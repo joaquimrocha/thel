@@ -67,17 +67,14 @@ export default function App() {
     void useProfiles.getState().hydrate();
   }, []);
 
-  // Custom title bar means OS decorations off, and vice versa. macOS always uses
-  // the native window (traffic lights + menu bar), so the custom bar is never
-  // shown there regardless of the preference. Sync the window on launch and
-  // whenever the preference changes.
+  // Custom title bar means OS decorations off, and vice versa. Sync the window
+  // on launch and whenever the preference changes.
   const customTitlebar = usePrefs((s) => s.customTitlebar);
-  const nativeChrome = isMac || !customTitlebar;
   useEffect(() => {
     getCurrentWindow()
-      .setDecorations(nativeChrome)
+      .setDecorations(!customTitlebar)
       .catch((e) => console.error("setDecorations failed", e));
-  }, [nativeChrome]);
+  }, [customTitlebar]);
 
   // macOS: drive the app-menu actions from the native menu bar, keeping its
   // Profiles list in sync with the store. No-op elsewhere.
@@ -195,15 +192,17 @@ export default function App() {
         "flex h-full flex-col",
         // OS decorations off means no native frame, so the window edge vanishes
         // against a same-coloured desktop; a 1px border draws the outline.
-        !nativeChrome && "border border-black",
+        customTitlebar && "border border-black",
       )}
     >
-      {/* With OS decorations off the WM gives no resize borders; add our own. */}
-      {!nativeChrome && <ResizeHandles />}
-      {!nativeChrome && <Titlebar />}
+      {/* With OS decorations off the WM gives no resize borders; add our own.
+          macOS keeps resizing a borderless window itself, and its grips would
+          only swallow the edge drags it handles natively. */}
+      {customTitlebar && !isMac && <ResizeHandles />}
+      {customTitlebar && <Titlebar />}
       {/* Native window has no custom title bar to carry the profile accent, so
           show it as a thin strip at the top of the content. */}
-      {nativeChrome && accent && (
+      {!customTitlebar && accent && (
         <div
           className="h-[3px] shrink-0"
           style={{ backgroundColor: accent }}
