@@ -434,9 +434,105 @@ pub(crate) fn process_tree_usage(roots: &[(String, u32)]) -> HashMap<String, Usa
         .collect()
 }
 
-/// Reads /proc, so macOS and Windows report nothing until they get their own
-/// implementation; the dialog shows the terminals with no numbers.
-#[cfg(not(target_os = "linux"))]
+/// All process ids on the system, via libproc (macOS has no /proc). Over-allocate
+/// since the set can grow between the sizing call and the fetch.
+#[cfg(target_os = "macos")]
+fn macos_all_pids() -> Vec<u32> {
+    let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if n <= 0 {
+        return Vec::new();
+    }
+    let cap = n as usize + 64;
+    let mut pids = vec![0i32; cap];
+    let got = unsafe {
+        libc::proc_listallpids(
+            pids.as_mut_ptr() as *mut libc::c_void,
+            (cap * std::mem::size_of::<i32>()) as libc::c_int,
+        )
+    };
+    if got <= 0 {
+        return Vec::new();
+    }
+    pids.truncate(got as usize);
+    pids.into_iter().filter(|&p| p > 0).map(|p| p as u32).collect()
+}
+
+/// (ppid, cpu nanoseconds, resident bytes) for one pid via a single
+/// PROC_PIDTASKALLINFO call, which bundles the BSD info (ppid) and task info
+/// (CPU + RSS). None if the process is gone or owned by another user (task info
+/// is same-uid/root only) -- our own shells and their descendants are always
+/// readable, which is all a root's tree contains.
+#[cfg(target_os = "macos")]
+fn macos_proc_usage(pid: u32) -> Option<(u32, u64, u64)> {
+    let mut info: libc::proc_taskallinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_taskallinfo>() as libc::c_int;
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTASKALLINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if n != size {
+        return None; // gone, or task info denied for another user's process
+    }
+    let cpu_ns = info.ptinfo.pti_total_user + info.ptinfo.pti_total_system;
+    Some((info.pbsd.pbi_ppid, cpu_ns, info.ptinfo.pti_resident_size))
+}
+
+/// macOS equivalent of the Linux /proc walk: one libproc pass builds the pid ->
+/// (ppid, cpu, rss) map, then each root's whole tree is summed. CPU comes back in
+/// nanoseconds and RSS in bytes, so no clock-tick / page-size scaling is needed.
+#[cfg(target_os = "macos")]
+pub(crate) fn process_tree_usage(roots: &[(String, u32)]) -> HashMap<String, Usage> {
+    // pid -> (ppid, cpu nanoseconds, rss bytes)
+    let mut procs: HashMap<u32, (u32, u64, u64)> = HashMap::new();
+    for pid in macos_all_pids() {
+        if let Some(u) = macos_proc_usage(pid) {
+            procs.insert(pid, u);
+        }
+    }
+
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (pid, (ppid, _, _)) in &procs {
+        children.entry(*ppid).or_default().push(*pid);
+    }
+
+    roots
+        .iter()
+        .map(|(id, root)| {
+            let (mut cpu_ns, mut rss) = (0u64, 0u64);
+            let mut stack = vec![*root];
+            let mut seen = HashSet::new();
+            while let Some(pid) = stack.pop() {
+                // pid reuse could in principle close a loop; the guard is cheap.
+                if !seen.insert(pid) {
+                    continue;
+                }
+                if let Some((_, c, r)) = procs.get(&pid) {
+                    cpu_ns += c;
+                    rss += r;
+                }
+                if let Some(kids) = children.get(&pid) {
+                    stack.extend(kids);
+                }
+            }
+            (
+                id.clone(),
+                Usage {
+                    cpu_seconds: cpu_ns as f64 / 1_000_000_000.0,
+                    rss_bytes: rss,
+                },
+            )
+        })
+        .collect()
+}
+
+/// No process enumeration on other platforms (Windows), so the dialog shows the
+/// terminals with no numbers until one is added.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn process_tree_usage(_roots: &[(String, u32)]) -> HashMap<String, Usage> {
     HashMap::new()
 }
@@ -529,6 +625,42 @@ mod tests {
             ("gone".to_string(), u32::MAX),
         ]);
         assert!(out["self"].rss_bytes > 0, "our own process has resident memory");
+        assert_eq!(out["gone"].rss_bytes, 0);
+        assert_eq!(out["gone"].cpu_seconds, 0.0);
+    }
+
+    /// macOS reads the tree through libproc instead of /proc. Spawn a real child
+    /// so there's a descendant to sum, and check the tree rooted at us includes
+    /// it -- the point of walking a *tree* rather than a single pid.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_a_process_tree_via_libproc() {
+        let me = std::process::id();
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 30"])
+            .spawn()
+            .expect("spawn a child process");
+        let child_pid = child.id();
+
+        let out = super::process_tree_usage(&[
+            ("tree".to_string(), me),
+            ("child".to_string(), child_pid),
+            // No such pid: must contribute nothing rather than be omitted or panic.
+            ("gone".to_string(), u32::MAX),
+        ]);
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(out["tree"].rss_bytes > 0, "our own process has resident memory");
+        assert!(out["child"].rss_bytes > 0, "the child reports resident memory");
+        // The child is our descendant, so the tree rooted at us must include it.
+        assert!(
+            out["tree"].rss_bytes >= out["child"].rss_bytes,
+            "tree total {} should include the child {}",
+            out["tree"].rss_bytes,
+            out["child"].rss_bytes,
+        );
         assert_eq!(out["gone"].rss_bytes, 0);
         assert_eq!(out["gone"].cpu_seconds, 0.0);
     }
