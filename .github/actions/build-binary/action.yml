@@ -41,8 +41,9 @@ runs:
     - shell: bash
       run: pnpm install --frozen-lockfile
 
-    # Bundling is off in tauri.conf (bundle.active=false); --no-bundle makes it
-    # explicit. beforeBuildCommand (pnpm build = tsc + vite) runs as part.
+    # Bundling is enabled in tauri.conf; --no-bundle keeps this Linux job to just
+    # the binary (no .deb/.appimage/.rpm). beforeBuildCommand (pnpm build = tsc +
+    # vite) runs as part.
     - shell: bash
       run: pnpm tauri build --no-bundle
 
