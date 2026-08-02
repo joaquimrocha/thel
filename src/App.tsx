@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Titlebar } from "@/components/Titlebar";
 import { ResizeHandles } from "@/components/ResizeHandles";
+import { ProfileDialog } from "@/components/ProfileDialog";
 import { SessionSidebar } from "@/components/SessionSidebar";
 import { TerminalArea } from "@/components/TerminalSurface";
 import { CommandPalette } from "@/components/CommandPalette";
@@ -32,6 +33,8 @@ import { activateNotification } from "@/store/notifications";
 import { useUI } from "@/store/ui";
 import { usePrefs, initPrefsSync } from "@/store/prefs";
 import { useProfiles } from "@/store/profiles";
+import { isMac } from "@/lib/platform";
+import { initNativeMenu } from "@/lib/nativeMenu";
 
 export default function App() {
   const paletteOpen = useUI((s) => s.paletteOpen);
@@ -46,6 +49,12 @@ export default function App() {
     // Keep the bare "thel" title for an uncustomized default profile.
     return name === "Default" ? undefined : name;
   });
+  // The profile's accent color. On the custom title bar it tints the bottom
+  // border; with the native window (macOS, or the native-title-bar preference)
+  // there's no bar, so it becomes a thin strip at the top of the content below.
+  const accent = useProfiles(
+    (s) => s.profiles.find((p) => p.id === s.currentId)?.color,
+  );
   useEffect(() => {
     const base = profileName ? `thel · ${profileName}` : "thel";
     getCurrentWindow()
@@ -58,14 +67,21 @@ export default function App() {
     void useProfiles.getState().hydrate();
   }, []);
 
-  // Custom title bar means OS decorations off, and vice versa. Sync the window
-  // on launch and whenever the preference changes.
+  // Custom title bar means OS decorations off, and vice versa. macOS always uses
+  // the native window (traffic lights + menu bar), so the custom bar is never
+  // shown there regardless of the preference. Sync the window on launch and
+  // whenever the preference changes.
   const customTitlebar = usePrefs((s) => s.customTitlebar);
+  const nativeChrome = isMac || !customTitlebar;
   useEffect(() => {
     getCurrentWindow()
-      .setDecorations(!customTitlebar)
+      .setDecorations(nativeChrome)
       .catch((e) => console.error("setDecorations failed", e));
-  }, [customTitlebar]);
+  }, [nativeChrome]);
+
+  // macOS: drive the app-menu actions from the native menu bar, keeping its
+  // Profiles list in sync with the store. No-op elsewhere.
+  useEffect(() => initNativeMenu(), []);
 
   useGlobalShortcuts();
 
@@ -179,12 +195,21 @@ export default function App() {
         "flex h-full flex-col",
         // OS decorations off means no native frame, so the window edge vanishes
         // against a same-coloured desktop; a 1px border draws the outline.
-        customTitlebar && "border border-black",
+        !nativeChrome && "border border-black",
       )}
     >
       {/* With OS decorations off the WM gives no resize borders; add our own. */}
-      {customTitlebar && <ResizeHandles />}
-      {customTitlebar && <Titlebar />}
+      {!nativeChrome && <ResizeHandles />}
+      {!nativeChrome && <Titlebar />}
+      {/* Native window has no custom title bar to carry the profile accent, so
+          show it as a thin strip at the top of the content. */}
+      {nativeChrome && accent && (
+        <div
+          className="h-[3px] shrink-0"
+          style={{ backgroundColor: accent }}
+          aria-hidden
+        />
+      )}
       <div className="flex min-h-0 flex-1">
         <SessionSidebar />
         <main className="min-h-0 min-w-0 flex-1">
@@ -204,8 +229,18 @@ export default function App() {
       <SessionSettingsDialog />
       <SessionUsageDialog />
       <AddIconDialog />
+      <AppProfileDialog />
       <Toaster />
     </div>
     </TooltipProvider>
   );
+}
+
+// The "new profile" dialog, driven by the UI store so both the in-app profile
+// menu (Linux) and the native menu bar (macOS) open the same instance. Kept in
+// its own component so App doesn't re-render on open/close.
+function AppProfileDialog() {
+  const open = useUI((s) => s.profileDialogOpen);
+  const setOpen = useUI((s) => s.setProfileDialogOpen);
+  return <ProfileDialog open={open} onOpenChange={setOpen} />;
 }

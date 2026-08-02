@@ -1,12 +1,17 @@
 #[cfg(unix)]
 mod daemon;
 mod git;
+mod menu;
 mod notify_cmd;
 mod pty;
 
 use pty::{CreateOpts, SessionManager, TermMsg, TermStatus};
 use tauri::ipc::Channel;
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
+// Emitter (emit_to) is only used by the Linux notification-click path; importing
+// it unconditionally warns as unused on macOS/Windows.
+#[cfg(target_os = "linux")]
+use tauri::Emitter;
 
 /// Bring a window to the foreground (e.g. when a notification is clicked). Must
 /// run on the GTK main thread. On Wayland a background process can't raise
@@ -88,6 +93,18 @@ fn session_usage(
 #[tauri::command]
 fn kill_terminal_window(state: State<SessionManager>, session_id: String, id: String) {
     state.kill_window(&session_id, &id);
+}
+
+/// (Re)build the native macOS menu bar from the frontend's current profile list.
+/// No-op off macOS, where the in-app title bar carries these actions instead.
+#[tauri::command]
+fn update_app_menu(app: tauri::AppHandle, profiles: Vec<menu::ProfileItem>, current: String) {
+    #[cfg(target_os = "macos")]
+    if let Err(e) = menu::build_and_set(&app, &profiles, &current) {
+        eprintln!("[thel] failed to set app menu: {e}");
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, profiles, current);
 }
 
 /// Probe the running session daemon at startup: "ok", "skew" (an incompatible
@@ -576,7 +593,19 @@ pub fn run() {
                 Ok(build) => eprintln!("[thel] daemon connected (build {build})"),
                 Err(e) => eprintln!("[thel] daemon connect failed: {e}"),
             });
+            // Install a native menu bar up front so macOS has one before the
+            // frontend hydrates; it refines the Profiles list via update_app_menu.
+            #[cfg(target_os = "macos")]
+            if let Err(e) = menu::build_and_set(app.handle(), &[], "") {
+                eprintln!("[thel] failed to set initial app menu: {e}");
+            }
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            #[cfg(target_os = "macos")]
+            menu::handle_event(app, event.id().0.as_str());
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
         })
         .invoke_handler(tauri::generate_handler![
             create_session,
@@ -586,6 +615,7 @@ pub fn run() {
             terminal_status,
             session_usage,
             kill_terminal_window,
+            update_app_menu,
             check_daemon,
             restart_daemon,
             default_shell,

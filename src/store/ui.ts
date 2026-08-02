@@ -59,6 +59,11 @@ interface UIState {
   setProfileMenuOpen: (open: boolean) => void;
   toggleProfileMenu: () => void;
 
+  // The "new profile" dialog, hoisted to the store so both the in-app menu (Linux)
+  // and the native menu bar (macOS) can open it without owning a local copy.
+  profileDialogOpen: boolean;
+  setProfileDialogOpen: (open: boolean) => void;
+
   // Bumped to ask the active terminal to refocus (e.g. leaving sidebar nav).
   // Cleared once served, so a later remount of the pane can't replay it.
   focusNonce: number;
@@ -164,6 +169,9 @@ export const useUI = create<UIState>((set) => ({
   profileMenuOpen: false,
   setProfileMenuOpen: (open) => set({ profileMenuOpen: open }),
   toggleProfileMenu: () => set((s) => ({ profileMenuOpen: !s.profileMenuOpen })),
+
+  profileDialogOpen: false,
+  setProfileDialogOpen: (open) => set({ profileDialogOpen: open }),
 
   focusNonce: 0,
   focusTerminal: () => set((s) => ({ focusNonce: s.focusNonce + 1 })),
