@@ -35,21 +35,18 @@ pub fn build_and_set(
     profiles: &[ProfileItem],
     current: &str,
 ) -> tauri::Result<()> {
-    use tauri::menu::{
-        AboutMetadata, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder,
-    };
+    use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 
-    // App menu (the bold "thel" menu): About, Settings (Cmd+,), and the standard
-    // hide/quit block so the app behaves like any other Mac app.
+    // App menu (the bold "thel" menu): "About thel" opens our own settings dialog
+    // on its About tab (not the system panel), Settings (Cmd+,) opens the same
+    // dialog, then the standard hide/quit block so the app behaves like any other
+    // Mac app.
+    let about = MenuItemBuilder::with_id("about", "About thel").build(app)?;
     let settings = MenuItemBuilder::with_id("settings", "Settings…")
         .accelerator("Cmd+,")
         .build(app)?;
     let app_menu = SubmenuBuilder::new(app, "thel")
-        .about(Some(AboutMetadata {
-            name: Some("thel".into()),
-            version: Some(env!("CARGO_PKG_VERSION").into()),
-            ..Default::default()
-        }))
+        .item(&about)
         .separator()
         .item(&settings)
         .separator()
@@ -115,7 +112,7 @@ pub fn handle_event(app: &tauri::AppHandle, id: &str) {
             action: "switch-profile".into(),
             id: Some(pid.to_string()),
         }
-    } else if matches!(id, "settings" | "new-profile" | "manage-profiles") {
+    } else if matches!(id, "about" | "settings" | "new-profile" | "manage-profiles") {
         MenuAction {
             action: id.to_string(),
             id: None,
