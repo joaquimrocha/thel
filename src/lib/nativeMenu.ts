@@ -27,6 +27,9 @@ function dispatch(a: MenuAction) {
     case "switch-profile":
       if (a.id) void useProfiles.getState().switchProfile(a.id);
       break;
+    case "about":
+      ui.openSettings("about");
+      break;
     case "settings":
       ui.openSettings();
       break;
