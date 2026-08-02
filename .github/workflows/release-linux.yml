@@ -1,0 +1,35 @@
+name: release-linux
+
+# Manually build thel and attach the Linux binary (a portable tar.xz) to an
+# existing draft release, identified by its title (the version, e.g. v0.1.0-beta).
+# macOS has its own workflow (release-macos) so the two can be cut independently.
+# Uses the built-in GITHUB_TOKEN via the permissions below, so no token or secret
+# needs to be set up.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Title of the draft release to attach to (the version, e.g. v0.1.0-beta)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
+
+      - id: build
+        uses: ./.github/actions/build-binary
+        with:
+          version: ${{ inputs.release }}
+
+      # The tarball lives at the workspace root, so its path is also its name.
+      - uses: ./.github/actions/attach-release-asset
+        with:
+          release: ${{ inputs.release }}
+          path: ${{ steps.build.outputs.tarball }}
+          name: ${{ steps.build.outputs.tarball }}
