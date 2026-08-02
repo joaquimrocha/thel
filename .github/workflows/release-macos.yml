@@ -1,0 +1,66 @@
+name: release-macos
+
+# Manually build thel and attach the macOS (Apple-silicon) .dmg to an existing
+# draft release, identified by its title (the version, e.g. v0.1.0-beta). Linux
+# has its own workflow (release-linux) so the two can be cut independently. Uses
+# the built-in GITHUB_TOKEN via the permissions below, so no token or secret
+# needs to be set up.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Title of the draft release to attach to (the version, e.g. v0.1.0-beta)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # macos-14 is Apple silicon, so this produces the aarch64 .dmg the cask uses.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
+
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      # Bundling is enabled in tauri.conf; build only the dmg (it wraps the .app).
+      # The .dmg is unsigned -- there's no Apple Developer ID -- so users clear the
+      # Gatekeeper quarantine flag once (the cask's caveat spells this out).
+      - run: pnpm tauri build --bundles dmg
+
+      - id: dmg
+        env:
+          RELEASE: ${{ inputs.release }}
+        run: |
+          src=$(ls src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -1)
+          [ -n "$src" ] || { echo "no .dmg was produced" >&2; exit 1; }
+          # Name the asset by the release version (v stripped) so it matches the
+          # cask's URL: thel_<version>_aarch64.dmg.
+          ver=${RELEASE#v}
+          {
+            echo "path=$src"
+            echo "name=thel_${ver}_aarch64.dmg"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/attach-release-asset
+        with:
+          release: ${{ inputs.release }}
+          path: ${{ steps.dmg.outputs.path }}
+          name: ${{ steps.dmg.outputs.name }}
