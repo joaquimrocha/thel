@@ -1,4 +1,4 @@
-//! thel session daemon (Linux-first). One binary, two modes: the default
+//! thel session daemon (Linux and macOS). One binary, two modes: the default
 //! invocation boots the Tauri GUI; re-invoking with the hidden `__daemon`
 //! argument runs this event loop and never touches the webview. The daemon owns
 //! the PTYs so terminals outlive the GUI, and runs an authoritative terminal
@@ -97,8 +97,8 @@ fn dir_is_safe(dir: &Path) -> bool {
     }
 }
 
-/// Reject any peer whose uid isn't ours (SO_PEERCRED). Linux-only; elsewhere the
-/// 0700 dir + 0600 socket are the guard (spec is Linux-first).
+/// Reject any peer whose uid isn't ours (SO_PEERCRED). On platforms without a
+/// peer-cred syscall the 0700 dir + 0600 socket are the only guard.
 #[cfg(target_os = "linux")]
 fn peer_uid_ok(fd: RawFd) -> bool {
     unsafe {
@@ -115,7 +115,25 @@ fn peer_uid_ok(fd: RawFd) -> bool {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS peer check via LOCAL_PEERCRED (getsockopt on SOL_LOCAL) -- the BSD
+/// analogue of SO_PEERCRED. The connecting socket must belong to our own uid.
+#[cfg(target_os = "macos")]
+fn peer_uid_ok(fd: RawFd) -> bool {
+    unsafe {
+        let mut cred: libc::xucred = std::mem::zeroed();
+        let mut len = std::mem::size_of::<libc::xucred>() as libc::socklen_t;
+        let ret = libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERCRED,
+            &mut cred as *mut _ as *mut libc::c_void,
+            &mut len,
+        );
+        ret == 0 && cred.cr_version == libc::XUCRED_VERSION && cred.cr_uid == libc::geteuid()
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn peer_uid_ok(_fd: RawFd) -> bool {
     true
 }
@@ -929,20 +947,12 @@ fn kill_session_and_reap(child: &Arc<Mutex<Box<dyn Child + Send + Sync>>>) {
 /// session). A job that detached with setsid/nohup left the session and is
 /// spared, matching a normal terminal.
 fn kill_session(sid: i32) {
+    // Never touch sessions 0/1 (kernel/init): a stray getsid() returning one of
+    // those must not be read as a match and wipe out unrelated processes.
     if sid <= 1 {
         return;
     }
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|s| s.parse::<i32>().ok())
-        else {
-            continue;
-        };
+    for pid in all_pids() {
         if pid <= 1 {
             continue;
         }
@@ -951,6 +961,47 @@ fn kill_session(sid: i32) {
             unsafe { libc::kill(pid, libc::SIGKILL) };
         }
     }
+}
+
+/// Every process id on the system, the basis for the session-kill and
+/// stray-daemon scans. Linux reads `/proc`; macOS asks the kernel via
+/// `proc_listallpids`. Other unixes have no portable enumeration, so the scans
+/// there become no-ops (the direct `child.kill()` still reaps the shell itself).
+#[cfg(target_os = "linux")]
+fn all_pids() -> Vec<i32> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().and_then(|s| s.parse::<i32>().ok()))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn all_pids() -> Vec<i32> {
+    // proc_listallpids(NULL, 0) reports how many pids exist; then we fetch them
+    // into a buffer. Over-allocate a little since the set can grow between the
+    // sizing call and the fetch.
+    let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if n <= 0 {
+        return Vec::new();
+    }
+    let cap = n as usize + 64;
+    let mut pids = vec![0i32; cap];
+    let bytes = (cap * std::mem::size_of::<i32>()) as libc::c_int;
+    let got = unsafe { libc::proc_listallpids(pids.as_mut_ptr() as *mut libc::c_void, bytes) };
+    if got <= 0 {
+        return Vec::new();
+    }
+    pids.truncate(got as usize);
+    pids.retain(|&p| p > 0);
+    pids
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn all_pids() -> Vec<i32> {
+    Vec::new()
 }
 
 /// Tear a tab down once: remove it, kill its process group + reap, and tell
@@ -1365,33 +1416,40 @@ pub fn restart() -> Result<(), String> {
 /// Kill any process running THIS binary as the daemon. Covers a missing/stale pid
 /// file; across a real update the old daemon runs a different binary, so the pid
 /// file (not this) handles that case.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn kill_stray_daemons() {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|s| s.parse::<i32>().ok())
-        else {
-            continue;
-        };
-        let same_exe = std::fs::read_link(format!("/proc/{pid}/exe"))
-            .map(|p| p == exe)
-            .unwrap_or(false);
-        if same_exe && is_thel_daemon(pid) {
+    for pid in all_pids() {
+        if proc_exe(pid).as_deref() == Some(exe.as_path()) && is_thel_daemon(pid) {
             unsafe { libc::kill(pid, libc::SIGKILL) };
         }
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn kill_stray_daemons() {}
+
+/// The executable path a pid is running, for matching a daemon against our own
+/// binary. Linux reads `/proc/<pid>/exe`; macOS asks `proc_pidpath`.
+#[cfg(target_os = "linux")]
+fn proc_exe(pid: i32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn proc_exe(pid: i32) -> Option<PathBuf> {
+    let mut buf = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let n = unsafe {
+        libc::proc_pidpath(pid, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32)
+    };
+    if n <= 0 {
+        return None;
+    }
+    let s = std::str::from_utf8(&buf[..n as usize]).ok()?;
+    Some(PathBuf::from(s))
+}
 
 /// Confirm a pid is a thel daemon (its argv contains `__daemon`) before killing.
 #[cfg(target_os = "linux")]
@@ -1401,9 +1459,50 @@ fn is_thel_daemon(pid: i32) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS argv via sysctl `KERN_PROCARGS2`. The blob is `[i32 argc][exec path\0]
+/// [padding][argv0\0 argv1\0 ...][env...]`; splitting on NUL and matching the
+/// `__daemon` token mirrors the Linux `/proc/<pid>/cmdline` check. Reading argv
+/// of another user's process is denied, but every thel daemon shares our uid.
+#[cfg(target_os = "macos")]
+fn is_thel_daemon(pid: i32) -> bool {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut size: libc::size_t = 0;
+    // First call sizes the buffer.
+    if unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+        || size == 0
+    {
+        return false;
+    }
+    let mut buf = vec![0u8; size];
+    if unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return false;
+    }
+    buf.truncate(size);
+    buf.split(|&b| b == 0).any(|a| a == DAEMON_ARG.as_bytes())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn is_thel_daemon(_pid: i32) -> bool {
-    true // best-effort off Linux; restart is only offered after a live probe
+    true // best-effort elsewhere; restart is only offered after a live probe
 }
 
 fn spawn_daemon() -> Result<(), String> {
@@ -1671,6 +1770,36 @@ mod tests {
         assert_eq!(p1, b"one");
         assert_eq!(t2, CONTROL);
         assert_eq!(p2, b"two");
+    }
+
+    // ---- process enumeration backing kill_session / stray-daemon cleanup ----
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn all_pids_includes_our_own_process() {
+        // The scan must at least see ourselves; an empty list would mean
+        // kill_session silently reaps nothing (the macOS bug this fixes).
+        let me = std::process::id() as i32;
+        let pids = all_pids();
+        assert!(!pids.is_empty(), "process enumeration returned nothing");
+        assert!(pids.contains(&me), "our own pid {me} missing from the scan");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn proc_exe_of_self_matches_current_exe() {
+        // proc_exe underpins matching a stray daemon against our binary.
+        let me = std::process::id() as i32;
+        let want = std::env::current_exe().unwrap();
+        assert_eq!(proc_exe(me).as_deref(), Some(want.as_path()));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn is_thel_daemon_false_for_the_test_runner() {
+        // The test binary carries no `__daemon` arg, so the argv check must not
+        // flag it -- otherwise restart() could SIGKILL the wrong pid.
+        assert!(!is_thel_daemon(std::process::id() as i32));
     }
 
     #[test]

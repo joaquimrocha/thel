@@ -7,10 +7,13 @@ export const isMac =
 export const isWindows =
   typeof navigator !== "undefined" && /Win/.test(navigator.platform);
 
-// True on Linux, the only platform that runs the session daemon: it relies on
-// /proc (process reaping, peer-cred auth, stray-daemon cleanup) and an
-// XDG_RUNTIME_DIR socket. On macOS those degrade to no-ops and on Windows the
-// daemon doesn't build, so both use a direct PTY. Gating the daemon on this
-// keeps us from advertising session-survival we can't actually deliver.
+// True on Linux.
 export const isLinux =
   typeof navigator !== "undefined" && !isMac && !isWindows;
+
+// True on the platforms that run the session daemon (session survival). Both
+// Linux and macOS have the pieces the daemon needs -- process reaping by session
+// id, peer-cred auth, stray-daemon cleanup -- via /proc on Linux and libproc on
+// macOS. Windows has no unix-socket daemon, so it uses a direct PTY. Gating the
+// daemon on this keeps us from advertising session-survival we can't deliver.
+export const runsDaemon = isLinux || isMac;

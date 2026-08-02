@@ -347,7 +347,11 @@ mod tests {
         // From the linked worktree: linked, and `main` points back to the repo.
         let linked = worktree_info(wt.to_string_lossy().to_string()).unwrap();
         assert!(linked.is_linked);
-        assert_eq!(linked.path, wt.to_string_lossy());
+        // worktree_info canonicalizes; canonicalize the expected path too so this
+        // holds where the temp dir sits behind a symlink (macOS /var ->
+        // /private/var), not just on Linux.
+        let wt_canon = std::fs::canonicalize(&wt).unwrap().to_string_lossy().to_string();
+        assert_eq!(linked.path, wt_canon);
         assert_eq!(linked.main, main.path);
 
         // A non-repo path yields nothing.
