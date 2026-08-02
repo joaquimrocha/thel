@@ -165,6 +165,10 @@ export const useProfiles = create<ProfilesState>((set, get) => ({
       const w = new WebviewWindow(label, {
         url: "index.html",
         title: profile ? `thel — ${profile.name}` : "thel",
+        // Created without decorations like the main window, then App.tsx turns
+        // them on where the native window is used (macOS, or the native-title-bar
+        // preference). Creating them already-decorated skips the off->on toggle
+        // that makes macOS actually render the title, leaving a blank title bar.
         decorations: false,
         // Match the app background so the new window doesn't flash white.
         backgroundColor: [9, 9, 11, 255],

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Minus,
@@ -14,7 +14,6 @@ import { cn } from "@/lib/utils";
 import { useSessions } from "@/store/sessions";
 import { useProfiles } from "@/store/profiles";
 import { useUI } from "@/store/ui";
-import { ProfileDialog } from "@/components/ProfileDialog";
 import { ActionTooltip } from "@/components/ActionTooltip";
 import { Logo } from "@/components/Logo";
 import { SvgIcon } from "@/components/SvgIcon";
@@ -94,7 +93,7 @@ function ProfileMenu() {
   const setOpen = useUI((s) => s.setProfileMenuOpen);
   const toggle = useUI((s) => s.toggleProfileMenu);
   const openSettings = useUI((s) => s.openSettings);
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const setProfileDialogOpen = useUI((s) => s.setProfileDialogOpen);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -220,7 +219,7 @@ function ProfileMenu() {
               tabIndex={-1}
               onClick={() => {
                 setOpen(false);
-                setDialogOpen(true);
+                setProfileDialogOpen(true);
               }}
               className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-accent hover:text-accent-foreground"
             >
@@ -241,8 +240,6 @@ function ProfileMenu() {
           </div>
         </>
       )}
-
-      <ProfileDialog open={dialogOpen} onOpenChange={setDialogOpen} />
     </div>
   );
 }
