@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from "react";
 
 const REPO = "https://github.com/joaquimrocha/thel";
 const BREW_CMD = "brew install --cask joaquimrocha/tap/thel";
+// The macOS build is unsigned, and Homebrew dropped --no-quarantine in 5.1, so
+// clearing the flag by hand is the only way in.
+const XATTR_CMD = "xattr -dr com.apple.quarantine /Applications/thel.app";
+const INSTALL_DOC = `${REPO}/blob/main/docs/install.md`;
+// Which download to offer first. Anything that isn't a Mac gets the Linux
+// build, since that is the only other one there is; the other download stays
+// one click away either way.
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.userAgent);
 // Set to the announcement post URL once it is published; null hides the banner.
 const POST_URL: string | null = "https://joaquimrocha.com/announcing-thel/";
 
@@ -129,12 +137,47 @@ function Header() {
   );
 }
 
-function Hero() {
-  // The release page always works; when the GitHub API answers, the button
-  // upgrades to a direct download of the release tarball (its filename embeds
-  // the version, so it can't be hardcoded).
-  const [tarball, setTarball] = useState(`${REPO}/releases/latest`);
+function Command({ cmd }: { cmd: string }) {
   const [copied, setCopied] = useState(false);
+  return (
+    <p className="mt-2.5 flex flex-wrap items-center justify-center gap-2">
+      <code className="select-all rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-[13px] text-ink-bright">
+        {cmd}
+      </code>
+      <button
+        onClick={() =>
+          navigator.clipboard.writeText(cmd).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 2000);
+          })
+        }
+        aria-label={copied ? "Copied" : `Copy: ${cmd}`}
+        aria-live="polite"
+        className="cursor-pointer rounded-md border border-white/10 p-1.5 text-ink-faint transition-colors hover:text-accent"
+      >
+        {/* Lucide "check" / "copy", inlined to keep the site dependency-free */}
+        {copied ? (
+          <svg viewBox="0 0 24 24" className="size-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+            <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+          </svg>
+        )}
+      </button>
+    </p>
+  );
+}
+
+function Hero() {
+  // The release page always works; when the GitHub API answers, each button
+  // upgrades to a direct download of its asset (the filenames embed the
+  // version, so they can't be hardcoded).
+  const latest = `${REPO}/releases/latest`;
+  const [tarball, setTarball] = useState(latest);
+  const [dmg, setDmg] = useState(latest);
   useEffect(() => {
     fetch("https://api.github.com/repos/joaquimrocha/thel/releases/latest")
       .then((r) => (r.ok ? r.json() : null))
@@ -142,10 +185,12 @@ function Hero() {
         (rel: {
           assets?: { name: string; browser_download_url: string }[];
         } | null) => {
-          const url = rel?.assets?.find((a) =>
-            /\.tar\.(xz|gz)$/.test(a.name),
-          )?.browser_download_url;
-          if (url) setTarball(url);
+          const find = (re: RegExp) =>
+            rel?.assets?.find((a) => re.test(a.name))?.browser_download_url;
+          const tar = find(/\.tar\.(xz|gz)$/);
+          const disk = find(/\.dmg$/);
+          if (tar) setTarball(tar);
+          if (disk) setDmg(disk);
         },
       )
       .catch(() => {});
@@ -183,45 +228,37 @@ function Hero() {
       )}
       <div className="mt-5 flex flex-wrap items-center justify-center gap-4">
         <a
-          href={tarball}
+          href={IS_MAC ? dmg : tarball}
           className="inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-3 font-mono text-sm font-semibold text-on-accent transition-[filter] hover:brightness-110"
         >
-          Download for Linux
+          Download for {IS_MAC ? "macOS" : "Linux"}
         </a>
       </div>
-      <p className="mt-6 font-mono text-sm text-ink-muted">
-        or with Homebrew on Linux:{" "}
-        <code className="select-all rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-[13px] text-ink-bright">
-          {BREW_CMD}
-        </code>{" "}
-        <button
-          onClick={() =>
-            navigator.clipboard.writeText(BREW_CMD).then(() => {
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 2000);
-            })
-          }
-          aria-label={copied ? "Copied" : "Copy install command"}
-          aria-live="polite"
-          className="cursor-pointer rounded-md border border-white/10 p-1.5 align-middle text-ink-faint transition-colors hover:text-accent"
-        >
-          {/* Lucide "check" / "copy", inlined to keep the site dependency-free */}
-          {copied ? (
-            <svg viewBox="0 0 24 24" className="size-3.5 text-accent" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M20 6 9 17l-5-5" />
-            </svg>
-          ) : (
-            <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
-              <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
-            </svg>
-          )}
-        </button>
-      </p>
+      <div className="mt-6 font-mono text-sm text-ink-muted">
+        <p>or with Homebrew:</p>
+        <Command cmd={BREW_CMD} />
+        {IS_MAC && <Command cmd={XATTR_CMD} />}
+      </div>
+      {IS_MAC && (
+        <p className="mt-4 text-sm text-ink-muted">
+          The build is unsigned, so that second command clears the Gatekeeper
+          quarantine flag. It is needed after a direct download too.
+        </p>
+      )}
       <p className="mt-8">
         <span className="rounded-full border border-white/10 px-3 py-1.5 font-mono text-xs text-ink-faint">
-          Beta: Linux only; Mac + Windows coming soon
+          Beta: expect some rough edges
         </span>
+      </p>
+      <p className="mt-4 font-mono text-xs text-ink-faint">
+        <a
+          href={INSTALL_DOC}
+          target="_blank"
+          rel="noopener"
+          className="transition-colors hover:text-accent"
+        >
+          Installation guide + other platforms ↗
+        </a>
       </p>
     </section>
   );
@@ -353,6 +390,16 @@ function Gallery() {
   );
 }
 
+function Platforms() {
+  return (
+    <section className="px-6 pt-16 text-center sm:px-10">
+      <p className="font-mono text-sm text-ink-muted">
+        The same app on Linux and macOS.
+      </p>
+    </section>
+  );
+}
+
 function Callout() {
   return (
     <section className="px-6 pb-2 pt-14 sm:px-10">
@@ -433,6 +480,7 @@ export function App() {
         <Screenshot />
         <Features />
         <Gallery />
+        <Platforms />
         <Callout />
       </main>
       <Footer />
