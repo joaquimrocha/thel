@@ -1,4 +1,4 @@
-# Builds the Linux bundles (deb/rpm/AppImage) in a container.
+# Builds the Linux bundles (deb/rpm) in a container.
 #
 #   docker build -t thel-build .
 #   id=$(docker create thel-build)
