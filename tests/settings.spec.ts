@@ -56,7 +56,7 @@ test("copy-toast toggle persists across reload", async ({ page }) => {
   await expect(page.getByRole("switch")).not.toBeChecked();
 });
 
-test("sessions tab shows the daemon option on Linux", async ({ page }) => {
+test("sessions tab shows the daemon option where the daemon runs", async ({ page }) => {
   await gotoApp(page);
   await openSettings(page);
   await page.getByRole("tab", { name: "Sessions" }).click();

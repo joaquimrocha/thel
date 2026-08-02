@@ -336,5 +336,18 @@ function install(config: MockConfig) {
 }
 
 export async function installTauriMock(page: Page, config: MockConfig = {}) {
+  // Pin the reported platform so the app picks its Ctrl-based (non-mac)
+  // keybindings regardless of the host OS the suite runs on. Without this,
+  // running on macOS flips the app to Cmd bindings (navigator.platform is
+  // "MacIntel") while every spec presses Control, so shortcut-driven assertions
+  // time out. Registered before the mock so it runs before any app module reads
+  // navigator.platform. Set THEL_TEST_PLATFORM to exercise the mac bindings.
+  const platform = process.env.THEL_TEST_PLATFORM || "Linux x86_64";
+  await page.addInitScript((p) => {
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      get: () => p,
+    });
+  }, platform);
   await page.addInitScript(install, config);
 }
