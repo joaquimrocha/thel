@@ -10,6 +10,17 @@ needs you.
 > **Beta.** thel runs on Linux and macOS. Windows is a goal but untested for
 > now, so expect rough edges there.
 
+## Install
+
+Homebrew on macOS and Linux:
+
+```sh
+brew install --cask joaquimrocha/tap/thel
+```
+
+On macOS the app is unsigned, so it needs one `xattr` command after installing.
+See [docs/install.md](docs/install.md) for that step and for direct downloads.
+
 ## Screenshots
 
 |  |  |
