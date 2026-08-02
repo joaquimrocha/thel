@@ -1,0 +1,45 @@
+name: Attach a release asset
+description: Upload a file to a draft (or published) release, found by its title.
+
+inputs:
+  release:
+    description: Title (name) or tag of the release to attach to.
+    required: true
+  path:
+    description: Path to the file to upload.
+    required: true
+  name:
+    description: Asset name to publish it under.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE: ${{ inputs.release }}
+        FILE: ${{ inputs.path }}
+        ASSET: ${{ inputs.name }}
+        REPO: ${{ github.repository }}
+      run: |
+        test -f "$FILE" || { echo "file not found: $FILE" >&2; exit 1; }
+        # `gh release upload <tag>` resolves via the tags API, which doesn't
+        # return drafts, so find the release by its title (name) in the list.
+        # The inputs reach jq through $ENV rather than shell interpolation, so a
+        # quote in a release title can't break out of the filter.
+        id=$(gh api "repos/$REPO/releases?per_page=100" \
+          --jq 'map(select(.name == $ENV.RELEASE or .tag_name == $ENV.RELEASE)) | .[0].id // empty')
+        [ -n "$id" ] || { echo "no release titled '$RELEASE' found (is the draft created?)" >&2; exit 1; }
+
+        # Replace an existing asset of the same name so re-runs are idempotent.
+        old=$(gh api "repos/$REPO/releases/$id/assets?per_page=100" \
+          --jq 'map(select(.name == $ENV.ASSET)) | .[0].id // empty')
+        [ -n "$old" ] && gh api --method DELETE "repos/$REPO/releases/assets/$old" >/dev/null
+
+        echo "Uploading $ASSET to release '$RELEASE' (id $id)"
+        curl -fsSL -X POST \
+          -H "Authorization: Bearer $GH_TOKEN" \
+          -H "Content-Type: application/octet-stream" \
+          --data-binary @"$FILE" \
+          "https://uploads.github.com/repos/$REPO/releases/$id/assets?name=$ASSET" >/dev/null
