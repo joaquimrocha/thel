@@ -23,7 +23,7 @@ import { useUI } from "@/store/ui";
 import { useTheme } from "@/store/theme";
 import { usePrefs } from "@/store/prefs";
 import { zoomedFontSize } from "@/lib/theme";
-import { runsDaemon, isMac } from "@/lib/platform";
+import { runsDaemon } from "@/lib/platform";
 import { openUrl } from "@/lib/pty";
 import { Logo } from "@/components/Logo";
 import { ProfilesSettings } from "@/components/ProfilesSettings";
@@ -117,17 +117,13 @@ export function SettingsDialog() {
                   <Moon className="size-4" /> Dark
                 </Button>
               </div>
-              {/* macOS always uses the native window + menu bar, so the choice
-                  doesn't apply there. */}
-              {!isMac && (
-                <label className="flex items-center gap-2 text-sm">
-                  <Switch
-                    checked={customTitlebar}
-                    onCheckedChange={setCustomTitlebar}
-                  />
-                  Use the app's own title bar
-                </label>
-              )}
+              <label className="flex items-center gap-2 text-sm">
+                <Switch
+                  checked={customTitlebar}
+                  onCheckedChange={setCustomTitlebar}
+                />
+                Use thel's own window decoration
+              </label>
             </TabsContent>
 
             <TabsContent value="terminal" className="mt-0 space-y-3">
