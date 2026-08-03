@@ -19,11 +19,14 @@ test("theme toggle switches the dark class on <html>", async ({ page }) => {
 
 test("disabling the custom title bar hides it", async ({ page }) => {
   await gotoApp(page);
-  await expect(appMenuButton(page)).toBeVisible();
+  await expect(page.locator("[data-tauri-drag-region]")).toHaveCount(1);
   await openSettings(page);
   // The Appearance tab's only switch is the title-bar one.
   await page.getByRole("switch").click();
-  await expect(appMenuButton(page)).toBeHidden();
+  await expect(page.locator("[data-tauri-drag-region]")).toHaveCount(0);
+  // The app menu moves to the sidebar instead of going with the bar, or
+  // Settings would only be reachable from the command palette.
+  await expect(appMenuButton(page)).toBeVisible();
 });
 
 test("default zoom can be changed and reset", async ({ page }) => {

@@ -268,6 +268,10 @@ function install(config: MockConfig) {
       // Record the window destroy the API issues after the close handler runs.
       if (cmd === "plugin:window|destroy")
         (w.__MOCK__ as Record<string, unknown>).destroyed = true;
+      // Record the OS window title, which is where the profile name shows when
+      // the app isn't drawing its own title bar.
+      if (cmd === "plugin:window|set_title")
+        (w.__MOCK__ as Record<string, unknown>).windowTitle = a.value ?? a.title;
       // Window/webview/event/app plugin calls: harmless no-ops.
       if (cmd.startsWith("plugin:")) return Promise.resolve(null);
       return Promise.resolve(appInvoke(cmd, a));

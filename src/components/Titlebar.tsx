@@ -75,9 +75,14 @@ export function Titlebar() {
   );
 }
 
-// "thel >_ <profile>" doubles as the profile switcher: each profile opens in its
-// own window, so picking one focuses (or opens) that window.
-function ProfileMenu() {
+/**
+ * The logo button and its menu: profiles, and the way into Settings. Each
+ * profile opens in its own window, so picking one focuses (or opens) that
+ * window. Lives in the custom title bar, and in the sidebar header when the OS
+ * draws the window instead, so it is reachable either way. `withName` is off
+ * there: the header has no room for it and the OS title bar carries it.
+ */
+export function ProfileMenu({ withName = true }: { withName?: boolean }) {
   const profiles = useProfiles((s) => s.profiles);
   const currentId = useProfiles((s) => s.currentId);
   const current = useProfiles((s) =>
@@ -86,7 +91,8 @@ function ProfileMenu() {
   const currentName = current?.name ?? "Default";
   // The name only adds information once there are several profiles, or once the
   // lone default has been given a custom name; otherwise it's just clutter.
-  const showName = profiles.length > 1 || currentName !== "Default";
+  const showName =
+    withName && (profiles.length > 1 || currentName !== "Default");
   const switchProfile = useProfiles((s) => s.switchProfile);
   // Open state lives in the UI store so a global shortcut can toggle it.
   const open = useUI((s) => s.profileMenuOpen);

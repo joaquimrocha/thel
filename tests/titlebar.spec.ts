@@ -1,5 +1,14 @@
 import { test } from "./app";
 import { gotoApp, appMenuButton, expect } from "./app";
+import type { Page } from "@playwright/test";
+
+/** The OS window title, as recorded by the mocked window plugin. */
+const windowTitle = (page: Page) =>
+  page.evaluate(
+    () =>
+      (window as unknown as { __MOCK__: Record<string, unknown> }).__MOCK__
+        .windowTitle as string | undefined,
+  );
 
 test("title bar has the window controls", async ({ page }) => {
   await gotoApp(page);
@@ -35,6 +44,43 @@ test("title bar shows the default's name once it's renamed", async ({
   });
   await gotoApp(page);
   await expect(appMenuButton(page)).toContainText("Home");
+});
+
+// Switching to the OS window decorations drops thel's title bar, which used to
+// take the app menu (and with it the only button into Settings) along with it.
+test("system decorations keep the app menu in the sidebar", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("thel.customTitlebar", "0");
+    localStorage.setItem(
+      "__store__thel-profiles.json",
+      JSON.stringify({ profiles: [{ id: "default", name: "Home" }] }),
+    );
+  });
+  await gotoApp(page);
+
+  // No custom title bar, but the menu is still there and still opens Settings.
+  await expect(page.locator("[data-tauri-drag-region]")).toHaveCount(0);
+  await appMenuButton(page).click();
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+});
+
+// The sidebar header is three controls wide, so the name goes to the OS title
+// bar rather than squeezing in between them.
+test("system decorations: name in the window title, not the sidebar", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("thel.customTitlebar", "0");
+    localStorage.setItem(
+      "__store__thel-profiles.json",
+      JSON.stringify({ profiles: [{ id: "default", name: "Home" }] }),
+    );
+  });
+  await gotoApp(page);
+
+  await expect(appMenuButton(page)).not.toContainText("Home");
+  await expect.poll(() => windowTitle(page)).toContain("Home");
 });
 
 test("a profile window shows its name and a tinted title bar", async ({
