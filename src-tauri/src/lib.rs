@@ -454,14 +454,39 @@ fn notify(
     }
 }
 
+/// Whether a URL may be handed to the desktop's opener. A named scheme is
+/// required, so terminal output can't talk the opener into taking a bare path,
+/// and the schemes whose payload *is* the URL are refused: those are handed to
+/// something that executes them. Everything else is routed by the desktop to
+/// whatever registered for it, which is how `file:` from `ls --hyperlink` and
+/// `man:` from systemd's `--help` reach a reader. Opening still takes a
+/// deliberate Ctrl-click on the link, which is the user's part of the bargain.
+fn openable(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once(':') else {
+        return false;
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    let mut chars = scheme.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.') {
+        return false;
+    }
+    !matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "javascript" | "data" | "vbscript"
+    )
+}
+
 /// Open a URL in the user's default browser. The webview's window.open does
-/// nothing useful under WebKitGTK, so the terminal's link addon routes clicks
-/// here. Only http(s) links reach this (the addon matches those), and we reject
-/// anything else as a guard against opening arbitrary schemes from terminal
-/// output.
+/// nothing useful under WebKitGTK, so the terminal's links route clicks here.
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
+    if !openable(&url) {
         return Err("refusing to open non-http url".into());
     }
     #[cfg(target_os = "linux")]
@@ -542,6 +567,37 @@ mod tests {
     fn spawn_detached_reports_a_missing_program() {
         let r = spawn_detached("/no/such/thel-test-binary".into(), vec![], None);
         assert!(r.is_err(), "expected an error for a missing program");
+    }
+
+    #[test]
+    fn openable_defers_to_the_desktop_for_ordinary_schemes() {
+        assert!(openable("https://example.com/a?b=1"));
+        assert!(openable("http://example.com"));
+        // What `ls --hyperlink` emits.
+        assert!(openable("file:///home/u/notes.txt"));
+        // What systemd's --help output emits, parentheses and all.
+        assert!(openable("man:systemd-analyze(1)"));
+        assert!(openable("mailto:someone@example.com"));
+        assert!(openable("MAN:systemd-analyze(1)"));
+    }
+
+    #[test]
+    fn openable_refuses_urls_that_are_their_own_payload() {
+        assert!(!openable("javascript:alert(1)"));
+        assert!(!openable("JavaScript:alert(1)"));
+        assert!(!openable("data:text/html,<script>"));
+        assert!(!openable("vbscript:msgbox"));
+    }
+
+    #[test]
+    fn openable_needs_a_well_formed_scheme() {
+        assert!(!openable("/etc/passwd"));
+        assert!(!openable("no-scheme-at-all"));
+        assert!(!openable(" https://example.com"));
+        assert!(!openable("1http://example.com"));
+        assert!(!openable("ht tp://example.com"));
+        // A scheme with nothing after it names no target.
+        assert!(!openable("man:"));
     }
 }
 
