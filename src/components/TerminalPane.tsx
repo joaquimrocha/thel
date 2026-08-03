@@ -101,16 +101,24 @@ function pasteIntoTerm(term: Terminal) {
   })();
 }
 
-// Construct an xterm with thel's addons (fit, system-browser links, Unicode 11
-// widths, and a WebGL renderer that falls back to DOM), open it in `container`,
-// and fit it. `onLinkHover` tracks the URL under the pointer (null on leave) so
-// the context menu can offer "Copy URL".
+// Construct an xterm with thel's addons (fit, Unicode 11 widths, and a WebGL
+// renderer that falls back to DOM), open it in `container`, and fit it. Links
+// come from two places: OSC 8 sequences a program emits, and URLs the web-links
+// addon spots in plain output; both open in the system browser. `onLinkHover`
+// tracks the URL under the pointer (null on leave) so the context menu can
+// offer "Copy URL".
 function createXterm(
   container: HTMLDivElement,
   zoom: number,
   onLinkHover: (uri: string | null) => void,
 ): { term: Terminal; fit: FitAddon } {
   const font = getTerminalFont();
+  // Open links in the system browser; the webview's default window.open (what
+  // WebLinksAddon uses otherwise) does nothing under WebKitGTK.
+  const openLink = (_e: MouseEvent, uri: string) => void openUrl(uri);
+  // React bails out when the value is unchanged, so per-move hovers are cheap.
+  const hover = (_e: MouseEvent, uri: string) => onLinkHover(uri);
+  const leave = () => onLinkHover(null);
   const term = new Terminal({
     fontFamily: font.fontFamily,
     fontSize: zoomedFontSize(zoom),
@@ -120,18 +128,16 @@ function createXterm(
     // memory (each line costs cells + WebGL textures); make configurable later.
     scrollback: 2000,
     theme: TERMINAL_THEME,
+    // OSC 8 hyperlinks, which is what `ls --hyperlink` emits. xterm parses them
+    // either way but drops them on the floor without a handler, and skips every
+    // non-http scheme unless asked not to, which is exactly the file:// URLs a
+    // file listing produces. Letting them through here is safe because the
+    // backend opener is the guard: it takes http(s) and file, nothing else.
+    linkHandler: { activate: openLink, hover, leave, allowNonHttpProtocols: true },
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  // Open links in the system browser; the webview's default window.open (what
-  // WebLinksAddon uses otherwise) does nothing under WebKitGTK.
-  term.loadAddon(
-    new WebLinksAddon((_e, uri) => void openUrl(uri), {
-      // React bails out when the value is unchanged, so per-move hovers are cheap.
-      hover: (_e, uri) => onLinkHover(uri),
-      leave: () => onLinkHover(null),
-    }),
-  );
+  term.loadAddon(new WebLinksAddon(openLink, { hover, leave }));
   // Use Unicode 11 width tables so emoji and other wide glyphs occupy two cells;
   // otherwise the next character overlaps them.
   term.loadAddon(new Unicode11Addon());
