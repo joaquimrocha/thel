@@ -148,6 +148,45 @@ test("holding close-terminal shortcut is throttled, not suppressed", async ({
   await expect(tabs).toHaveCount(1);
 });
 
+// Without the daemon a terminal dies with its pane (close_session kills the
+// child), so an inactive session must stay mounted however long it is left.
+// Unmounting it on an idle timer killed the user's shells behind their back.
+test("with background sessions off, an idle session keeps its terminals", async ({
+  page,
+}) => {
+  const term = (id: string) => ({ id, title: "shell", command: "bash", args: [] });
+  const layout = {
+    activeSessionId: "s0",
+    sessions: ["s0", "s1"].map((id, i) => ({
+      id,
+      name: `session ${i}`,
+      groups: [{ id: `g${i}`, activeTerminalId: `t${i}`, terminals: [term(`t${i}`)] }],
+      layout: { t: "leaf", group: `g${i}` },
+      activeGroupId: `g${i}`,
+    })),
+  };
+  await page.clock.install();
+  await page.addInitScript((l) => {
+    localStorage.setItem("__store__thel-layout.json", JSON.stringify({ layout: l }));
+    localStorage.setItem("thel.useDaemon", "0");
+    // Restored terminals only come back started with the daemon or this on.
+    localStorage.setItem("thel.autoStartTerminals", "1");
+  }, layout);
+  await gotoApp(page);
+
+  // Both sessions mount: the visible one and the one waiting in the background.
+  await expect(page.locator(".xterm")).toHaveCount(2);
+  await expect.poll(() => hasTerminalChannel(page, "t1")).toBe(true);
+
+  // Long past any idle window. A terminal xterm disposed by StrictMode's double
+  // mount leaves a viewport timer that throws when the fake clock finally runs
+  // it; that is the harness, not the app.
+  await page.clock.fastForward("30:00").catch(() => {});
+
+  await expect(page.locator(".xterm")).toHaveCount(2);
+  expect(await hasTerminalChannel(page, "t1")).toBe(true);
+});
+
 test("hidden daemon tabs update titles without mounting xterm", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
