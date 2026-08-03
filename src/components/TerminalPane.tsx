@@ -26,6 +26,7 @@ import {
   type TerminalActivity,
 } from "@/lib/termActivity";
 import { appFocused, onFocusGained } from "@/lib/focus";
+import { isMac } from "@/lib/platform";
 import {
   copyText,
   pasteText,
@@ -115,7 +116,15 @@ function createXterm(
   const font = getTerminalFont();
   // Open links in the system browser; the webview's default window.open (what
   // WebLinksAddon uses otherwise) does nothing under WebKitGTK.
-  const openLink = (_e: MouseEvent, uri: string) => void openUrl(uri);
+  //
+  // xterm activates a link on any mouseup over it, so without the guard a stray
+  // click while reading, or a right-click meaning to reach the menu, would
+  // launch a browser. Hold the platform's modifier and use the primary button,
+  // the same bargain other terminals strike.
+  const openLink = (e: MouseEvent, uri: string) => {
+    if (e.button !== 0 || !(isMac ? e.metaKey : e.ctrlKey)) return;
+    void openUrl(uri);
+  };
   // React bails out when the value is unchanged, so per-move hovers are cheap.
   const hover = (_e: MouseEvent, uri: string) => onLinkHover(uri);
   const leave = () => onLinkHover(null);

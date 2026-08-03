@@ -51,8 +51,10 @@ test("an OSC 8 hyperlink opens its target", async ({ page }) => {
   await emit(page, `\x1b[H\x1b[2J${osc8("file:///home/u/notes.txt", "notes.txt")}`);
 
   await hoverFirstCell(page);
+  await page.keyboard.down("Control");
   await page.mouse.down();
   await page.mouse.up();
+  await page.keyboard.up("Control");
 
   await expect.poll(() => openedUrl(page)).toBe("file:///home/u/notes.txt");
 });
@@ -74,4 +76,39 @@ test("a man: hyperlink opens too", async ({ page }) => {
   await page.keyboard.up("Control");
 
   await expect.poll(() => openedUrl(page)).toBe("man:systemd-analyze(1)");
+});
+
+// xterm fires a link on any mouseup over it, so reading output with the pointer
+// resting on a URL, or right-clicking one to reach the menu, launched a browser.
+test("a bare click does not open a link", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await emit(page, "\x1b[H\x1b[2Jhttps://example.com/plain ");
+
+  await hoverFirstCell(page);
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  expect(await openedUrl(page)).toBeUndefined();
+
+  // The modifier is what opens it.
+  await page.keyboard.down("Control");
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+  await expect.poll(() => openedUrl(page)).toBe("https://example.com/plain");
+});
+
+test("right-clicking a link opens the menu, not the link", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await emit(page, `\x1b[H\x1b[2J${osc8("https://example.com/osc", "the link")}`);
+
+  const box = (await page.locator(".xterm-screen").first().boundingBox())!;
+  await page.mouse.move(box.x + 4, box.y + 4);
+  await page.waitForTimeout(200);
+  await page.mouse.click(box.x + 4, box.y + 4, { button: "right" });
+
+  await expect(page.getByRole("menuitem", { name: "Paste" })).toBeVisible();
+  expect(await openedUrl(page)).toBeUndefined();
 });
