@@ -180,9 +180,12 @@ export function TerminalPane({
   const fitRef = useRef<FitAddon | null>(null);
   // Drives the enabled state of the right-click Copy items.
   const [hasSelection, setHasSelection] = useState(false);
-  // The URL currently under the pointer (from the link addon's hover), so the
-  // right-click menu can offer "Copy URL" when you click on a link.
+  // The URL currently under the pointer (from the link addon's hover).
   const [linkUrl, setLinkUrl] = useState<string | null>(null);
+  // What the pointer was on when the menu opened. Opening it blanks pointer
+  // events on the body, which makes xterm report the link left before the menu
+  // has rendered, so reading the live value there always found nothing.
+  const [menuLink, setMenuLink] = useState<string | null>(null);
   const markExited = useSessions((s) => s.markExited);
   const setAttention = useSessions((s) => s.setAttention);
   const setBusy = useSessions((s) => s.setBusy);
@@ -626,7 +629,7 @@ export function TerminalPane({
   // corrupts the cursor/scroll state and leaves a stale frame painted over the
   // prompt when the pane is shown again.
   return (
-    <ContextMenu>
+    <ContextMenu onOpenChange={(open) => open && setMenuLink(linkUrl)}>
       <ContextMenuTrigger asChild>
         <div
           ref={containerRef}
@@ -635,11 +638,11 @@ export function TerminalPane({
         />
       </ContextMenuTrigger>
       <ContextMenuContent>
-        {linkUrl && (
+        {menuLink && (
           <>
             <ContextMenuItem
               onSelect={() => {
-                void copyText(linkUrl);
+                void copyText(menuLink);
                 notifyCopied("raw");
               }}
             >

@@ -99,6 +99,43 @@ test("a bare click does not open a link", async ({ page }) => {
   await expect.poll(() => openedUrl(page)).toBe("https://example.com/plain");
 });
 
+// Opening the menu is itself what made the link "leave", so the item that reads
+// the live hover never rendered.
+test("the menu offers to copy the link under the pointer", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await emit(page, `\x1b[H\x1b[2J${osc8("https://example.com/copy-me", "a link")}`);
+
+  const box = (await page.locator(".xterm-screen").first().boundingBox())!;
+  await page.mouse.move(box.x + 4, box.y + 4);
+  await page.waitForTimeout(200);
+  await page.mouse.click(box.x + 4, box.y + 4, { button: "right" });
+
+  await page.getByRole("menuitem", { name: "Copy URL" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as unknown as { __MOCK__: Record<string, unknown> }).__MOCK__
+            .clipboard,
+      ),
+    )
+    .toBe("https://example.com/copy-me");
+});
+
+// Away from a link there is nothing to copy, so the item stays out of the way.
+test("the copy-link item is absent off a link", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await emit(page, "\x1b[H\x1b[2Jplain output, no url here");
+
+  const box = (await page.locator(".xterm-screen").first().boundingBox())!;
+  await page.mouse.click(box.x + 4, box.y + 4, { button: "right" });
+
+  await expect(page.getByRole("menuitem", { name: "Paste" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Copy URL" })).toHaveCount(0);
+});
+
 test("right-clicking a link opens the menu, not the link", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
