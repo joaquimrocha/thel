@@ -36,6 +36,46 @@ test("rename a terminal tab from its context menu", async ({ page }) => {
   ).toBeVisible();
 });
 
+// The webview can hand focus back to the terminal just as the context menu
+// closes. Committing on that blur closed the field the instant it opened, which
+// read as "Rename does nothing" while double-click still worked.
+test("a rename survives focus being taken as the menu closes", async ({
+  page,
+}) => {
+  await gotoApp(page);
+  await createSession(page);
+  await page.locator('[data-testid="terminal-tab"]').click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Rename" }).click();
+  await expect(page.locator("input:focus")).toBeVisible();
+
+  await page.evaluate(() =>
+    (document.querySelector(".xterm-helper-textarea") as HTMLElement)?.focus(),
+  );
+
+  const input = page.locator("input:focus");
+  await expect(input).toBeVisible();
+  await input.fill("StolenTerm");
+  await input.press("Enter");
+  await expect(
+    page.locator('[data-testid="terminal-tab"]', { hasText: "StolenTerm" }),
+  ).toBeVisible();
+});
+
+// The other side of the blur rule: a blur the user did cause still commits.
+test("clicking away commits the rename", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await page
+    .locator('[title="Double-click to rename"]', { hasText: "Terminal" })
+    .dblclick();
+  await page.locator("input:focus").fill("ClickAway");
+  await page.locator(".xterm-screen").first().click();
+  await expect(page.locator("input")).toHaveCount(0);
+  await expect(
+    page.locator('[data-testid="terminal-tab"]', { hasText: "ClickAway" }),
+  ).toBeVisible();
+});
+
 test("rename a terminal tab with Shift+F2", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);

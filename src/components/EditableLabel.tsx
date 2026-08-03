@@ -28,6 +28,10 @@ export function EditableLabel({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Whether the user has touched anything since the field opened, which is what
+  // separates their own blur from a focus grab by something else.
+  const userActed = useRef(false);
+  const tookFocusBack = useRef(false);
 
   useEffect(() => {
     if (editSignal !== undefined) {
@@ -39,10 +43,21 @@ export function EditableLabel({
   }, [editSignal]);
 
   useEffect(() => {
-    if (editing) {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    }
+    if (!editing) return;
+    userActed.current = false;
+    tookFocusBack.current = false;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+    const act = () => {
+      userActed.current = true;
+    };
+    // Capture, so the input's own stopPropagation doesn't hide the user's keys.
+    document.addEventListener("pointerdown", act, true);
+    document.addEventListener("keydown", act, true);
+    return () => {
+      document.removeEventListener("pointerdown", act, true);
+      document.removeEventListener("keydown", act, true);
+    };
   }, [editing]);
 
   const commit = () => {
@@ -65,7 +80,16 @@ export function EditableLabel({
         onChange={(e) => setDraft(e.target.value)}
         onClick={(e) => e.stopPropagation()}
         onDoubleClick={(e) => e.stopPropagation()}
-        onBlur={commit}
+        onBlur={() => {
+          // A blur the user did not cause is something else grabbing focus: a
+          // context menu restoring it as it closes, or the terminal taking it
+          // back. Committing there would close the field the instant it opened,
+          // so take focus back once instead; a second grab is left alone rather
+          // than fought over.
+          if (userActed.current || tookFocusBack.current) return commit();
+          tookFocusBack.current = true;
+          inputRef.current?.focus();
+        }}
         onKeyDown={(e) => {
           e.stopPropagation();
           if (e.key === "Enter") commit();
