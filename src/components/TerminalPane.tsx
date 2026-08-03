@@ -58,6 +58,10 @@ import { hasVisibleOutput } from "@/lib/ansi";
 
 type CopyMode = "raw" | "dedent" | "paragraph";
 
+// Spelled out beside a hovered link: the underline alone would suggest a plain
+// click opens it, which is exactly what it no longer does.
+const OPEN_LINK_HINT = isMac ? "⌘-click to open" : "Ctrl+click to open";
+
 const COPY_TOAST: Record<CopyMode, string> = {
   raw: "Copied",
   dedent: "Copied (no indentation)",
@@ -632,10 +636,21 @@ export function TerminalPane({
     <ContextMenu onOpenChange={(open) => open && setMenuLink(linkUrl)}>
       <ContextMenuTrigger asChild>
         <div
-          ref={containerRef}
-          className="h-full w-full"
+          className="relative h-full w-full"
           style={{ visibility: visible ? "visible" : "hidden" }}
-        />
+        >
+          <div ref={containerRef} className="h-full w-full" />
+          {/* Where a link goes, browser-style, since a terminal has no status
+              bar to put it in. Sits outside the xterm element and takes no
+              pointer events, so it can never swallow a click meant for the
+              link it is describing. */}
+          {linkUrl && (
+            <div className="pointer-events-none absolute bottom-1 left-1 max-w-[calc(100%-0.5rem)] truncate rounded border border-border bg-popover/90 px-1.5 py-0.5 text-xs text-muted-foreground shadow-sm">
+              {linkUrl}
+              <span className="pl-1.5 opacity-60">{OPEN_LINK_HINT}</span>
+            </div>
+          )}
+        </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
         {menuLink && (
