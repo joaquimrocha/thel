@@ -20,7 +20,7 @@ import { shortcutLabel } from "@/store/keybindings";
 import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
 import { StatusDot, sessionDotState } from "./StatusDot";
 import { ActionTooltip } from "./ActionTooltip";
-import { Logo } from "./Logo";
+import { ProfileMenu } from "./Titlebar";
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -37,9 +37,10 @@ export function SessionSidebar() {
   const openPalette = useUI((s) => s.setPaletteOpen);
   const openNotifications = useUI((s) => s.openNotifications);
   const unread = useNotifications((s) => s.items.filter((i) => !i.read).length);
-  // The custom title bar already shows "thel", so drop the redundant sidebar
-  // brand when it's on.
+  // The custom title bar carries the app menu; the sidebar takes it over when
+  // the OS draws the window instead.
   const customTitlebar = usePrefs((s) => s.customTitlebar);
+  const appMenuOpen = useUI((s) => s.profileMenuOpen);
   const focusTerminal = useUI((s) => s.focusTerminal);
   const width = useUI((s) => s.sidebarWidth);
   const collapsed = useUI((s) => s.sidebarCollapsed);
@@ -237,7 +238,9 @@ export function SessionSidebar() {
     <>
       <div className="flex items-center justify-between px-2 py-1">
         {notificationsButton}
-        {!customTitlebar && <Logo className="size-4 text-emerald-500" />}
+        {/* With the OS drawing the window there is no title bar to hold the app
+            menu, so it sits here instead of a decorative logo. */}
+        {!customTitlebar && <ProfileMenu withName={false} />}
         <ActionTooltip label="New session" shortcutId="new-session">
           <Button
             variant="ghost"
@@ -358,6 +361,9 @@ export function SessionSidebar() {
         if ((e.relatedTarget as Element | null)?.closest?.("[data-window-resize]"))
           return;
         if (rowMenuOpen.current) return;
+        // The app menu is wider than the sidebar, so reaching for an item takes
+        // the pointer off the rail; hiding there would close the menu with it.
+        if (appMenuOpen) return;
         setSuppressOverlay(false);
         cancelHide();
         hideTimer.current = window.setTimeout(() => setHovered(false), 200);
