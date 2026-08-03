@@ -357,15 +357,21 @@ struct TabShared {
     subscribers: Vec<Subscriber>,
 }
 
-/// What to send a (re)attaching client: the raw scrollback on the normal screen,
-/// or the authoritative VTE snapshot when on the alternate screen (where raw
-/// replay would be the thing that breaks).
+/// What to send a (re)attaching client: the raw scrollback, which is the normal
+/// screen, plus the authoritative VTE snapshot when the tab is on the alternate
+/// screen (where raw replay would be the thing that breaks).
 fn snapshot(sh: &TabShared) -> Vec<u8> {
+    let mut out = strip_queries(&sh.scrollback.iter().copied().collect::<Vec<u8>>());
     if sh.parser.screen().alternate_screen() {
-        sh.parser.screen().contents_formatted()
-    } else {
-        strip_queries(&sh.scrollback.iter().copied().collect::<Vec<u8>>())
+        // The scrollback still has to go first, and the switch has to be
+        // explicit: contents_formatted() is only grid contents, no mode change.
+        // Without the 1049h the client paints the alt screen into its normal
+        // buffer and keeps it there when the program exits and restores that
+        // buffer, leaving a dead pager's text under the shell prompt.
+        out.extend_from_slice(b"\x1b[?1049h");
+        out.extend_from_slice(&sh.parser.screen().contents_formatted());
     }
+    out
 }
 
 /// Remove terminal *query* sequences (DSR/CPR `ESC[…n`, DA `ESC[…c`, DECRQM
@@ -1582,6 +1588,51 @@ mod tests {
 
         let osc_title = b"hello\x1b]0;title".to_vec();
         assert_eq!(strip_queries(&osc_title), osc_title);
+    }
+
+    fn tab_with(normal: &[u8], alt: &[u8]) -> TabShared {
+        let mut sh = TabShared {
+            parser: vt100::Parser::new(24, 80, 100),
+            scrollback: VecDeque::new(),
+            subscribers: Vec::new(),
+        };
+        sh.parser.process(normal);
+        sh.scrollback.extend(normal.iter().copied());
+        // Alt-screen output is deliberately kept out of the scrollback, as the
+        // reader does.
+        sh.parser.process(alt);
+        sh
+    }
+
+    /// Byte offset of `needle` in `hay`.
+    fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+        hay.windows(needle.len()).position(|w| w == needle)
+    }
+
+    #[test]
+    fn alt_screen_snapshot_replays_scrollback_then_switches_screens() {
+        let normal = b"$ ls\r\nnotes.txt\r\n$ less notes.txt\r\n";
+        let sh = tab_with(normal, b"\x1b[?1049h\x1b[HPAGERTEXT");
+        assert!(sh.parser.screen().alternate_screen());
+
+        let snap = snapshot(&sh);
+        let scrollback = find(&snap, normal).expect("scrollback replayed");
+        let enter = find(&snap, b"\x1b[?1049h").expect("alt screen entered");
+        let alt = find(&snap, b"PAGERTEXT").expect("alt screen contents");
+        // Order matters: the client needs its normal buffer filled before the
+        // switch, or exiting the pager restores the pager's own screen.
+        assert!(scrollback < enter, "scrollback must precede the switch");
+        assert!(enter < alt, "the switch must precede the alt contents");
+    }
+
+    #[test]
+    fn normal_screen_snapshot_is_scrollback_only() {
+        let normal = b"$ echo hi\r\nhi\r\n";
+        let sh = tab_with(normal, b"\x1b[?1049h\x1b[HPAGERTEXT\x1b[?1049l");
+        assert!(!sh.parser.screen().alternate_screen());
+
+        let snap = snapshot(&sh);
+        assert_eq!(snap, normal.to_vec());
     }
 
     #[test]
