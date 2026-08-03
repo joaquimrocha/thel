@@ -48,5 +48,5 @@ For each terminal tab, the daemon retains:
 ### Snapshot Generation
 
 When a client attaches or reattaches to a running tab, the daemon produces a snapshot to reconstruct the current screen state:
-- **Alternate Screen (e.g., inside vim/less)**: Instead of replaying raw history (which causes screen corruption), the daemon generates a formatted representation of the current grid directly from the authoritative VTE parser.
 - **Normal Screen**: The daemon replays the raw scrollback buffer. Before writing this buffer to the new client, it processes the bytes to **strip query sequences** (such as Device Status Reports `DSR`, Device Attributes `DA`, and Color Queries `OSC`). This prevents the attaching client's terminal from responding to old queries, which would otherwise litter the active shell prompt with garbage characters.
+- **Alternate Screen (e.g., inside vim/less)**: The scrollback replay above comes first, followed by an explicit `ESC[?1049h` and a formatted representation of the current grid taken from the authoritative VTE parser (replaying the raw alt-screen history instead would corrupt the screen). The mode switch has to be sent because the formatted grid carries no mode change: without it the client paints the alternate screen into its normal buffer and keeps it there once the program exits and restores that buffer.
