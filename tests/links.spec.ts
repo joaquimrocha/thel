@@ -99,6 +99,26 @@ test("a bare click does not open a link", async ({ page }) => {
   await expect.poll(() => openedUrl(page)).toBe("https://example.com/plain");
 });
 
+// A terminal has no status bar, and the underline alone reads as "click me"
+// when a plain click no longer opens anything.
+test("hovering a link shows where it goes", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await emit(page, `\x1b[H\x1b[2J${osc8("https://example.com/target", "a link")}`);
+
+  const hint = page.getByText("https://example.com/target");
+  await expect(hint).toHaveCount(0);
+
+  await hoverFirstCell(page);
+  await expect(hint).toBeVisible();
+  await expect(hint).toContainText("click to open");
+
+  // It goes away with the pointer.
+  const box = (await page.locator(".xterm-screen").first().boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height - 4);
+  await expect(hint).toHaveCount(0);
+});
+
 // Opening the menu is itself what made the link "leave", so the item that reads
 // the live hover never rendered.
 test("the menu offers to copy the link under the pointer", async ({ page }) => {
