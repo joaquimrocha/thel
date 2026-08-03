@@ -56,6 +56,9 @@ export function TerminalTabs({
   // re-establishes the correct :hover.
   const [hoverArmed, setHoverArmed] = useState(true);
   const renameReq = useUI((s) => s.renameTerminalReq);
+  // Set by the Rename item so the menu it belongs to leaves focus alone on the
+  // way out. Only one menu is open at a time, so one ref covers every tab.
+  const renaming = useRef(false);
   const stripRef = useRef<HTMLDivElement>(null);
   const prevLefts = useRef<Map<string, number>>(new Map());
 
@@ -303,14 +306,22 @@ export function TerminalTabs({
             </ActionTooltip>
           </div>
             </ContextMenuTrigger>
-            <ContextMenuContent>
+            <ContextMenuContent
+              onCloseAutoFocus={(e) => {
+                // The menu hands focus back as it closes, which would land on
+                // the tab and blur the rename input. Renaming focuses the field
+                // itself, so keep the menu out of it; every other item still
+                // gets the focus returned for keyboard use.
+                if (renaming.current) {
+                  renaming.current = false;
+                  e.preventDefault();
+                }
+              }}
+            >
               <ContextMenuItem
                 onSelect={() => {
-                  // Defer past the menu's close-and-refocus, which would
-                  // otherwise blur the rename input right after it mounts.
-                  setTimeout(() => {
-                    useUI.getState().requestTerminalRename(t.id);
-                  }, 0);
+                  renaming.current = true;
+                  useUI.getState().requestTerminalRename(t.id);
                 }}
               >
                 Rename
