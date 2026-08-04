@@ -78,6 +78,25 @@ test("a man: hyperlink opens too", async ({ page }) => {
   await expect.poll(() => openedUrl(page)).toBe("man:systemd-analyze(1)");
 });
 
+// A link that won't open used to do nothing at all, which reads as thel being
+// broken rather than the scheme being unhandled.
+test("a link that won't open says so", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await page.evaluate(() => {
+    (window as unknown as { __MOCK__: Record<string, unknown> }).__MOCK__.openUrlFails = true;
+  });
+  await emit(page, `\x1b[H\x1b[2J${osc8("weird:thing", "a link")}`);
+
+  await hoverFirstCell(page);
+  await page.keyboard.down("Control");
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+
+  await expect(page.getByText("Couldn't open that link")).toBeVisible();
+});
+
 // xterm fires a link on any mouseup over it, so reading output with the pointer
 // resting on a URL, or right-clicking one to reach the menu, launched a browser.
 test("a bare click does not open a link", async ({ page }) => {

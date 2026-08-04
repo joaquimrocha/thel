@@ -127,7 +127,13 @@ function createXterm(
   // the same bargain other terminals strike.
   const openLink = (e: MouseEvent, uri: string) => {
     if (e.button !== 0 || !(isMac ? e.metaKey : e.ctrlKey)) return;
-    void openUrl(uri);
+    // Say so when it doesn't open. A refused scheme, or a desktop with nothing
+    // registered for one, is otherwise a click that does nothing at all, which
+    // reads as a broken link rather than an unhandled one.
+    openUrl(uri).catch((err) => {
+      console.error("open link failed", uri, err);
+      toast("Couldn't open that link");
+    });
   };
   // React bails out when the value is unchanged, so per-move hovers are cheap.
   const hover = (_e: MouseEvent, uri: string) => onLinkHover(uri);
