@@ -8,6 +8,7 @@ const COPY_TOASTS_KEY = "thel.copyToasts";
 const ZOOM_KEY = "thel.terminalZoom";
 const CUSTOM_TITLEBAR_KEY = "thel.customTitlebar";
 const AUTO_START_KEY = "thel.autoStartTerminals";
+const SESSION_DIR_KEY = "thel.newTerminalInSessionDir";
 const USE_DAEMON_KEY = "thel.useDaemon";
 const NOTIFY_DESKTOP_KEY = "thel.notifyDesktop";
 const NOTIFY_BELL_KEY = "thel.notifyBell";
@@ -70,6 +71,10 @@ interface PrefsState {
   // showing their Start button.
   autoStartTerminals: boolean;
   setAutoStartTerminals: (value: boolean) => void;
+  // Open a new terminal in the session's own directory rather than following
+  // the one you were last in. Default off, so new terminals follow.
+  newTerminalInSessionDir: boolean;
+  setNewTerminalInSessionDir: (value: boolean) => void;
   // Back terminals with thel's own session daemon (unix) so they survive the
   // app; off falls back to a direct, non-persistent PTY. Default on.
   useDaemon: boolean;
@@ -114,6 +119,11 @@ export const usePrefs = create<PrefsState>((set) => ({
     persistBool(AUTO_START_KEY, autoStartTerminals);
     set({ autoStartTerminals });
   },
+  newTerminalInSessionDir: readBool(SESSION_DIR_KEY, false),
+  setNewTerminalInSessionDir: (newTerminalInSessionDir) => {
+    persistBool(SESSION_DIR_KEY, newTerminalInSessionDir);
+    set({ newTerminalInSessionDir });
+  },
   // Only where the daemon runs (Linux + macOS). Off elsewhere regardless of any
   // saved value, so Windows never activates the daemon (and never restores
   // terminals expecting reattach).
@@ -152,6 +162,8 @@ const REMOTE_APPLIERS: Record<string, (value: unknown) => void> = {
   [ZOOM_KEY]: (v) => usePrefs.getState().setTerminalZoom(Number(v)),
   [CUSTOM_TITLEBAR_KEY]: (v) => usePrefs.getState().setCustomTitlebar(Boolean(v)),
   [AUTO_START_KEY]: (v) => usePrefs.getState().setAutoStartTerminals(Boolean(v)),
+  [SESSION_DIR_KEY]: (v) =>
+    usePrefs.getState().setNewTerminalInSessionDir(Boolean(v)),
   [USE_DAEMON_KEY]: (v) => usePrefs.getState().setUseDaemon(Boolean(v)),
   [NOTIFY_DESKTOP_KEY]: (v) => usePrefs.getState().setNotifyDesktop(Boolean(v)),
   [NOTIFY_BELL_KEY]: (v) => usePrefs.getState().setNotifyBell(Boolean(v)),

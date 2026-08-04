@@ -31,7 +31,7 @@ use tauri::ipc::Channel;
 
 use crate::pty::{decode_utf8_stream, CreateOpts, TermMsg};
 
-const PROTOCOL_VERSION: u32 = 1;
+const PROTOCOL_VERSION: u32 = 2;
 const EMPTY_GRACE: Duration = Duration::from_secs(45);
 // How often the daemon samples each tab's foreground state to push busy
 // transitions. Foreground-pgroup changes have no kernel event, so this is a
@@ -192,6 +192,11 @@ enum Command {
     /// UsageReply; asked for on demand by the GUI's session usage dialog, so
     /// nothing samples this in the background.
     Usage,
+    /// Where one tab's shell currently is, for opening a new terminal there.
+    /// The reply is a CwdReply.
+    Cwd {
+        id: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -217,6 +222,12 @@ struct StatusReply {
 #[derive(Serialize, Deserialize)]
 struct UsageReply {
     usage: HashMap<String, crate::pty::Usage>,
+}
+
+/// Reply to Command::Cwd: the tab's working directory, absent if it has gone.
+#[derive(Serialize, Deserialize)]
+struct CwdReply {
+    cwd: Option<String>,
 }
 
 fn frame_bytes(ty: u8, payload: &[u8]) -> Vec<u8> {
@@ -701,6 +712,10 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>) {
             let usage = daemon.usages();
             client.enqueue(Arc::new(control_json(&UsageReply { usage })));
         }
+        Command::Cwd { id } => {
+            let cwd = daemon.cwd(&id);
+            client.enqueue(Arc::new(control_json(&CwdReply { cwd })));
+        }
     }
 }
 
@@ -907,6 +922,12 @@ impl Daemon {
                 .collect()
         };
         crate::pty::process_tree_usage(&roots)
+    }
+
+    /// Where one tab's shell is now, for opening a new terminal alongside it.
+    fn cwd(&self, id: &str) -> Option<String> {
+        let pid = self.tabs.lock().get(id)?.child.lock().process_id()?;
+        crate::pty::process_cwd(pid)
     }
 
     /// Idle-exit when nothing uses the daemon: no clients AND no tabs. A live tab
@@ -1243,6 +1264,34 @@ pub fn usages() -> std::collections::HashMap<String, crate::pty::Usage> {
     match read_frame(&mut stream) {
         Ok((CONTROL, p)) => parse_json::<UsageReply>(&p).map(|r| r.usage).unwrap_or(empty),
         _ => empty,
+    }
+}
+
+/// Where a daemon-owned tab's shell currently is. Short-lived connection like
+/// usages(): Hello, one Cwd command, close.
+pub fn cwd(id: &str) -> Option<String> {
+    let mut stream = UnixStream::connect(socket_path()).ok()?;
+    let hello = serde_json::to_vec(&Hello {
+        protocol: PROTOCOL_VERSION,
+        build: build_version(),
+    })
+    .unwrap_or_default();
+    write_frame(&mut stream, CONTROL, &hello).ok()?;
+    match read_frame(&mut stream) {
+        Ok((CONTROL, p)) => match parse_json::<HelloReply>(&p) {
+            // A daemon too old to know Cwd rejects the hello over the protocol
+            // bump, so this returns rather than waiting on a reply it would
+            // never send. The GUI's skew prompt is what resolves that.
+            Some(r) if r.ok => {}
+            _ => return None,
+        },
+        _ => return None,
+    }
+    let cmd = serde_json::to_vec(&Command::Cwd { id: id.to_string() }).unwrap_or_default();
+    write_frame(&mut stream, CONTROL, &cmd).ok()?;
+    match read_frame(&mut stream) {
+        Ok((CONTROL, p)) => parse_json::<CwdReply>(&p)?.cwd,
+        _ => None,
     }
 }
 

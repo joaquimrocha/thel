@@ -95,6 +95,13 @@ fn kill_terminal_window(state: State<SessionManager>, session_id: String, id: St
     state.kill_window(&session_id, &id);
 }
 
+/// Where a terminal's shell currently is, so a new terminal can open there.
+/// `async` because a daemon-backed tab means a round trip over the socket.
+#[tauri::command(async)]
+fn terminal_cwd(state: State<SessionManager>, id: String) -> Option<String> {
+    state.cwd(&id)
+}
+
 /// (Re)build the native macOS menu bar from the frontend's current profile list.
 /// No-op off macOS, where the in-app title bar carries these actions instead.
 #[tauri::command]
@@ -671,6 +678,7 @@ pub fn run() {
             terminal_status,
             session_usage,
             kill_terminal_window,
+            terminal_cwd,
             update_app_menu,
             check_daemon,
             restart_daemon,

@@ -325,6 +325,20 @@ impl SessionManager {
         out.extend(process_tree_usage(&roots));
         out
     }
+
+    /// Where a terminal's shell currently is. The daemon owns the process for
+    /// its own tabs, so it answers for those.
+    pub fn cwd(&self, id: &str) -> Option<String> {
+        #[cfg(unix)]
+        {
+            let is_daemon = self.daemon_ids.lock().contains(id);
+            if is_daemon {
+                return crate::daemon::cwd(id);
+            }
+        }
+        let pid = self.sessions.lock().get(id)?.pid?;
+        process_cwd(pid)
+    }
 }
 
 /// Resource use of one terminal's process tree. `cpu_seconds` is cumulative CPU
@@ -535,6 +549,49 @@ pub(crate) fn process_tree_usage(roots: &[(String, u32)]) -> HashMap<String, Usa
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn process_tree_usage(_roots: &[(String, u32)]) -> HashMap<String, Usage> {
     HashMap::new()
+}
+
+/// Where a process currently is, so a new terminal can open where the one you
+/// were last in got to. Asked of the kernel rather than of the shell: OSC 7
+/// would need shell cooperation most setups don't have (Fedora's vte.sh only
+/// arms itself under VTE), and it can name a directory that isn't ours, whereas
+/// this is by definition a live local one. None when the process is gone.
+#[cfg(target_os = "linux")]
+pub(crate) fn process_cwd(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()?
+        .to_str()
+        .map(String::from)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn process_cwd(pid: u32) -> Option<String> {
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if n != size {
+        return None; // gone, or denied for another user's process
+    }
+    // libc spells the path as [[c_char; 32]; 32] to stay buildable on old rustc,
+    // so read it back as the flat NUL-terminated buffer it really is.
+    let buf = &info.pvi_cdir.vip_path;
+    let bytes =
+        unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, std::mem::size_of_val(buf)) };
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    String::from_utf8(bytes[..end].to_vec()).ok()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn process_cwd(_pid: u32) -> Option<String> {
+    None
 }
 
 /// A foreground command is running when the PTY's foreground process group isn't
