@@ -44,6 +44,10 @@ export function SettingsDialog() {
   const setCustomTitlebar = usePrefs((s) => s.setCustomTitlebar);
   const autoStartTerminals = usePrefs((s) => s.autoStartTerminals);
   const setAutoStartTerminals = usePrefs((s) => s.setAutoStartTerminals);
+  const newTerminalInSessionDir = usePrefs((s) => s.newTerminalInSessionDir);
+  const setNewTerminalInSessionDir = usePrefs(
+    (s) => s.setNewTerminalInSessionDir,
+  );
   const useDaemon = usePrefs((s) => s.useDaemon);
   const setUseDaemon = usePrefs((s) => s.setUseDaemon);
   const notifyDesktop = usePrefs((s) => s.notifyDesktop);
@@ -191,6 +195,20 @@ export function SettingsDialog() {
                   </p>
                 </div>
               )}
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-2 text-sm">
+                  <Switch
+                    checked={newTerminalInSessionDir}
+                    onCheckedChange={setNewTerminalInSessionDir}
+                  />
+                  Always open terminals in the session's folder
+                </label>
+                <p className="pl-9 text-xs text-muted-foreground">
+                  A new terminal otherwise opens wherever the one you were last
+                  in had got to, and falls back to the session's folder when the
+                  shell doesn't report its directory.
+                </p>
+              </div>
             </TabsContent>
 
             <TabsContent value="notifications" className="mt-0 space-y-4">

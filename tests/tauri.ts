@@ -130,6 +130,16 @@ function install(config: MockConfig) {
     const m = (w.__MOCK__ || {}) as MockConfig;
     switch (cmd) {
       case "create_session": {
+        // The directory each terminal was spawned in, keyed by terminal, so a
+        // test can check where a new one landed. Not a single "last" value: a
+        // tab going to the background re-opens by id right after, which would
+        // overwrite it.
+        {
+          const o = args.opts as { id: string; cwd?: string; args?: string[] };
+          const store = w.__MOCK__ as Record<string, unknown>;
+          const seen = (store.spawns ??= {}) as Record<string, unknown>;
+          seen[o.id] = { cwd: o.cwd, args: o.args };
+        }
         const ch = args.onData as
           | { onmessage?: (msg: unknown) => void; id?: number }
           | undefined;
@@ -196,6 +206,15 @@ function install(config: MockConfig) {
         return m.completeDir || [];
       case "monospace_font":
         return null;
+      // Where a terminal's shell is, per terminal id, as the OS would report it.
+      // A test sets these through __MOCK__.terminalCwds.
+      case "terminal_cwd":
+        return (
+          ((w.__MOCK__ as Record<string, unknown>).terminalCwds as Record<
+            string,
+            string
+          >)?.[String(args.id)] ?? null
+        );
       case "open_url":
         (w.__MOCK__ as Record<string, unknown>).lastOpenedUrl = args.url;
         return null;

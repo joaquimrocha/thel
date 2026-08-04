@@ -103,6 +103,10 @@ export const defaultShell = () => invoke<string>("default_shell");
 export const homeDir = () => invoke<string | null>("home_dir");
 
 /** True if the path exists and is a directory. */
+/** Where a terminal's shell currently is; null when the OS won't say. */
+export const terminalCwd = (id: string) =>
+  invoke<string | null>("terminal_cwd", { id });
+
 export const dirExists = (path: string) =>
   invoke<boolean>("dir_exists", { path });
 

@@ -1,8 +1,13 @@
-import { defaultShell, programExists, spawnDetached } from "./pty";
+import { defaultShell, programExists, spawnDetached, terminalCwd } from "./pty";
 import { toast } from "sonner";
 import { gitInfo } from "./git";
 import { abbreviatePath } from "./paths";
-import { useSessions, type Terminal, type SplitDir } from "@/store/sessions";
+import {
+  useSessions,
+  type Session,
+  type Terminal,
+  type SplitDir,
+} from "@/store/sessions";
 import { usePrefs } from "@/store/prefs";
 import { useUI } from "@/store/ui";
 import { type Launcher, getDefaultLauncher } from "@/store/launchers";
@@ -23,6 +28,10 @@ interface SessionCtx {
   id: string;
   name: string;
   cwd?: string;
+  // Where this particular terminal opens, when that isn't the session's own
+  // directory (it follows the terminal you were last in). Kept apart from cwd
+  // so __SESSION_DIR__ keeps meaning the session, whatever a shell wandered to.
+  startIn?: string;
 }
 
 // Replace __SESSION_DIR__ / __SESSION_ID__ / __SESSION_NAME__ with the
@@ -85,7 +94,8 @@ export function splitArgs(line: string): string[] {
   return args;
 }
 
-// Build a terminal for a launcher, pinned to the session's cwd. A launcher
+// Build a terminal for a launcher, opening in `startIn` if the caller picked
+// one and the session's own directory otherwise. A launcher
 // with no command is a plain interactive shell. A shell launcher runs the
 // command line via a login shell so the user's PATH/profile is available
 // (thel may be launched from a GUI, not a terminal); a no-shell launcher is
@@ -114,7 +124,7 @@ async function makeTerminal(
     defaultTitle: launcher.name,
     command,
     args,
-    cwd: session.cwd,
+    cwd: session.startIn ?? session.cwd,
     // Snapshot the default zoom at creation; later changes to the default only
     // affect new terminals, not this one.
     zoom: usePrefs.getState().terminalZoom,
@@ -205,14 +215,34 @@ export async function createSessionInDir(opts: {
   return session;
 }
 
-/** Add a terminal to the active session, inheriting its cwd. Targets the given
- * split group, or the active one when omitted. */
+/**
+ * Where a new terminal in this session should start: where the terminal you
+ * were last in has got to, falling back to the session's own directory when
+ * nothing can be read (a terminal that never started, or a platform that won't
+ * say). The preference pins every new terminal to the session instead.
+ */
+async function newTerminalCwd(session: Session): Promise<string | undefined> {
+  if (usePrefs.getState().newTerminalInSessionDir) return session.cwd;
+  const group = session.groups.find((g) => g.id === session.activeGroupId);
+  const active = group?.terminals.find((t) => t.id === group.activeTerminalId);
+  if (!active?.started) return session.cwd;
+  const cwd = await terminalCwd(active.id).catch(() => null);
+  return cwd || session.cwd;
+}
+
+/** Add a terminal to the active session, following the terminal you were last
+ * in. Targets the given split group, or the active one when omitted. */
 export async function addTerminal(launcher?: Launcher, groupId?: string) {
   const store = useSessions.getState();
   const session = store.sessions.find((s) => s.id === store.activeSessionId);
   if (!session) return; // no active session; the UI opens the dialog instead
   const l = launcher ?? getDefaultLauncher();
-  const ctx = { id: session.id, name: session.name, cwd: session.cwd };
+  const ctx = {
+    id: session.id,
+    name: session.name,
+    cwd: session.cwd,
+    startIn: await newTerminalCwd(session),
+  };
   try {
     if (isAppLauncher(l)) {
       await launchDetached(l, ctx);
@@ -235,7 +265,12 @@ export async function splitPane(
   const session = store.sessions.find((s) => s.id === store.activeSessionId);
   if (!session) return;
   const l = launcher ?? getDefaultLauncher();
-  const ctx = { id: session.id, name: session.name, cwd: session.cwd };
+  const ctx = {
+    id: session.id,
+    name: session.name,
+    cwd: session.cwd,
+    startIn: await newTerminalCwd(session),
+  };
   try {
     if (isAppLauncher(l)) {
       await launchDetached(l, ctx);

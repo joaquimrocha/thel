@@ -26,7 +26,9 @@ needs you.
 - **Worktree-aware sessions.** Anchor a session to a folder or git worktree, or
   create a new worktree right from the New Session dialog.
 - **Splits and tabs.** Divide a session into split panes, each with its own tab
-  strip of terminals. Drag tabs to reorder them or move them between panes.
+  strip of terminals. Drag tabs to reorder them or move them between panes. A
+  new terminal opens wherever the one you were last in had got to; a setting
+  pins them to the session's own folder instead.
 - **Status and notifications.** A live "working" dot while a command runs, and
   auto-detected attention: a finished command, a bell, a coding agent that's done
   and waiting, or an exit. Raises an in-app dot plus an OS banner when the window
