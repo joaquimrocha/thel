@@ -215,9 +215,14 @@ function install(config: MockConfig) {
             string
           >)?.[String(args.id)] ?? null
         );
-      case "open_url":
+      case "open_url": {
         (w.__MOCK__ as Record<string, unknown>).lastOpenedUrl = args.url;
+        // The backend refuses some schemes outright; a test opts into that with
+        // __MOCK__.openUrlFails to exercise what the click then reports.
+        if ((w.__MOCK__ as Record<string, unknown>).openUrlFails)
+          throw new Error("refusing to open non-http url");
         return null;
+      }
       case "git_info": {
         const g = m.git;
         const cwd = String(args.cwd || "");
