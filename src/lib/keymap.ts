@@ -212,19 +212,17 @@ export const SHORTCUTS: Shortcut[] = [
   {
     id: "next-pane",
     description: "Next pane (split)",
-    defaultCombo: def(
-      { code: "BracketRight", meta: true, shift: true },
-      { code: "BracketRight", ctrl: true, shift: true },
-    ),
+    // Tab, not a bracket: on several layouts (German among them) a bracket sits
+    // behind AltGr, which puts the shortcut we print out of the user's reach.
+    // Ctrl rather than Cmd on macOS too, since Ctrl+Tab cycles tabs there as
+    // well, and one binding is one thing to learn.
+    defaultCombo: { code: "Tab", ctrl: true },
     run: () => cyclePane(1),
   },
   {
     id: "prev-pane",
     description: "Previous pane (split)",
-    defaultCombo: def(
-      { code: "BracketLeft", meta: true, shift: true },
-      { code: "BracketLeft", ctrl: true, shift: true },
-    ),
+    defaultCombo: { code: "Tab", ctrl: true, shift: true },
     run: () => cyclePane(-1),
   },
   {
