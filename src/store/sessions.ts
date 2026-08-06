@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { killTerminalWindow } from "@/lib/pty";
+import { useNotes } from "@/store/notes";
 
 export interface Terminal {
   id: string;
@@ -297,6 +298,8 @@ export const useSessions = create<SessionState>((set, get) => ({
         for (const t of g.terminals) void killTerminalWindow(id, t.id);
       }
     }
+    // The session is gone, so its notes have nothing left to describe.
+    useNotes.getState().removeNote(id);
     set((s) => {
       const idx = s.sessions.findIndex((x) => x.id === id);
       const sessions = s.sessions.filter((x) => x.id !== id);

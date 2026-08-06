@@ -95,6 +95,11 @@ interface UIState {
   openSessionUsage: (sessionId: string) => void;
   closeSessionUsage: () => void;
 
+  // The session whose notes panel is open (null = closed).
+  sessionNotes: string | null;
+  openSessionNotes: (sessionId: string) => void;
+  closeSessionNotes: () => void;
+
   // The "add an icon to the library" dialog (global, not session-specific).
   addIconOpen: boolean;
   setAddIconOpen: (open: boolean) => void;
@@ -208,6 +213,10 @@ export const useUI = create<UIState>((set) => ({
   sessionUsage: null,
   openSessionUsage: (sessionId) => set({ sessionUsage: sessionId }),
   closeSessionUsage: () => set({ sessionUsage: null }),
+
+  sessionNotes: null,
+  openSessionNotes: (sessionId) => set({ sessionNotes: sessionId }),
+  closeSessionNotes: () => set({ sessionNotes: null }),
 
   addIconOpen: false,
   setAddIconOpen: (open) => set({ addIconOpen: open }),

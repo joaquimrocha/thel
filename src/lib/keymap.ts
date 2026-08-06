@@ -12,6 +12,7 @@ import {
   renameActiveTerminal,
   openActiveSessionSettings,
   toggleActiveSessionUsage,
+  toggleActiveSessionNotes,
   moveTerminalToPane,
   closeActiveSession,
 } from "@/lib/actions";
@@ -346,6 +347,16 @@ export const SHORTCUTS: Shortcut[] = [
       { code: "KeyR", ctrl: true, shift: true },
     ),
     run: () => toggleActiveSessionUsage(),
+  },
+  {
+    id: "session-notes",
+    description: "Session notes",
+    // N for notes; plain Cmd/Ctrl+Shift+N is already New session on Linux.
+    defaultCombo: def(
+      { code: "KeyN", meta: true, alt: true },
+      { code: "KeyN", ctrl: true, alt: true },
+    ),
+    run: () => toggleActiveSessionNotes(),
   },
   {
     id: "help",

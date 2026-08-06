@@ -36,6 +36,8 @@ needs you.
   keymap is fully rebindable and persisted.
 - **Session icons.** Assign custom icons to your sessions to quickly identify
   them at a glance in the sidebar.
+- **Session notes.** A markdown scratchpad docked beside each session, with
+  tickable checklists. Notes live with the session and go when it does.
 - **Launchers.** Save the commands you start often (e.g. an AI agent) and pick a
   default. Launchers support session variables (like `__SESSION_DIR__`) and can
   run with or without a login shell.

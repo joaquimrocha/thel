@@ -184,6 +184,17 @@ export function toggleActiveSessionUsage() {
   if (activeSessionId) ui.openSessionUsage(activeSessionId);
 }
 
+/** Toggle the notes panel for the active session (same reasoning as usage). */
+export function toggleActiveSessionNotes() {
+  const ui = useUI.getState();
+  if (ui.sessionNotes) {
+    ui.closeSessionNotes();
+    return;
+  }
+  const { activeSessionId } = useSessions.getState();
+  if (activeSessionId) ui.openSessionNotes(activeSessionId);
+}
+
 /** Start renaming the active terminal's tab label. */
 export function renameActiveTerminal() {
   const id = activeTerminalId();
