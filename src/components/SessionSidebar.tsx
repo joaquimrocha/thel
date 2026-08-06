@@ -446,6 +446,7 @@ function SessionRow({
 }) {
   const openSessionSettings = useUI((s) => s.openSessionSettings);
   const openSessionUsage = useUI((s) => s.openSessionUsage);
+  const openSessionNotes = useUI((s) => s.openSessionNotes);
   return (
     <ContextMenu onOpenChange={onMenuOpenChange}>
       <ContextMenuTrigger asChild>
@@ -522,7 +523,11 @@ function SessionRow({
       </ActionTooltip>
     </div>
       </ContextMenuTrigger>
-      <ContextMenuContent>
+      {/* Every item here opens something that takes focus itself. The menu
+          restores focus to this row when it finishes unmounting, which lands
+          a few hundred ms later and would pull focus back out of whatever
+          just opened. */}
+      <ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
         {/* Both items open a dialog; defer past the menu's own close so its
             exit animation doesn't race the dialog's pointer-events lock. */}
         <ContextMenuItem
@@ -530,6 +535,17 @@ function SessionRow({
         >
           Settings
           <ContextMenuShortcut>{shortcutLabel("session-settings")}</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem
+          onSelect={() =>
+            setTimeout(() => {
+              onSelect();
+              openSessionNotes(session.id);
+            }, 0)
+          }
+        >
+          Notes
+          <ContextMenuShortcut>{shortcutLabel("session-notes")}</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuItem
           onSelect={() =>

@@ -18,12 +18,14 @@ import { DaemonSkewDialog } from "@/components/DaemonSkewDialog";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import { SessionSettingsDialog } from "@/components/SessionSettingsDialog";
 import { SessionUsageDialog } from "@/components/SessionUsageDialog";
+import { SessionNotesPanel } from "@/components/SessionNotesPanel";
 import { AddIconDialog } from "@/components/AddIconDialog";
 import { Toaster } from "@/components/ui/sonner";
 import { hydrateSessions, startPersistence, flushSessions } from "@/lib/persistence";
 import { checkDaemon, daemonOptedOut } from "@/lib/pty";
 import { hydrateLaunchers, startLauncherPersistence, flushLaunchers } from "@/store/launchers";
 import { hydrateKeybindings, startKeybindingPersistence, flushKeybindings } from "@/store/keybindings";
+import { hydrateNotes, startNotePersistence, flushNotes } from "@/store/notes";
 import { startIconSync } from "@/store/icons";
 import { refreshSessionGit } from "@/lib/launch";
 import { useGlobalShortcuts } from "@/lib/useGlobalShortcuts";
@@ -109,6 +111,7 @@ export default function App() {
         flushSessions(),
         flushLaunchers(),
         flushKeybindings(),
+        flushNotes(),
       ]);
     });
     return () => void unlisten.then((f) => f());
@@ -150,6 +153,15 @@ export default function App() {
     let unsubscribe = () => {};
     hydrateKeybindings().finally(() => {
       unsubscribe = startKeybindingPersistence();
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Restore + persist session notes.
+  useEffect(() => {
+    let unsubscribe = () => {};
+    hydrateNotes().finally(() => {
+      unsubscribe = startNotePersistence();
     });
     return () => unsubscribe();
   }, []);
@@ -227,6 +239,7 @@ export default function App() {
       <ShortcutsDialog />
       <SessionSettingsDialog />
       <SessionUsageDialog />
+      <SessionNotesPanel />
       <AddIconDialog />
       <AppProfileDialog />
       <Toaster />
