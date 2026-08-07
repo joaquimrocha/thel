@@ -22,7 +22,7 @@ import { SessionNotesPanel } from "@/components/SessionNotesPanel";
 import { AddIconDialog } from "@/components/AddIconDialog";
 import { Toaster } from "@/components/ui/sonner";
 import { hydrateSessions, startPersistence, flushSessions } from "@/lib/persistence";
-import { checkDaemon, daemonOptedOut } from "@/lib/pty";
+import { checkDaemon } from "@/lib/pty";
 import { hydrateLaunchers, startLauncherPersistence, flushLaunchers } from "@/store/launchers";
 import { hydrateKeybindings, startKeybindingPersistence, flushKeybindings } from "@/store/keybindings";
 import { hydrateNotes, startNotePersistence, flushNotes } from "@/store/notes";
@@ -125,12 +125,10 @@ export default function App() {
   useEffect(() => {
     let unsubscribe = () => {};
     void (async () => {
-      if (!daemonOptedOut()) {
-        const health = await checkDaemon().catch(() => "none" as const);
-        if (health === "skew") {
-          useUI.getState().setDaemonSkew(true);
-          return;
-        }
+      const health = await checkDaemon().catch(() => "none" as const);
+      if (health === "skew") {
+        useUI.getState().setDaemonSkew(true);
+        return;
       }
       await hydrateSessions();
       unsubscribe = startPersistence();

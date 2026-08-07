@@ -13,7 +13,6 @@ import {
 } from "@/store/sessions";
 import { abbreviatePath } from "@/lib/paths";
 import { shortcutLabel } from "@/store/keybindings";
-import { daemonOptedOut } from "@/lib/pty";
 import { usePrefs } from "@/store/prefs";
 import { createSession, closeSession } from "@/lib/pty";
 import { clearActivity, noteBurst } from "@/lib/activity";
@@ -70,8 +69,7 @@ export function TerminalArea() {
   const activeSessionId = useSessions((s) => s.activeSessionId);
   const hydrated = useSessions((s) => s.hydrated);
   const hasActive = sessions.some((s) => s.id === activeSessionId);
-  const useDaemon = usePrefs((s) => s.useDaemon);
-  const daemonBacked = useDaemon && !daemonOptedOut();
+  const daemonBacked = usePrefs((s) => s.useDaemon);
   const setActiveGroup = useSessions((s) => s.setActiveGroup);
   // Append-only order of mounted pane ids, so a tab reorder or cross-pane move
   // (which only changes a pane's position, not the set) never reshuffles the DOM

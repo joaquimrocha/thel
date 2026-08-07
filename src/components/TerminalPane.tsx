@@ -10,7 +10,6 @@ import {
   resizeSession,
   closeSession,
   openUrl,
-  daemonOptedOut,
 } from "@/lib/pty";
 import {
   useSessions,
@@ -392,7 +391,7 @@ export function TerminalPane({
         cwd: tab.cwd,
         cols: term.cols,
         rows: term.rows,
-        use_daemon: usePrefs.getState().useDaemon && !daemonOptedOut(),
+        use_daemon: usePrefs.getState().useDaemon,
       },
       (msg) => {
         if (closed) return;
