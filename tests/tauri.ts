@@ -15,6 +15,8 @@ export interface MockConfig {
   pickedFolder?: string;
   // Directory completions returned by complete_dir.
   completeDir?: string[];
+  // check_daemon response (default "none": nothing running to talk to).
+  daemonHealth?: "ok" | "skew" | "none";
   // worktree_info response (whether the session dir is a linked worktree).
   worktreeInfo?: { is_linked: boolean; path: string; main: string } | null;
   // A git repo to report for paths under `root`.
@@ -252,6 +254,11 @@ function install(config: MockConfig) {
         (w.__MOCK__ as Record<string, unknown>).created = list;
         return String(args.path);
       }
+      case "check_daemon":
+        return m.daemonHealth ?? "none";
+      case "restart_daemon":
+        (w.__MOCK__ as Record<string, unknown>).restartedDaemon = true;
+        return null;
       case "worktree_info":
         return m.worktreeInfo ?? null;
       case "remove_worktree": {
@@ -296,6 +303,9 @@ function install(config: MockConfig) {
       // the app isn't drawing its own title bar.
       if (cmd === "plugin:window|set_title")
         (w.__MOCK__ as Record<string, unknown>).windowTitle = a.value ?? a.title;
+      // Record a programmatic window close (the skew dialog's way out).
+      if (cmd === "plugin:window|close")
+        (w.__MOCK__ as Record<string, unknown>).closed = true;
       // Window/webview/event/app plugin calls: harmless no-ops.
       if (cmd.startsWith("plugin:")) return Promise.resolve(null);
       return Promise.resolve(appInvoke(cmd, a));

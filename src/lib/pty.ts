@@ -81,20 +81,6 @@ export const checkDaemon = () =>
  * sessions the old daemon was hosting. */
 export const restartDaemon = () => invoke<void>("restart_daemon");
 
-// Set (session-scoped) when the user declined to restart an incompatible daemon,
-// so terminals fall back to a direct PTY for the rest of this run.
-const DAEMON_OPT_OUT = "thel.daemonOptOut";
-export const daemonOptedOut = () =>
-  typeof sessionStorage !== "undefined" &&
-  sessionStorage.getItem(DAEMON_OPT_OUT) === "1";
-export const setDaemonOptOut = () => {
-  try {
-    sessionStorage.setItem(DAEMON_OPT_OUT, "1");
-  } catch {
-    // ignore
-  }
-};
-
 /** Open an http(s) URL in the system browser (webview window.open is a no-op). */
 export const openUrl = (url: string) => invoke<void>("open_url", { url });
 
