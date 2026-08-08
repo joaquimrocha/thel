@@ -121,7 +121,7 @@ export default function App() {
       await Promise.allSettled(
         useSessions.getState().sessions.flatMap((s) =>
           sessionTerminals(s)
-            .filter((t) => t.started && !t.exited)
+            .filter((t) => !t.exited)
             .map((t) => killTerminalWindow(s.id, t.id)),
         ),
       );

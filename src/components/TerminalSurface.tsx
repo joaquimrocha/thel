@@ -1,17 +1,13 @@
 import { useRef, useState, useEffect } from "react";
-import { TerminalSquare, Play } from "lucide-react";
+import { TerminalSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
 import {
   useSessions,
-  sessionTerminals,
-  terminalDisplayTitle,
   type Session,
   type PaneGroup,
   type LayoutNode,
   type Terminal,
 } from "@/store/sessions";
-import { abbreviatePath } from "@/lib/paths";
 import { shortcutLabel } from "@/store/keybindings";
 import { createSession, closeSession } from "@/lib/pty";
 import { clearActivity, noteBurst } from "@/lib/activity";
@@ -98,7 +94,7 @@ export function TerminalArea() {
 
 
   const isPaneMounted = (group: PaneGroup, t: Terminal) =>
-    !!t.started && t.id === group.activeTerminalId;
+    t.id === group.activeTerminalId;
 
   // Refresh the append-only pane order: keep still-mounted ids in place, append
   // newly-mounted ones. Panes render in this order regardless of tab/group order,
@@ -218,7 +214,6 @@ function DaemonBackgroundListeners({
           group.terminals
             .filter(
               (terminal) =>
-                terminal.started &&
                 !(sessionActive && terminal.id === group.activeTerminalId),
             )
             .map((terminal) => (
@@ -344,10 +339,6 @@ function GroupChrome({
   groupActive: boolean;
 }) {
   const setActiveGroup = useSessions((s) => s.setActiveGroup);
-  const activeTerminal = group.terminals.find(
-    (t) => t.id === group.activeTerminalId,
-  );
-  const showStart = !!activeTerminal && !activeTerminal.started;
   const empty = group.terminals.length === 0;
 
   return (
@@ -372,13 +363,7 @@ function GroupChrome({
       }}
     >
       <TerminalTabs sessionId={session.id} group={group} groupActive={groupActive} />
-      <div className="relative min-h-0 flex-1">
-        {empty ? (
-          <EmptyState hasSession />
-        ) : showStart ? (
-          <StartCard terminal={activeTerminal!} session={session} />
-        ) : null}
-      </div>
+      <div className="relative min-h-0 flex-1">{empty && <EmptyState hasSession />}</div>
     </div>
   );
 }
@@ -415,43 +400,6 @@ function EmptyState({ hasSession }: { hasSession: boolean }) {
             to {hasSession ? "open a terminal" : "start a session"}.
           </p>
         )}
-      </div>
-    </div>
-  );
-}
-
-function StartCard({ terminal, session }: { terminal: Terminal; session: Session }) {
-  const startTerminal = useSessions((s) => s.startTerminal);
-  const startAllInSession = useSessions((s) => s.startAllInSession);
-  const cmdline = [terminal.command, ...terminal.args].join(" ");
-  // Only offer "Start all" when it would start more than just this terminal.
-  const unstarted = sessionTerminals(session).filter((t) => !t.started).length;
-  return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-muted-foreground">
-      <div className="w-full max-w-md rounded-lg border border-border bg-background/60 p-5 text-center">
-        <p className="mb-1 text-sm font-medium text-foreground">
-          {terminalDisplayTitle(terminal)}
-        </p>
-        <p className="truncate font-mono text-xs opacity-70">{cmdline}</p>
-        {terminal.cwd && (
-          <p className="truncate font-mono text-xs opacity-50">
-            {abbreviatePath(terminal.cwd)}
-          </p>
-        )}
-        <div className="mt-4 flex flex-col items-center gap-2">
-          <Button onClick={() => startTerminal(terminal.id)}>
-            <Play className="size-4" /> Start
-          </Button>
-          {unstarted > 1 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => startAllInSession(session.id)}
-            >
-              Start all ({unstarted})
-            </Button>
-          )}
-        </div>
       </div>
     </div>
   );

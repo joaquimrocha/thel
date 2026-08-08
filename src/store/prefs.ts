@@ -7,7 +7,6 @@ import { isMac, runsDaemon } from "@/lib/platform";
 const COPY_TOASTS_KEY = "thel.copyToasts";
 const ZOOM_KEY = "thel.terminalZoom";
 const CUSTOM_TITLEBAR_KEY = "thel.customTitlebar";
-const AUTO_START_KEY = "thel.autoStartTerminals";
 const SESSION_DIR_KEY = "thel.newTerminalInSessionDir";
 // Named for the daemon it used to switch on; kept so the setting survives.
 const KEEP_SESSIONS_KEY = "thel.useDaemon";
@@ -68,10 +67,6 @@ interface PrefsState {
   // Use thel's own window decoration (OS decorations off) vs the native one.
   customTitlebar: boolean;
   setCustomTitlebar: (value: boolean) => void;
-  // When the daemon is off, auto-start restored terminals on launch instead of
-  // showing their Start button.
-  autoStartTerminals: boolean;
-  setAutoStartTerminals: (value: boolean) => void;
   // Open a new terminal in the session's own directory rather than following
   // the one you were last in. Default off, so new terminals follow.
   newTerminalInSessionDir: boolean;
@@ -115,11 +110,6 @@ export const usePrefs = create<PrefsState>((set) => ({
     persistBool(CUSTOM_TITLEBAR_KEY, customTitlebar);
     set({ customTitlebar });
   },
-  autoStartTerminals: readBool(AUTO_START_KEY, false),
-  setAutoStartTerminals: (autoStartTerminals) => {
-    persistBool(AUTO_START_KEY, autoStartTerminals);
-    set({ autoStartTerminals });
-  },
   newTerminalInSessionDir: readBool(SESSION_DIR_KEY, false),
   setNewTerminalInSessionDir: (newTerminalInSessionDir) => {
     persistBool(SESSION_DIR_KEY, newTerminalInSessionDir);
@@ -162,7 +152,6 @@ const REMOTE_APPLIERS: Record<string, (value: unknown) => void> = {
   [COPY_TOASTS_KEY]: (v) => usePrefs.getState().setCopyToasts(Boolean(v)),
   [ZOOM_KEY]: (v) => usePrefs.getState().setTerminalZoom(Number(v)),
   [CUSTOM_TITLEBAR_KEY]: (v) => usePrefs.getState().setCustomTitlebar(Boolean(v)),
-  [AUTO_START_KEY]: (v) => usePrefs.getState().setAutoStartTerminals(Boolean(v)),
   [SESSION_DIR_KEY]: (v) =>
     usePrefs.getState().setNewTerminalInSessionDir(Boolean(v)),
   [KEEP_SESSIONS_KEY]: (v) => usePrefs.getState().setKeepSessions(Boolean(v)),

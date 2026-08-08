@@ -15,15 +15,12 @@ test("a restored terminal auto-reattaches with the daemon", async ({ page }) => 
   await gotoApp(page);
   await createSession(page);
   await page.reload();
-  // The daemon is the default backend, so restored terminals come back started
-  // (open reattaches a live tab or respawns at its cwd), not behind a Start
-  // button.
+  // Restored terminals reattach as they mount (open takes a live tab or
+  // respawns at its cwd), so the tab is live rather than waiting on anything.
   await expect(
     page.getByRole("button", { name: "Close terminal" }),
   ).toHaveCount(1);
-  await expect(
-    page.getByRole("button", { name: "Start", exact: true }),
-  ).toHaveCount(0);
+  await expect(page.locator(".xterm")).toHaveCount(1);
 });
 
 // Valid JSON but the wrong shape (a group's terminals isn't an array), so
