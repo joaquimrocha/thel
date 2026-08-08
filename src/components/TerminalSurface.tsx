@@ -15,9 +15,11 @@ import { createTerminalActivity, AGENT_QUIET_MS } from "@/lib/termActivity";
 import { notify } from "@/store/notifications";
 import {
   hasVisibleOutput,
+  oscClipboardWrite,
   oscNotifications,
   terminalTitleFromOutput,
 } from "@/lib/ansi";
+import { copyText } from "@/lib/clipboard";
 import { TerminalPane } from "./TerminalPane";
 import { TerminalTabs } from "./TerminalTabs";
 
@@ -282,6 +284,10 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
           for (const text of osc.texts) activity.noteMessage(text);
           if (osc.rest.includes("\x07")) activity.noteBell();
           activity.noteOutput(visible);
+          // A program can copy from a tab you aren't looking at, same as it can
+          // from the one you are.
+          const copied = oscClipboardWrite(msg.data);
+          if (copied !== undefined) void copyText(copied);
           // Waiting-for-input fallback: a sustained work burst arms it, then
           // AGENT_QUIET_MS of silence while still busy fires it once. No screen
           // buffer here, so it works off output bursts rather than screen text.

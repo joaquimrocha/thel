@@ -422,11 +422,14 @@ fn strip_queries(input: &[u8]) -> Vec<u8> {
                     }
                 }
                 b']' => {
-                    // OSC: body up to BEL or ST (ESC \). Drop only color/status
+                    // OSC: body up to BEL or ST (ESC \). Drop color/status
                     // QUERIES, whose parameter is a bare `?` so the body ends in
-                    // ";?" (e.g. OSC 11;? for background). Keep every other OSC,
-                    // including hyperlinks (OSC 8, URL may contain `?`) and
-                    // titles, whose payload can legitimately contain `?`.
+                    // ";?" (e.g. OSC 11;? for background), and clipboard writes
+                    // (OSC 52), which would otherwise re-set the user's
+                    // clipboard from stale history every time a tab reattaches.
+                    // Keep every other OSC, including hyperlinks (OSC 8, URL may
+                    // contain `?`) and titles, whose payload can legitimately
+                    // contain `?`.
                     let mut j = i + 2;
                     let mut term_len = 0usize;
                     while j < input.len() {
@@ -448,8 +451,9 @@ fn strip_queries(input: &[u8]) -> Vec<u8> {
                         break;
                     }
                     let body_end = j.saturating_sub(term_len);
-                    let is_query = input[i + 2..body_end].ends_with(b";?");
-                    if !is_query {
+                    let body = &input[i + 2..body_end];
+                    let drop = body.ends_with(b";?") || body.starts_with(b"52;");
+                    if !drop {
                         out.extend_from_slice(&input[i..j]);
                     }
                     i = j;
@@ -1628,6 +1632,17 @@ mod tests {
         assert_eq!(strip_queries(&link), link);
         let title = b"\x1b]0;ready?\x07ok".to_vec();
         assert_eq!(strip_queries(&title), title);
+    }
+
+    #[test]
+    fn strips_clipboard_writes_from_replay() {
+        // OSC 52 sets the clipboard. Replaying one would silently overwrite
+        // whatever the user copied since, every time the tab reattaches.
+        let input = b"a\x1b]52;c;aGVsbG8=\x07b\x1b]52;;d29ybGQ=\x1b\\c".to_vec();
+        assert_eq!(strip_queries(&input), b"abc");
+        // OSC 5-something-else is not a clipboard write and must survive.
+        let other = b"\x1b]521;x\x07ok".to_vec();
+        assert_eq!(strip_queries(&other), other);
     }
 
     #[test]

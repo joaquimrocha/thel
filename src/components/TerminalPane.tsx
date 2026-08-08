@@ -53,7 +53,7 @@ import {
   loadTerminalFont,
   zoomedFontSize,
 } from "@/lib/theme";
-import { hasVisibleOutput } from "@/lib/ansi";
+import { hasVisibleOutput, oscClipboardWrite } from "@/lib/ansi";
 
 type CopyMode = "raw" | "dedent" | "paragraph";
 
@@ -402,6 +402,8 @@ export function TerminalPane({
           activity.absorbOutputBeforeWrite(visible);
           term.write(msg.data);
           activity.noteOutput(visible);
+          const copied = oscClipboardWrite(msg.data);
+          if (copied !== undefined) void copyText(copied);
         } else if (msg.kind === "busy") {
           // Pushed by the daemon (heartbeat while busy, once on going idle).
           activity.noteBusy(msg.busy);
