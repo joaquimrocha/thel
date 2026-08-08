@@ -218,14 +218,14 @@ export async function createSessionInDir(opts: {
 /**
  * Where a new terminal in this session should start: where the terminal you
  * were last in has got to, falling back to the session's own directory when
- * nothing can be read (a terminal that never started, or a platform that won't
- * say). The preference pins every new terminal to the session instead.
+ * nothing can be read (a terminal whose process is gone, or a platform that
+ * won't say). The preference pins every new terminal to the session instead.
  */
 async function newTerminalCwd(session: Session): Promise<string | undefined> {
   if (usePrefs.getState().newTerminalInSessionDir) return session.cwd;
   const group = session.groups.find((g) => g.id === session.activeGroupId);
   const active = group?.terminals.find((t) => t.id === group.activeTerminalId);
-  if (!active?.started) return session.cwd;
+  if (!active || active.exited) return session.cwd;
   const cwd = await terminalCwd(active.id).catch(() => null);
   return cwd || session.cwd;
 }

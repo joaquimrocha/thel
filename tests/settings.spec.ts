@@ -67,16 +67,6 @@ test("sessions tab shows the daemon option where the daemon runs", async ({ page
   ).toBeVisible();
 });
 
-test("auto-start option appears when the daemon is off", async ({ page }) => {
-  await gotoApp(page);
-  await openSettings(page);
-  await page.getByRole("tab", { name: "Sessions" }).click();
-  // The daemon is on by default; auto-start only applies without it.
-  await expect(page.getByText("Start terminals automatically")).toBeHidden();
-  await page.getByText("Keep sessions running in the background").click();
-  await expect(page.getByText("Start terminals automatically")).toBeVisible();
-});
-
 test("the notifications dialog opens its settings", async ({ page }) => {
   await gotoApp(page);
   await page.getByRole("button", { name: "Notifications" }).first().click();

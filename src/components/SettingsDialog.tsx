@@ -42,8 +42,6 @@ export function SettingsDialog() {
   const setTerminalZoom = usePrefs((s) => s.setTerminalZoom);
   const customTitlebar = usePrefs((s) => s.customTitlebar);
   const setCustomTitlebar = usePrefs((s) => s.setCustomTitlebar);
-  const autoStartTerminals = usePrefs((s) => s.autoStartTerminals);
-  const setAutoStartTerminals = usePrefs((s) => s.setAutoStartTerminals);
   const newTerminalInSessionDir = usePrefs((s) => s.newTerminalInSessionDir);
   const setNewTerminalInSessionDir = usePrefs(
     (s) => s.setNewTerminalInSessionDir,
@@ -179,22 +177,6 @@ export function SettingsDialog() {
                     app, and come back with their screen restored when you reopen
                     it. When off, closing a window stops the terminals it was
                     showing. If thel crashes instead, they survive and come back.
-                  </p>
-                </div>
-              )}
-              {!keepSessions && (
-                <div className="space-y-1.5">
-                  <label className="flex items-center gap-2 text-sm">
-                    <Switch
-                      checked={autoStartTerminals}
-                      onCheckedChange={setAutoStartTerminals}
-                    />
-                    Start terminals automatically
-                  </label>
-                  <p className="pl-9 text-xs text-muted-foreground">
-                    With background sessions off, restored terminals can't
-                    reattach. Start them on launch instead of showing a Start
-                    button.
                   </p>
                 </div>
               )}

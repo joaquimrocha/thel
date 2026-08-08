@@ -22,7 +22,7 @@ export async function closeTerminalConfirmed(terminalId: string) {
     const t = sessionTerminals(s).find((x) => x.id === terminalId);
     if (t) {
       title = terminalDisplayTitle(t);
-      running = !!t.started && !t.exited;
+      running = !t.exited;
       break;
     }
   }
@@ -47,7 +47,7 @@ export async function closeSessionConfirmed(sessionId: string) {
   if (!session) return;
 
   const candidates = sessionTerminals(session).filter(
-    (t) => t.started && !t.exited,
+    (t) => !t.exited,
   );
   const busy = (
     await Promise.all(candidates.map((t) => terminalBusy(t.id).catch(() => false)))

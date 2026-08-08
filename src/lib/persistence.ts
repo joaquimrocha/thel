@@ -34,8 +34,9 @@ let hydrationFailed = false;
 // raise the corrupt-layout prompt twice.
 let hydrationStarted = false;
 
-// Only structural fields are persisted; runtime state (started/exited/output)
-// is intentionally dropped so restored terminals come back idle.
+// Only structural fields are persisted; runtime state (exited/busy/output) is
+// intentionally dropped, since a restored terminal's state comes from the daemon
+// it reattaches to.
 interface PersistedTerminal {
   id: string;
   title: string;
@@ -48,7 +49,7 @@ interface PersistedTerminal {
 }
 
 // Project a live terminal down to just its persisted fields, dropping runtime
-// state (started/busy/attention/exited/procTitle). Used by both serialize and
+// state (busy/attention/exited/procTitle). Used by both serialize and
 // clonePersisted so the persisted shape is defined once.
 export function toPersistedTerminal(t: Terminal): PersistedTerminal {
   return {
@@ -93,7 +94,11 @@ function getStore(): Promise<Store> {
   return (storePromise ??= load(layoutFile(), { autoSave: false, defaults: {} }));
 }
 
-/** Load the saved layout into the store, reattaching its terminals. */
+/**
+ * Load the saved layout into the store. Its terminals reattach as they mount:
+ * the daemon's `open` is attach-if-alive-else-respawn, so each one comes back to
+ * its surviving shell, or to a fresh one at its cwd.
+ */
 export async function hydrateSessions(): Promise<void> {
   if (hydrationStarted) return;
   hydrationStarted = true;
@@ -104,9 +109,6 @@ export async function hydrateSessions(): Promise<void> {
     raw = await store.get<PersistedLayout>(KEY);
     if (!raw?.sessions?.length) return;
     const layout = raw;
-    // Every restored terminal comes back started: the daemon's `open` is
-    // attach-if-alive-else-respawn, so it reattaches a surviving shell or spawns
-    // a fresh one at its cwd.
     const restoreTerminal = (t: PersistedTerminal) => ({
       id: t.id,
       title: t.title,
@@ -116,7 +118,6 @@ export async function hydrateSessions(): Promise<void> {
       args: t.args,
       cwd: t.cwd,
       zoom: t.zoom,
-      started: true,
     });
     useSessions.setState({
       activeSessionId: layout.activeSessionId,

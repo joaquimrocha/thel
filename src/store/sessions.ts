@@ -17,9 +17,6 @@ export interface Terminal {
   command: string;
   args: string[];
   cwd?: string;
-  // Runtime-only (not persisted): whether the PTY has been spawned this run.
-  // Restored terminals start false and wait for an explicit start.
-  started?: boolean;
   exited?: boolean;
   exitCode?: number | null;
   // Runtime-only: wants attention (bell or process exit while not focused).
@@ -173,8 +170,6 @@ export interface SessionState {
     dir: SplitDir,
     targetGroupId?: string,
   ) => void;
-  startTerminal: (terminalId: string) => void;
-  startAllInSession: (sessionId: string) => void;
   renameTerminal: (terminalId: string, title: string) => void;
   setProcTitle: (terminalId: string, title: string) => void;
   closeTerminal: (terminalId: string) => void;
@@ -354,8 +349,7 @@ export const useSessions = create<SessionState>((set, get) => ({
             g.id === gid
               ? {
                   ...g,
-                  // Newly created terminals spawn immediately.
-                  terminals: [...g.terminals, { ...term, started: true }],
+                  terminals: [...g.terminals, term],
                   activeTerminalId: term.id,
                 }
               : g,
@@ -372,7 +366,7 @@ export const useSessions = create<SessionState>((set, get) => ({
         const target = targetGroupId ?? ss.activeGroupId;
         const newGroup: PaneGroup = {
           id: crypto.randomUUID(),
-          terminals: [{ ...term, started: true }],
+          terminals: [term],
           activeTerminalId: term.id,
         };
         return {
@@ -382,34 +376,6 @@ export const useSessions = create<SessionState>((set, get) => ({
           activeGroupId: newGroup.id,
         };
       }),
-    })),
-
-  startTerminal: (terminalId) =>
-    set((s) => ({
-      sessions: patchTerminal(s.sessions, terminalId, {
-        started: true,
-        exited: false,
-        exitCode: null,
-      }),
-    })),
-
-  startAllInSession: (sessionId) =>
-    set((s) => ({
-      sessions: s.sessions.map((sess) =>
-        sess.id !== sessionId
-          ? sess
-          : {
-              ...sess,
-              groups: sess.groups.map((g) => ({
-                ...g,
-                terminals: g.terminals.map((t) =>
-                  t.started
-                    ? t
-                    : { ...t, started: true, exited: false, exitCode: null },
-                ),
-              })),
-            },
-      ),
     })),
 
   renameTerminal: (terminalId, title) =>

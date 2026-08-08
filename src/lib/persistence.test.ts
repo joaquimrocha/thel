@@ -14,7 +14,6 @@ test("toPersistedTerminal keeps structural fields, drops runtime state", () => {
     zoom: 2,
     // Runtime-only fields that must not be persisted:
     procTitle: "editing a.txt",
-    started: true,
     exited: true,
     exitCode: 0,
     attention: true,
