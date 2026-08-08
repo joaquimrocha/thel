@@ -24,7 +24,9 @@ export const test = base.extend<{ autoCoverage: void }>({
       await use();
       if (cov) {
         const entries = await cov.stopJSCoverage();
-        await new CoverageReport(coverageOptions).add(entries);
+        // A test that never loads the app (e.g. a pure config assertion) has
+        // nothing to report, and handing that to add() only prints a warning.
+        if (entries?.length) await new CoverageReport(coverageOptions).add(entries);
       }
     },
     { auto: true },
