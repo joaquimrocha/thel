@@ -19,7 +19,7 @@ Thel is a persistent, multi-session terminal emulator designed for long-running 
  │                    Tauri Backend                       │
  │                                                        │
  │       ┌────────────────────────────────────────┐       │
- │       │             SessionManager             │       │
+ │       │          pty.rs (forwarding)           │       │
  │       └───────────────────┬────────────────────┘       │
  └───────────────────────────┼────────────────────────────┘
                              │ (Unix Socket / Wire Protocol)
@@ -43,7 +43,7 @@ Thel is a persistent, multi-session terminal emulator designed for long-running 
 ## Key Components
 
 1. **Frontend (Vite / React / xterm.js)**: Runs in the Webview window. It renders the terminals using `xterm.js` and manages tab organization, panels, command palettes, and keyboard shortcuts via Zustand state.
-2. **Tauri Backend (Rust)**: Handles native capabilities (such as Git integration, file completion, system notifications, and font detection) and delegates terminal communication to either the session daemon (default) or an in-process direct PTY fallback.
+2. **Tauri Backend (Rust)**: Handles native capabilities (such as Git integration, file completion, system notifications, and font detection) and forwards all terminal communication to the session daemon, which owns every terminal.
 3. **Session Daemon (`thel-daemon`)**: A long-lived, headless background process that actually owns the OS-level PTYs and maintains an authoritative virtual terminal emulator (VTE) for each active tab.
 
 ## Security Boundary

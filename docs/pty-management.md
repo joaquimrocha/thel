@@ -1,34 +1,43 @@
 # PTY and Session Management
 
-The Tauri backend manages both daemon-backed persistent terminal tabs and direct, non-persistent, in-process terminal processes through `SessionManager`.
-
-## Session Types
+Every terminal is owned by the session daemon. The Tauri backend never holds a
+PTY of its own: `pty.rs` is a thin forwarding layer between the IPC commands in
+`lib.rs` and the daemon client, plus the pieces the daemon builds on (spawning a
+PTY, sampling a process tree, decoding output).
 
 ```
-                   SessionManager::create()
+   create_session / write_session / resize_session / …   (IPC command)
                               │
-               ┌──────────────┴──────────────┐
-               ▼ (use_daemon == true)        ▼ (use_daemon == false)
-      ┌──────────────────┐          ┌──────────────────────┐
-      │  Daemon Session  │          │    Direct Session    │
-      │                  │          │                      │
-      │ Inputs/Resizes   │          │ Spawns portable-pty  │
-      │ forwarded to the │          │ child in-process;    │
-      │ background       │          │ killed instantly     │
-      │ daemon process   │          │ when tab closes.     │
-      └──────────────────┘          └──────────────────────┘
+                              ▼
+                     pty.rs  (forwarding)
+                              │  Unix socket frames
+                              ▼
+                    Session daemon process
+             master PTY + vt100 emulator + child process
 ```
 
-### 1. Daemon-Backed Sessions (Default on Unix)
-When a session is requested with `use_daemon: true` (or defaulted), the Tauri backend forwards the command parameters to the background daemon over the Unix socket. 
-- The master PTY, process, and VTE are managed entirely inside the daemon process.
-- The Tauri backend registers the terminal ID inside `daemon_ids` (a thread-safe `HashSet`) and maps future input, resizing, or close operations directly to Unix Domain Socket frames.
+Terminals are addressed by id the whole way down, which is what makes a tab
+survive its pane, its window, and the GUI process itself. The daemon's `open` is
+attach-if-alive-else-respawn, so mounting a pane either reattaches to the running
+shell (replaying its screen) or spawns a fresh one at the terminal's cwd. A
+restored layout needs no separate "start" step.
 
-### 2. Direct Sessions (Non-Unix or Explicit Fallback)
-If the daemon is toggled off or is running on a non-Unix platform (like Windows, where Unix Domain sockets and background daemonization are restricted), `SessionManager` spawns a direct in-process PTY.
-- The backend relies on `portable_pty` to spawn and manage the child command.
-- An in-process background read thread (`read_loop`) is spawned per active terminal to stream standard outputs back to the frontend.
-- When closed, the child process is terminated immediately.
+Off Linux and macOS there is no daemon, so these commands return an error rather
+than a backend that cannot keep the app's promises. See `docs/daemon.md` for what
+the daemon needs from the platform.
+
+## Lifecycle
+
+| Frontend action | Command | Daemon effect |
+| --- | --- | --- |
+| Pane mounts | `create_session` | `Open`: attach to the tab, or spawn it |
+| Pane unmounts, session switch | `close_session` | `Detach`: stop streaming, keep it running |
+| User closes a tab | `kill_terminal_window` | `Kill`: end the shell's whole session |
+| Window closes, background sessions off | `kill_terminal_window` per tab | as above |
+
+`Kill` without an established daemon connection is a no-op: if the GUI never
+connected there is no daemon holding the tab, and spawning one to kill nothing
+would be worse than doing nothing.
 
 ---
 
@@ -36,7 +45,8 @@ If the daemon is toggled off or is running on a non-Unix platform (like Windows,
 
 Terminal outputs can be read and sliced at arbitrary byte boundaries. If a multi-byte UTF-8 character (like an emoji) is split across two read chunks or two network frames, a naive conversion to a string would result in corruption (displaying replacement characters like `\u{FFFD}`).
 
-To prevent this, `SessionManager` implements a thread-safe decoding utility: `decode_utf8_stream()`.
+To prevent this, `pty.rs` provides a decoding utility used by the daemon's PTY
+reader and by the client's frame decoder: `decode_utf8_stream()`.
 - **Carry Buffer**: Each terminal session (or network routing path) maintains an individual `carry` byte buffer.
 - **Incremental Parsing**:
   1. Incoming raw bytes are appended directly to the `carry` buffer.
@@ -54,10 +64,10 @@ To prevent this, `SessionManager` implements a thread-safe decoding utility: `de
 The application shows a live "working" animation in the sidebar (a pulsing dot) and triggers notifications when a command finishes in the background. This heuristic relies on knowing whether a shell is idling at a prompt or actively executing a foreground command.
 
 ### Process Group Monitoring
-The PTY system determines busy status by querying the terminal's foreground process group:
+The daemon determines busy status by querying the terminal's foreground process group:
 - When a shell starts, it runs as the process group leader (`child.process_id()`).
 - When the user runs a command (e.g. `pnpm install` or `cargo build`), the shell moves that command into the foreground process group.
-- The backend queries the PTY's current foreground process group leader (`master.process_group_leader()`).
+- The daemon queries the PTY's current foreground process group leader (`master.process_group_leader()`).
 - **Busy Rule**: If the current foreground process group leader PID does **not** match the original shell's PID, a command is running. If they are equal, the terminal is idling at the prompt.
 
 ### Broadcast Monitor Thread
@@ -65,3 +75,6 @@ In the daemon, a background thread (`busy_monitor`) polls all active tabs every 
 - It checks the busy rule for each tab.
 - If a tab is busy, it dispatches a `TabBusy` event over the socket to active subscribers.
 - This serves as a heartbeat so the GUI can keep its activity age fresh and trigger completion notifications when the state drops back to idle.
+
+The GUI can also ask directly (`terminal_status`), which the "command finished"
+heuristic polls per tab.
