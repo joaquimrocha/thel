@@ -38,6 +38,36 @@ export function oscNotifications(data: string): { texts: string[]; rest: string 
   return { texts, rest };
 }
 
+// A program can put text on the clipboard with OSC 52 (`ESC ] 52 ; targets ;
+// base64 BEL/ST`), which is how a remote shell copies through ssh. Only writes
+// are honoured: a `?` payload asks the terminal to *read* the clipboard back,
+// which would let anything on the far end of a connection exfiltrate it.
+// Payloads above the cap are dropped rather than truncated, since half a
+// base64 blob is not what anyone meant to copy.
+const MAX_CLIPBOARD_B64 = 1024 * 1024;
+
+// The last clipboard text a chunk asks for, or undefined. Later writes in one
+// chunk win, matching how the clipboard itself behaves.
+export function oscClipboardWrite(data: string): string | undefined {
+  let text: string | undefined;
+  // eslint-disable-next-line no-control-regex
+  const re = /\x1b\]52;([^;\x07\x1b]*);([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+  for (let m = re.exec(data); m; m = re.exec(data)) {
+    const [, targets, payload] = m;
+    // Targets name which selection to set; "c" (or the default) is the
+    // clipboard. A primary-selection-only write has nowhere to go here.
+    if (targets && !targets.includes("c")) continue;
+    if (payload === "?" || payload.length > MAX_CLIPBOARD_B64) continue;
+    try {
+      const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
+      text = new TextDecoder().decode(bytes);
+    } catch {
+      // Not valid base64: ignore rather than paste garbage.
+    }
+  }
+  return text;
+}
+
 // The last window/icon title set in a chunk via OSC 0 or OSC 2, or undefined.
 // xterm's onTitleChange follows the same sequences for mounted terminals.
 export function terminalTitleFromOutput(data: string): string | undefined {

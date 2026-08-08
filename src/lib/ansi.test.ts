@@ -1,6 +1,7 @@
 import { test, expect, describe } from "vitest";
 import {
   hasVisibleOutput,
+  oscClipboardWrite,
   oscNotifications,
   terminalTitleFromOutput,
 } from "./ansi";
@@ -93,5 +94,49 @@ describe("terminalTitleFromOutput", () => {
     expect(terminalTitleFromOutput("plain output")).toBeUndefined();
     // An OSC 9 notification is not a title.
     expect(terminalTitleFromOutput(`${ESC}]9;notif${BEL}`)).toBeUndefined();
+  });
+});
+
+describe("oscClipboardWrite", () => {
+  const b64 = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+
+  test("decodes a clipboard write, with either terminator", () => {
+    expect(oscClipboardWrite(`${ESC}]52;c;${b64("hello")}${BEL}`)).toBe("hello");
+    expect(oscClipboardWrite(`${ESC}]52;c;${b64("hello")}${ST}`)).toBe("hello");
+  });
+
+  test("an empty target list means the clipboard", () => {
+    expect(oscClipboardWrite(`${ESC}]52;;${b64("copied")}${BEL}`)).toBe("copied");
+  });
+
+  test("ignores a read request, which would leak the clipboard back", () => {
+    expect(oscClipboardWrite(`${ESC}]52;c;?${BEL}`)).toBeUndefined();
+  });
+
+  test("ignores a write aimed only at the primary selection", () => {
+    expect(oscClipboardWrite(`${ESC}]52;p;${b64("nope")}${BEL}`)).toBeUndefined();
+  });
+
+  test("survives a payload that isn't valid base64", () => {
+    expect(oscClipboardWrite(`${ESC}]52;c;not base64!${BEL}`)).toBeUndefined();
+  });
+
+  test("drops an oversized payload rather than truncating it", () => {
+    const huge = "A".repeat(1024 * 1024 + 4);
+    expect(oscClipboardWrite(`${ESC}]52;c;${huge}${BEL}`)).toBeUndefined();
+  });
+
+  test("keeps multibyte text intact", () => {
+    expect(oscClipboardWrite(`${ESC}]52;c;${b64("héllo ❤")}${BEL}`)).toBe("héllo ❤");
+  });
+
+  test("the last write in a chunk wins", () => {
+    const data = `${ESC}]52;c;${b64("first")}${BEL}x${ESC}]52;c;${b64("second")}${BEL}`;
+    expect(oscClipboardWrite(data)).toBe("second");
+  });
+
+  test("plain output asks for nothing", () => {
+    expect(oscClipboardWrite("just text")).toBeUndefined();
+    expect(oscClipboardWrite(`${ESC}]0;title${BEL}`)).toBeUndefined();
   });
 });
