@@ -23,27 +23,29 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 export function SessionsDialog() {
   const open = useUI((s) => s.sessionsOpen);
   const setOpen = useUI((s) => s.setSessionsOpen);
-  const useDaemon = usePrefs((s) => s.useDaemon);
+  const keepSessions = usePrefs((s) => s.keepSessions);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>Sessions</DialogTitle>
-          <DialogDescription>How thel is backing your terminals.</DialogDescription>
+          <DialogDescription>
+            What happens to your terminals when you close a window.
+          </DialogDescription>
         </DialogHeader>
 
         <dl className="space-y-2 text-sm">
-          <Row label="Backend">
-            {useDaemon ? (
+          <Row label="On close">
+            {keepSessions ? (
               <>
                 <CheckCircle2 className="size-4 text-emerald-500" />
-                Running in the background
+                Keeps running in the background
               </>
             ) : (
               <>
                 <Minus className="size-4 text-muted-foreground" />
-                Stops with the app
+                Stops with the window
               </>
             )}
           </Row>
