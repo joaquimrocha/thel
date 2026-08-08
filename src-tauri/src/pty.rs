@@ -1,22 +1,23 @@
-//! Terminal backend. Terminals are normally owned by thel's session daemon (see
-//! `daemon.rs`), which keeps them alive across the GUI and holds the authoritative
-//! screen for reattach. This module also provides the direct in-process PTY
-//! fallback used when the daemon is off or unavailable (e.g. non-unix).
+//! Terminal backend. Every terminal is owned by thel's session daemon (see
+//! `daemon.rs`), which keeps it alive across the GUI and holds the authoritative
+//! screen for reattach; the commands in `lib.rs` reach it through the thin
+//! forwarding layer here.
 //!
-//! For daemon-backed ids, input/resize/close route to the daemon; a direct
-//! terminal is a `portable-pty` child whose output is read on a background thread
-//! and streamed to the frontend over a per-session channel.
+//! This module also owns the pieces the daemon builds on: spawning a PTY with
+//! thel's standard environment, sampling a terminal's process tree, and decoding
+//! its output as a UTF-8 stream.
 
 use std::collections::HashMap;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::collections::HashSet;
-use std::io::{Read, Write};
-use std::sync::Arc;
 
-use parking_lot::Mutex;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
+
+/// Terminals need the daemon, which is unix-only; nothing else can serve them.
+#[cfg(not(unix))]
+const UNSUPPORTED: &str = "thel needs Linux or macOS to run terminals";
 
 /// Messages streamed to the frontend over a per-session channel.
 /// `data` carries terminal output; `exit` is sent once when the child ends.
@@ -51,16 +52,12 @@ pub struct CreateOpts {
     pub env: Option<HashMap<String, String>>,
     pub cols: u16,
     pub rows: u16,
-    // Back this terminal with thel's own session daemon (unix); defaults on.
-    // When off (or non-unix) it runs as a direct, non-persistent PTY.
-    #[serde(default)]
-    pub use_daemon: Option<bool>,
 }
 
 /// Open a PTY and spawn `command` on its slave, returning the master (kept for
-/// resize/read/write) and the child. Shared by the direct-PTY fallback here and
-/// the daemon, so the standard environment (TERM + the THEL markers a program
-/// uses to detect thel and target `thel notify`) is set in one place. `cols`/
+/// resize/read/write) and the child. Used by the daemon, which owns every
+/// terminal, so the standard environment (TERM + the THEL markers a program uses
+/// to detect thel and target `thel notify`) is set in one place. `cols`/
 /// `rows` are floored at 1 (a 0-size PTY confuses programs).
 pub(crate) fn spawn_pty(
     command: &str,
@@ -106,239 +103,113 @@ pub(crate) fn spawn_pty(
     Ok((pair.master, child))
 }
 
-struct Session {
-    // Kept for resize() and busy queries; MasterPty methods take &self.
-    master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
-    // Shared with the reader thread so it can wait() for the exit code while
-    // the manager can still kill() on close.
-    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
-    // The shell/agent pid; used to tell an idle shell from one running a command.
-    pid: Option<u32>,
-}
-
-#[derive(Default)]
-pub struct SessionManager {
-    sessions: Mutex<HashMap<String, Session>>,
-    // Ids backed by thel's own session daemon; their input/resize/close route to
-    // the daemon instead of a local PTY.
+/// Open (or reattach to) a terminal, streaming its output to `on_data`. The
+/// daemon's `open` is attach-if-alive-else-respawn, so a restored tab comes back
+/// to its running shell and a new one is spawned at its cwd.
+pub fn create(opts: CreateOpts, on_data: Channel<TermMsg>) -> Result<(), String> {
     #[cfg(unix)]
-    daemon_ids: Mutex<HashSet<String>>,
+    let res = crate::daemon::open(&opts, on_data);
+    #[cfg(not(unix))]
+    let res = {
+        let _ = (opts, on_data);
+        Err(UNSUPPORTED.to_string())
+    };
+    res
 }
 
-impl SessionManager {
-    pub fn create(&self, opts: CreateOpts, on_data: Channel<TermMsg>) -> Result<(), String> {
-        #[cfg(unix)]
-        if opts.use_daemon.unwrap_or(true) {
-            crate::daemon::open(&opts, on_data)?;
-            self.daemon_ids.lock().insert(opts.id);
-            return Ok(());
-        }
-        // The daemon is the default backend; without it (toggled off, or non-unix)
-        // fall back to a direct, non-persistent PTY.
-        self.create_direct(opts, on_data)
-    }
+pub fn write(id: &str, data: &str) -> Result<(), String> {
+    #[cfg(unix)]
+    let res = crate::daemon::input(id, data.as_bytes());
+    #[cfg(not(unix))]
+    let res = {
+        let _ = (id, data);
+        Err(UNSUPPORTED.to_string())
+    };
+    res
+}
 
-    fn create_direct(&self, opts: CreateOpts, on_data: Channel<TermMsg>) -> Result<(), String> {
-        let (master, child) = spawn_pty(
-            &opts.command,
-            &opts.args,
-            opts.cwd.as_deref(),
-            opts.env.as_ref(),
-            opts.cols,
-            opts.rows,
-            &opts.id,
-        )?;
-        let pid = child.process_id();
-        self.spawn_session(opts.id, master, child, pid, on_data)
-    }
+pub fn resize(id: &str, cols: u16, rows: u16) -> Result<(), String> {
+    #[cfg(unix)]
+    let res = crate::daemon::resize(id, cols, rows);
+    #[cfg(not(unix))]
+    let res = {
+        let _ = (id, cols, rows);
+        Err(UNSUPPORTED.to_string())
+    };
+    res
+}
 
-    // Wire up the reader thread and register a direct session.
-    fn spawn_session(
-        &self,
-        id: String,
-        master: Box<dyn MasterPty + Send>,
-        child: Box<dyn Child + Send + Sync>,
-        pid: Option<u32>,
-        on_data: Channel<TermMsg>,
-    ) -> Result<(), String> {
-        let reader = master.try_clone_reader().map_err(|e| e.to_string())?;
-        let writer = master.take_writer().map_err(|e| e.to_string())?;
-        let child = Arc::new(Mutex::new(child));
-        let thread_child = child.clone();
-        std::thread::spawn(move || read_loop(reader, on_data, thread_child));
-        self.sessions.lock().insert(
-            id,
-            Session {
-                master,
-                writer,
-                child,
-                pid,
-            },
-        );
+/// Detach this terminal's view: the daemon keeps the tab running so a later
+/// mount (or a restarted GUI) reattaches to it by id.
+pub fn close(id: &str) -> Result<(), String> {
+    #[cfg(unix)]
+    let res = crate::daemon::detach(id);
+    #[cfg(not(unix))]
+    let res = {
+        let _ = id;
         Ok(())
-    }
+    };
+    res
+}
 
-    pub fn write(&self, id: &str, data: &str) -> Result<(), String> {
-        #[cfg(unix)]
-        {
-            let is_daemon = self.daemon_ids.lock().contains(id);
-            if is_daemon {
-                return crate::daemon::input(id, data.as_bytes());
-            }
-        }
-        let mut map = self.sessions.lock();
-        let session = map.get_mut(id).ok_or("unknown session")?;
-        session
-            .writer
-            .write_all(data.as_bytes())
-            .map_err(|e| e.to_string())?;
-        session.writer.flush().map_err(|e| e.to_string())
-    }
+/// Permanently destroy a terminal: the user closed the tab, or closed a window
+/// with background sessions off.
+pub fn kill_window(_session_id: &str, term_id: &str) {
+    #[cfg(unix)]
+    let _ = crate::daemon::kill(term_id);
+    #[cfg(not(unix))]
+    let _ = term_id;
+}
 
-    pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        #[cfg(unix)]
-        {
-            let is_daemon = self.daemon_ids.lock().contains(id);
-            if is_daemon {
-                return crate::daemon::resize(id, cols, rows);
-            }
-        }
-        let map = self.sessions.lock();
-        let session = map.get(id).ok_or("unknown session")?;
-        session
-            .master
-            .resize(PtySize {
-                rows: rows.max(1),
-                cols: cols.max(1),
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| e.to_string())
+/// Whether a foreground command is running in the terminal. Asked on demand,
+/// to warn before closing a tab that is still working; the notification
+/// heuristics run off the daemon's pushed busy events instead. `dead`/`code`
+/// are reserved for parity with the channel exit.
+pub fn status(id: &str) -> TermStatus {
+    #[cfg(unix)]
+    let busy = crate::daemon::statuses().get(id).copied().unwrap_or(false);
+    #[cfg(not(unix))]
+    let busy = {
+        let _ = id;
+        false
+    };
+    TermStatus {
+        busy,
+        dead: false,
+        code: None,
     }
+}
 
-    /// Detach this terminal's view. A daemon tab keeps running (reattach later);
-    /// a direct terminal's child is killed.
-    pub fn close(&self, id: &str) -> Result<(), String> {
-        #[cfg(unix)]
-        {
-            // Detach only (keep the id so an explicit tab-close can still kill
-            // it): the daemon keeps the tab running for reattach.
-            let is_daemon = self.daemon_ids.lock().contains(id);
-            if is_daemon {
-                return crate::daemon::detach(id);
-            }
-        }
-        if let Some(session) = self.sessions.lock().remove(id) {
-            let _ = session.child.lock().kill();
-        }
-        Ok(())
-    }
+/// Resource use of the given terminals, keyed by id. The daemon owns those
+/// processes, so it does the sampling; ids with no live process are simply
+/// absent from the result.
+pub fn usage(ids: &[String]) -> HashMap<String, Usage> {
+    #[cfg(unix)]
+    let out = {
+        let all = crate::daemon::usages();
+        ids.iter()
+            .filter_map(|id| Some((id.clone(), *all.get(id)?)))
+            .collect()
+    };
+    #[cfg(not(unix))]
+    let out = {
+        let _ = ids;
+        HashMap::new()
+    };
+    out
+}
 
-    /// Permanently destroy a terminal (the user closed the tab): kill the daemon
-    /// tab, or the direct child.
-    pub fn kill_window(&self, _session_id: &str, term_id: &str) {
-        #[cfg(unix)]
-        {
-            let was_daemon = self.daemon_ids.lock().remove(term_id);
-            if was_daemon {
-                let _ = crate::daemon::kill(term_id);
-                return;
-            }
-        }
-        if let Some(session) = self.sessions.lock().remove(term_id) {
-            let _ = session.child.lock().kill();
-            return;
-        }
-        #[cfg(unix)]
-        {
-            // A restored daemon tab may not have been mounted in this GUI run yet,
-            // so it is not in daemon_ids. If a compatible daemon is already up,
-            // still ask it to kill the tab by id; do not spawn one just to kill.
-            if crate::daemon::check() == "ok" {
-                let _ = crate::daemon::kill(term_id);
-            }
-        }
-    }
-
-    pub fn status(&self, id: &str) -> TermStatus {
-        // Daemon tabs live in the daemon, not in `sessions`; query it (the
-        // TerminalPane "finished" notification heuristic polls this per tab, so
-        // it must cover daemon tabs or the notification never fires).
-        #[cfg(unix)]
-        {
-            if self.daemon_ids.lock().contains(id) {
-                let busy = crate::daemon::statuses().get(id).copied().unwrap_or(false);
-                return TermStatus {
-                    busy,
-                    dead: false,
-                    code: None,
-                };
-            }
-        }
-        let map = self.sessions.lock();
-        if let Some(session) = map.get(id) {
-            return TermStatus {
-                busy: is_busy(session),
-                dead: false,
-                code: None,
-            };
-        }
-        drop(map);
-        #[cfg(unix)]
-        let busy = crate::daemon::statuses().get(id).copied().unwrap_or(false);
-        #[cfg(not(unix))]
-        let busy = false;
-        TermStatus {
-            busy,
-            dead: false,
-            code: None,
-        }
-    }
-
-    /// Resource use of the given terminals, keyed by id. Daemon tabs are resolved
-    /// by the daemon (it owns those processes); the rest are direct PTYs owned
-    /// here. Ids with no live process are simply absent from the result.
-    pub fn usage(&self, ids: &[String]) -> HashMap<String, Usage> {
-        let mut out = HashMap::new();
-        #[cfg(unix)]
-        {
-            let daemon_ids = self.daemon_ids.lock();
-            let mine: Vec<&String> = ids.iter().filter(|i| daemon_ids.contains(i.as_str())).collect();
-            let want = !mine.is_empty();
-            drop(daemon_ids);
-            if want {
-                let all = crate::daemon::usages();
-                out.extend(
-                    ids.iter()
-                        .filter_map(|id| Some((id.clone(), *all.get(id)?))),
-                );
-            }
-        }
-        let map = self.sessions.lock();
-        let roots: Vec<(String, u32)> = ids
-            .iter()
-            .filter(|id| !out.contains_key(*id))
-            .filter_map(|id| Some((id.clone(), map.get(id)?.pid?)))
-            .collect();
-        drop(map);
-        out.extend(process_tree_usage(&roots));
-        out
-    }
-
-    /// Where a terminal's shell currently is. The daemon owns the process for
-    /// its own tabs, so it answers for those.
-    pub fn cwd(&self, id: &str) -> Option<String> {
-        #[cfg(unix)]
-        {
-            let is_daemon = self.daemon_ids.lock().contains(id);
-            if is_daemon {
-                return crate::daemon::cwd(id);
-            }
-        }
-        let pid = self.sessions.lock().get(id)?.pid?;
-        process_cwd(pid)
-    }
+/// Where a terminal's shell currently is, so a new terminal can open where the
+/// one you were last in got to. The daemon owns the process, so it answers.
+pub fn cwd(id: &str) -> Option<String> {
+    #[cfg(unix)]
+    let out = crate::daemon::cwd(id);
+    #[cfg(not(unix))]
+    let out = {
+        let _ = id;
+        None
+    };
+    out
 }
 
 /// Resource use of one terminal's process tree. `cpu_seconds` is cumulative CPU
@@ -594,20 +465,11 @@ pub(crate) fn process_cwd(_pid: u32) -> Option<String> {
     None
 }
 
-/// A foreground command is running when the PTY's foreground process group isn't
-/// the shell itself.
-fn is_busy(s: &Session) -> bool {
-    match (s.master.process_group_leader(), s.pid) {
-        (Some(leader), Some(pid)) => leader as i64 != pid as i64,
-        _ => false,
-    }
-}
-
 /// Decode a chunk of a UTF-8 byte stream, replacing invalid sequences with
 /// U+FFFD. A partial trailing codepoint is held back in `carry` and completed
 /// by the next chunk, so a multibyte char split across reads/frames isn't
-/// mangled. Used by the direct-PTY read loop and the daemon client's frame
-/// decoder (where the split happens across OUTPUT frames).
+/// mangled. Used by the daemon's PTY reader and by the client's frame decoder
+/// (where the split happens across OUTPUT frames).
 pub(crate) fn decode_utf8_stream(carry: &mut Vec<u8>, chunk: &[u8]) -> String {
     carry.extend_from_slice(chunk);
     let mut out = String::with_capacity(carry.len());
@@ -636,33 +498,6 @@ pub(crate) fn decode_utf8_stream(carry: &mut Vec<u8>, chunk: &[u8]) -> String {
             }
         }
     }
-}
-
-/// Blocking read loop on its own thread. Splits output on valid UTF-8 boundaries
-/// (carrying a partial trailing codepoint) so a multibyte char split across reads
-/// isn't mangled.
-fn read_loop(
-    mut reader: Box<dyn Read + Send>,
-    chan: Channel<TermMsg>,
-    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
-) {
-    let mut buf = [0u8; 8192];
-    let mut carry: Vec<u8> = Vec::new();
-    loop {
-        match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                let s = decode_utf8_stream(&mut carry, &buf[..n]);
-                if !s.is_empty() && chan.send(TermMsg::Data { data: s }).is_err() {
-                    return;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-
-    let code = child.lock().wait().ok().map(|s| s.exit_code() as i32);
-    let _ = chan.send(TermMsg::Exit { code });
 }
 
 #[cfg(test)]

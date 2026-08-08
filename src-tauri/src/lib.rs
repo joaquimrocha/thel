@@ -5,9 +5,9 @@ mod menu;
 mod notify_cmd;
 mod pty;
 
-use pty::{CreateOpts, SessionManager, TermMsg, TermStatus};
+use pty::{CreateOpts, TermMsg, TermStatus};
 use tauri::ipc::Channel;
-use tauri::{Manager, State};
+use tauri::Manager;
 // Emitter (emit_to) is only used by the Linux notification-click path; importing
 // it unconditionally warns as unused on macOS/Windows.
 #[cfg(target_os = "linux")]
@@ -45,61 +45,49 @@ struct NotifTarget {
 }
 
 #[tauri::command]
-fn create_session(
-    state: State<SessionManager>,
-    opts: CreateOpts,
-    on_data: Channel<TermMsg>,
-) -> Result<(), String> {
-    state.create(opts, on_data)
+fn create_session(opts: CreateOpts, on_data: Channel<TermMsg>) -> Result<(), String> {
+    pty::create(opts, on_data)
 }
 
 #[tauri::command]
-fn write_session(state: State<SessionManager>, id: String, data: String) -> Result<(), String> {
-    state.write(&id, &data)
+fn write_session(id: String, data: String) -> Result<(), String> {
+    pty::write(&id, &data)
 }
 
 #[tauri::command]
-fn resize_session(
-    state: State<SessionManager>,
-    id: String,
-    cols: u16,
-    rows: u16,
-) -> Result<(), String> {
-    state.resize(&id, cols, rows)
+fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
+    pty::resize(&id, cols, rows)
 }
 
 #[tauri::command]
-fn close_session(state: State<SessionManager>, id: String) -> Result<(), String> {
-    state.close(&id)
+fn close_session(id: String) -> Result<(), String> {
+    pty::close(&id)
 }
 
 #[tauri::command]
-fn terminal_status(state: State<SessionManager>, id: String) -> TermStatus {
-    state.status(&id)
+fn terminal_status(id: String) -> TermStatus {
+    pty::status(&id)
 }
 
-/// Permanently destroy a terminal (the user closed the tab).
 /// CPU time and memory of each terminal's process tree. Sampled only while the
 /// session usage dialog is open; `async` keeps the /proc walk off the main
 /// thread, where it would compete with terminal input.
 #[tauri::command(async)]
-fn session_usage(
-    state: State<SessionManager>,
-    ids: Vec<String>,
-) -> std::collections::HashMap<String, pty::Usage> {
-    state.usage(&ids)
+fn session_usage(ids: Vec<String>) -> std::collections::HashMap<String, pty::Usage> {
+    pty::usage(&ids)
 }
 
+/// Permanently destroy a terminal (the user closed the tab, or its window).
 #[tauri::command]
-fn kill_terminal_window(state: State<SessionManager>, session_id: String, id: String) {
-    state.kill_window(&session_id, &id);
+fn kill_terminal_window(session_id: String, id: String) {
+    pty::kill_window(&session_id, &id);
 }
 
 /// Where a terminal's shell currently is, so a new terminal can open there.
-/// `async` because a daemon-backed tab means a round trip over the socket.
+/// `async` because it means a round trip to the daemon over the socket.
 #[tauri::command(async)]
-fn terminal_cwd(state: State<SessionManager>, id: String) -> Option<String> {
-    state.cwd(&id)
+fn terminal_cwd(id: String) -> Option<String> {
+    pty::cwd(&id)
 }
 
 /// (Re)build the native macOS menu bar from the frontend's current profile list.
@@ -641,7 +629,6 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .manage(SessionManager::default())
         .setup(|app| {
             // Paint the webview dark from the start so the window never flashes
             // white before the page loads. Matches the app's --background.

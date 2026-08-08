@@ -14,9 +14,6 @@ export interface CreateOpts {
   env?: Record<string, string>;
   cols: number;
   rows: number;
-  // Back the terminal with thel's own session daemon (unix); falls back to a
-  // direct PTY when the daemon is unavailable or disabled.
-  use_daemon?: boolean;
 }
 
 /** Spawn a PTY-backed session. `onMsg` receives streamed output and the exit. */

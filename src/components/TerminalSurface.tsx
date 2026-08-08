@@ -13,7 +13,6 @@ import {
 } from "@/store/sessions";
 import { abbreviatePath } from "@/lib/paths";
 import { shortcutLabel } from "@/store/keybindings";
-import { usePrefs } from "@/store/prefs";
 import { createSession, closeSession } from "@/lib/pty";
 import { clearActivity, noteBurst } from "@/lib/activity";
 import { createTerminalActivity, AGENT_QUIET_MS } from "@/lib/termActivity";
@@ -69,16 +68,17 @@ export function TerminalArea() {
   const activeSessionId = useSessions((s) => s.activeSessionId);
   const hydrated = useSessions((s) => s.hydrated);
   const hasActive = sessions.some((s) => s.id === activeSessionId);
-  const daemonBacked = usePrefs((s) => s.keepSessions);
   const setActiveGroup = useSessions((s) => s.setActiveGroup);
   // Append-only order of mounted pane ids, so a tab reorder or cross-pane move
   // (which only changes a pane's position, not the set) never reshuffles the DOM
   // nodes and detaches an xterm canvas.
   const paneOrder = useRef<string[]>([]);
 
-  // Mount only the active session first so startup isn't blocked by spinning up
-  // every terminal in every (invisible) session; `warm` then lets a mounted
-  // session bring in its background tabs just after first paint.
+  // Terminals are detached cheaply and reattached by id, so only the visible
+  // session is mounted: reopening a large layout, or hammering New Terminal,
+  // never creates a hidden xterm/WebGL instance for every tab. `warm` holds the
+  // background listeners back until just after first paint, so startup isn't
+  // blocked by wiring up every unmounted tab.
   const [warm, setWarm] = useState(false);
   useEffect(() => {
     const onWarm = () => setWarm(true);
@@ -94,22 +94,11 @@ export function TerminalArea() {
     return () => clearTimeout(t);
   }, []);
 
-  const isMounted = (id: string) => {
-    // Daemon-backed terminals can be detached cheaply and reattached by id.
-    // Mount only the visible session so reopening a large layout, or hammering
-    // New Terminal, doesn't create a hidden xterm/WebGL instance for every tab.
-    if (daemonBacked) return id === activeSessionId;
-    // Direct PTYs die with their pane (close_session kills the child), so every
-    // session stays mounted for the run; only startup defers the hidden ones.
-    return warm || id === activeSessionId;
-  };
-  const rendered = sessions.filter((s) => isMounted(s.id));
+  const rendered = sessions.filter((s) => s.id === activeSessionId);
 
-  // Direct-PTY hidden tabs must stay mounted (unmount kills them); daemon-backed
-  // ones mount only when active (detach/reattach is cheap).
-  const eagerMountHiddenTabs = !daemonBacked && warm;
+
   const isPaneMounted = (group: PaneGroup, t: Terminal) =>
-    !!t.started && (eagerMountHiddenTabs || t.id === group.activeTerminalId);
+    !!t.started && t.id === group.activeTerminalId;
 
   // Refresh the append-only pane order: keep still-mounted ids in place, append
   // newly-mounted ones. Panes render in this order regardless of tab/group order,
@@ -124,12 +113,11 @@ export function TerminalArea() {
 
   return (
     <div className="relative h-full w-full bg-[#1e1e1e]">
-      {/* Each session's panes stay mounted once shown (keeping their
-          PTY/scrollback across switches); only the active layer is visible.
-          Inactive sessions are deferred to just after first paint (see `warm`).
-          Panes render in one flat list per layer, positioned by the layout's
-          computed rects, so splitting or moving a tab between panes repositions
-          an existing pane rather than remounting it. */}
+      {/* Only the active session is mounted; switching away detaches its panes
+          and switching back reattaches them by id, screen included. Panes render
+          in one flat list per layer, positioned by the layout's computed rects,
+          so splitting or moving a tab between panes repositions an existing pane
+          rather than remounting it. */}
       {rendered.map((session) => {
         const rects: Record<string, Rect> = {};
         computeRects(session.layout, { left: 0, top: 0, width: 100, height: 100 }, rects);
@@ -199,7 +187,7 @@ export function TerminalArea() {
           </div>
         );
       })}
-      {daemonBacked && warm && (
+      {warm && (
         <DaemonBackgroundListeners
           sessions={sessions}
           activeSessionId={activeSessionId}
@@ -283,7 +271,6 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
         cwd: terminal.cwd,
         cols: 80,
         rows: 24,
-        use_daemon: true,
       },
       (msg) => {
         if (closed) return;

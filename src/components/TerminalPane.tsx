@@ -391,7 +391,6 @@ export function TerminalPane({
         cwd: tab.cwd,
         cols: term.cols,
         rows: term.rows,
-        use_daemon: usePrefs.getState().keepSessions,
       },
       (msg) => {
         if (closed) return;
