@@ -48,8 +48,8 @@ export function SettingsDialog() {
   const setNewTerminalInSessionDir = usePrefs(
     (s) => s.setNewTerminalInSessionDir,
   );
-  const useDaemon = usePrefs((s) => s.useDaemon);
-  const setUseDaemon = usePrefs((s) => s.setUseDaemon);
+  const keepSessions = usePrefs((s) => s.keepSessions);
+  const setKeepSessions = usePrefs((s) => s.setKeepSessions);
   const notifyDesktop = usePrefs((s) => s.notifyDesktop);
   const setNotifyDesktop = usePrefs((s) => s.setNotifyDesktop);
   const notifyBell = usePrefs((s) => s.notifyBell);
@@ -168,18 +168,21 @@ export function SettingsDialog() {
               {runsDaemon && (
                 <div className="space-y-1.5">
                   <label className="flex items-center gap-2 text-sm">
-                    <Switch checked={useDaemon} onCheckedChange={setUseDaemon} />
+                    <Switch
+                      checked={keepSessions}
+                      onCheckedChange={setKeepSessions}
+                    />
                     Keep sessions running in the background
                   </label>
                   <p className="pl-9 text-xs text-muted-foreground">
                     Terminals keep running in the background after you close the
                     app, and come back with their screen restored when you reopen
-                    it. When off, terminals stop when the app closes. Applies to
-                    newly opened terminals.
+                    it. When off, closing a window stops the terminals it was
+                    showing. If thel crashes instead, they survive and come back.
                   </p>
                 </div>
               )}
-              {!useDaemon && (
+              {!keepSessions && (
                 <div className="space-y-1.5">
                   <label className="flex items-center gap-2 text-sm">
                     <Switch

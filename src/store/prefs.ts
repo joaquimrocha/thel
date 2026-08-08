@@ -9,7 +9,8 @@ const ZOOM_KEY = "thel.terminalZoom";
 const CUSTOM_TITLEBAR_KEY = "thel.customTitlebar";
 const AUTO_START_KEY = "thel.autoStartTerminals";
 const SESSION_DIR_KEY = "thel.newTerminalInSessionDir";
-const USE_DAEMON_KEY = "thel.useDaemon";
+// Named for the daemon it used to switch on; kept so the setting survives.
+const KEEP_SESSIONS_KEY = "thel.useDaemon";
 const NOTIFY_DESKTOP_KEY = "thel.notifyDesktop";
 const NOTIFY_BELL_KEY = "thel.notifyBell";
 const NOTIFY_WAITING_KEY = "thel.notifyAgentWaiting";
@@ -75,10 +76,10 @@ interface PrefsState {
   // the one you were last in. Default off, so new terminals follow.
   newTerminalInSessionDir: boolean;
   setNewTerminalInSessionDir: (value: boolean) => void;
-  // Back terminals with thel's own session daemon (unix) so they survive the
-  // app; off falls back to a direct, non-persistent PTY. Default on.
-  useDaemon: boolean;
-  setUseDaemon: (value: boolean) => void;
+  // Let terminals outlive the window that showed them (unix); off stops them
+  // when it closes. Default on.
+  keepSessions: boolean;
+  setKeepSessions: (value: boolean) => void;
   // Desktop (OS) notifications when the window is unfocused; the in-app
   // notification list is unaffected. Master switch for the ones below.
   notifyDesktop: boolean;
@@ -127,10 +128,10 @@ export const usePrefs = create<PrefsState>((set) => ({
   // Only where the daemon runs (Linux + macOS). Off elsewhere regardless of any
   // saved value, so Windows never activates the daemon (and never restores
   // terminals expecting reattach).
-  useDaemon: runsDaemon && readBool(USE_DAEMON_KEY, true),
-  setUseDaemon: (useDaemon) => {
-    persistBool(USE_DAEMON_KEY, useDaemon);
-    set({ useDaemon });
+  keepSessions: runsDaemon && readBool(KEEP_SESSIONS_KEY, true),
+  setKeepSessions: (keepSessions) => {
+    persistBool(KEEP_SESSIONS_KEY, keepSessions);
+    set({ keepSessions });
   },
   notifyDesktop: readBool(NOTIFY_DESKTOP_KEY, true),
   setNotifyDesktop: (notifyDesktop) => {
@@ -164,7 +165,7 @@ const REMOTE_APPLIERS: Record<string, (value: unknown) => void> = {
   [AUTO_START_KEY]: (v) => usePrefs.getState().setAutoStartTerminals(Boolean(v)),
   [SESSION_DIR_KEY]: (v) =>
     usePrefs.getState().setNewTerminalInSessionDir(Boolean(v)),
-  [USE_DAEMON_KEY]: (v) => usePrefs.getState().setUseDaemon(Boolean(v)),
+  [KEEP_SESSIONS_KEY]: (v) => usePrefs.getState().setKeepSessions(Boolean(v)),
   [NOTIFY_DESKTOP_KEY]: (v) => usePrefs.getState().setNotifyDesktop(Boolean(v)),
   [NOTIFY_BELL_KEY]: (v) => usePrefs.getState().setNotifyBell(Boolean(v)),
   [NOTIFY_WAITING_KEY]: (v) => usePrefs.getState().setNotifyAgentWaiting(Boolean(v)),

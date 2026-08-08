@@ -169,9 +169,14 @@ function install(config: MockConfig) {
       case "close_session":
         dropTermChannel(String(args.id));
         return null;
-      case "kill_terminal_window":
+      case "kill_terminal_window": {
         dropTermChannel(String(args.id));
+        const store = w.__MOCK__ as Record<string, unknown>;
+        const killed = (store.killed as string[]) || [];
+        killed.push(String(args.id));
+        store.killed = killed;
         return null;
+      }
       case "terminal_status":
         return {
           busy: m.terminalBusy ?? false,

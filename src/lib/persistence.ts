@@ -113,8 +113,8 @@ export async function hydrateSessions(): Promise<void> {
     // attach-if-alive-else-respawn, so it reattaches a surviving shell or spawns
     // a fresh one at its cwd. With a direct PTY there's nothing to reattach, so
     // start them only if the user opted into auto-start.
-    const useDaemon = usePrefs.getState().useDaemon;
-    const autoStart = !useDaemon && usePrefs.getState().autoStartTerminals;
+    const keepSessions = usePrefs.getState().keepSessions;
+    const autoStart = !keepSessions && usePrefs.getState().autoStartTerminals;
     const restoreTerminal = (t: PersistedTerminal) => ({
       id: t.id,
       title: t.title,
@@ -124,7 +124,7 @@ export async function hydrateSessions(): Promise<void> {
       args: t.args,
       cwd: t.cwd,
       zoom: t.zoom,
-      started: useDaemon || autoStart,
+      started: keepSessions || autoStart,
     });
     useSessions.setState({
       activeSessionId: layout.activeSessionId,

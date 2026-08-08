@@ -22,7 +22,7 @@ import { SessionNotesPanel } from "@/components/SessionNotesPanel";
 import { AddIconDialog } from "@/components/AddIconDialog";
 import { Toaster } from "@/components/ui/sonner";
 import { hydrateSessions, startPersistence, flushSessions } from "@/lib/persistence";
-import { checkDaemon } from "@/lib/pty";
+import { checkDaemon, killTerminalWindow } from "@/lib/pty";
 import { hydrateLaunchers, startLauncherPersistence, flushLaunchers } from "@/store/launchers";
 import { hydrateKeybindings, startKeybindingPersistence, flushKeybindings } from "@/store/keybindings";
 import { hydrateNotes, startNotePersistence, flushNotes } from "@/store/notes";
@@ -30,7 +30,7 @@ import { startIconSync } from "@/store/icons";
 import { refreshSessionGit } from "@/lib/launch";
 import { useGlobalShortcuts } from "@/lib/useGlobalShortcuts";
 import { initFocusTracking, appFocused } from "@/lib/focus";
-import { useSessions } from "@/store/sessions";
+import { useSessions, sessionTerminals } from "@/store/sessions";
 import { activateNotification } from "@/store/notifications";
 import { useUI } from "@/store/ui";
 import { usePrefs, initPrefsSync } from "@/store/prefs";
@@ -113,6 +113,18 @@ export default function App() {
         flushKeybindings(),
         flushNotes(),
       ]);
+      // With background sessions off, the terminals this window was showing
+      // stop with it. Only this window's, so another profile's window keeps
+      // its own; a crash skips this entirely, which is what makes an
+      // interrupted run recoverable.
+      if (usePrefs.getState().keepSessions) return;
+      await Promise.allSettled(
+        useSessions.getState().sessions.flatMap((s) =>
+          sessionTerminals(s)
+            .filter((t) => t.started && !t.exited)
+            .map((t) => killTerminalWindow(s.id, t.id)),
+        ),
+      );
     });
     return () => void unlisten.then((f) => f());
   }, []);
