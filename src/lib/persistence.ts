@@ -9,7 +9,6 @@ import {
   type Session,
   type Terminal,
 } from "@/store/sessions";
-import { usePrefs } from "@/store/prefs";
 import { useUI } from "@/store/ui";
 
 // Each profile keeps its own session layout. The default profile keeps the
@@ -94,11 +93,7 @@ function getStore(): Promise<Store> {
   return (storePromise ??= load(layoutFile(), { autoSave: false, defaults: {} }));
 }
 
-/**
- * Load the saved layout into the store. With the daemon (the default), restored
- * terminals come back started so they reattach immediately without flashing
- * their Start card; with a direct PTY they wait unless auto-start is on.
- */
+/** Load the saved layout into the store, reattaching its terminals. */
 export async function hydrateSessions(): Promise<void> {
   if (hydrationStarted) return;
   hydrationStarted = true;
@@ -109,12 +104,9 @@ export async function hydrateSessions(): Promise<void> {
     raw = await store.get<PersistedLayout>(KEY);
     if (!raw?.sessions?.length) return;
     const layout = raw;
-    // With the daemon, every restored terminal comes back started: `open` is
+    // Every restored terminal comes back started: the daemon's `open` is
     // attach-if-alive-else-respawn, so it reattaches a surviving shell or spawns
-    // a fresh one at its cwd. With a direct PTY there's nothing to reattach, so
-    // start them only if the user opted into auto-start.
-    const keepSessions = usePrefs.getState().keepSessions;
-    const autoStart = !keepSessions && usePrefs.getState().autoStartTerminals;
+    // a fresh one at its cwd.
     const restoreTerminal = (t: PersistedTerminal) => ({
       id: t.id,
       title: t.title,
@@ -124,7 +116,7 @@ export async function hydrateSessions(): Promise<void> {
       args: t.args,
       cwd: t.cwd,
       zoom: t.zoom,
-      started: keepSessions || autoStart,
+      started: true,
     });
     useSessions.setState({
       activeSessionId: layout.activeSessionId,

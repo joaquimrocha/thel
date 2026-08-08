@@ -148,10 +148,11 @@ test("holding close-terminal shortcut is throttled, not suppressed", async ({
   await expect(tabs).toHaveCount(1);
 });
 
-// Without the daemon a terminal dies with its pane (close_session kills the
-// child), so an inactive session must stay mounted however long it is left.
-// Unmounting it on an idle timer killed the user's shells behind their back.
-test("with background sessions off, an idle session keeps its terminals", async ({
+// Leaving a session alone must never cost you its shells. Unmounting detaches,
+// and nothing kills a terminal until you close its tab or its window, so an
+// idle session keeps running however long it is left. This once unmounted on a
+// ten-minute timer, which killed the user's shells behind their back.
+test("an idle session keeps its terminals", async ({
   page,
 }) => {
   const term = (id: string) => ({ id, title: "shell", command: "bash", args: [] });
@@ -168,14 +169,15 @@ test("with background sessions off, an idle session keeps its terminals", async 
   await page.clock.install();
   await page.addInitScript((l) => {
     localStorage.setItem("__store__thel-layout.json", JSON.stringify({ layout: l }));
+    // The stricter setting: terminals are meant to stop with their window, so a
+    // stray kill would look plausible rather than obviously wrong.
     localStorage.setItem("thel.useDaemon", "0");
-    // Restored terminals only come back started with the daemon or this on.
-    localStorage.setItem("thel.autoStartTerminals", "1");
   }, layout);
   await gotoApp(page);
 
-  // Both sessions mount: the visible one and the one waiting in the background.
-  await expect(page.locator(".xterm")).toHaveCount(2);
+  // Only the visible session mounts an xterm; the other one is still opened,
+  // and kept, through its background listener.
+  await expect(page.locator(".xterm")).toHaveCount(1);
   await expect.poll(() => hasTerminalChannel(page, "t1")).toBe(true);
 
   // Long past any idle window. A terminal xterm disposed by StrictMode's double
@@ -183,8 +185,13 @@ test("with background sessions off, an idle session keeps its terminals", async 
   // it; that is the harness, not the app.
   await page.clock.fastForward("30:00").catch(() => {});
 
-  await expect(page.locator(".xterm")).toHaveCount(2);
   expect(await hasTerminalChannel(page, "t1")).toBe(true);
+  // Nothing was killed: that only happens on an explicit tab or window close.
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { __MOCK__: { killed?: string[] } }).__MOCK__.killed ?? [],
+    ),
+  ).toEqual([]);
 });
 
 test("hidden daemon tabs update titles without mounting xterm", async ({ page }) => {
@@ -272,7 +279,7 @@ test("created session is restored after reload", async ({ page }) => {
   // Persistence is debounced (~400ms); let it flush before reloading.
   await page.waitForTimeout(700);
   await page.reload();
-  // The session persists; with no live backend session it comes back idle (Start).
+  // The session persists across a reload, with its terminal reattached.
   await expect(
     page.getByRole("button", { name: "Close session" }),
   ).toHaveCount(1);

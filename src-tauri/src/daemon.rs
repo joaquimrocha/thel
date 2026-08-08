@@ -1192,9 +1192,14 @@ pub fn detach(id: &str) -> Result<(), String> {
     on_client_error(c.send_frame(CONTROL, &serde_json::to_vec(&cmd).unwrap_or_default()))
 }
 
-/// Terminate a tab's process and forget it (the user closed the tab).
+/// Terminate a tab's process and forget it (the user closed the tab, or the
+/// window it belonged to). Without an established connection there is no daemon
+/// holding the tab, so this is a no-op rather than a reason to spawn one.
 pub fn kill(id: &str) -> Result<(), String> {
-    let c = client()?;
+    let cached = client_cell().lock().clone();
+    let Some(c) = cached else {
+        return Ok(());
+    };
     c.routes.lock().remove(id);
     let cmd = Command::Kill { id: id.to_string() };
     on_client_error(c.send_frame(CONTROL, &serde_json::to_vec(&cmd).unwrap_or_default()))
