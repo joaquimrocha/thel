@@ -7,8 +7,9 @@ keeps each session alive in the background and can anchor it to its own git
 worktree, so you can run a fleet of them at once and tell at a glance which one
 needs you.
 
-> **Beta.** thel runs on Linux and macOS. Windows is a goal but untested for
-> now, so expect rough edges there.
+> **Beta.** thel runs on Linux and macOS. Windows is still a goal, but the
+> session daemon that owns every terminal has no port for it yet, so terminals
+> don't open there.
 
 ## Install
 
@@ -33,7 +34,8 @@ See [docs/install.md](docs/install.md) for that step and for direct downloads.
 
 - **Persistent sessions.** A built-in background daemon owns the PTYs and an
   authoritative terminal emulator per tab, so your terminals survive closing or
-  restarting the app and reattach with their screen restored.
+  restarting the app and reattach with their screen restored. Turn background
+  sessions off and a window's terminals stop with it instead.
 - **Worktree-aware sessions.** Anchor a session to a folder or git worktree, or
   create a new worktree right from the New Session dialog.
 - **Splits and tabs.** Divide a session into split panes, each with its own tab
@@ -130,8 +132,10 @@ A single binary runs in two modes. The default invocation boots the Tauri GUI;
 re-invoked with a hidden `__daemon` argument it runs the session daemon and
 never touches the webview. The daemon owns the PTYs (via `portable-pty`) and a
 `vt100` emulator per tab, so a restarted GUI reattaches to still-running shells
-by id. The app keeps owning sessions, profiles, and layout, and persists them
-itself; the daemon is a lean "tab server".
+by id. Every terminal goes through it, so there is one path to test and one
+place where a terminal's life is decided. The app keeps owning sessions,
+profiles, and layout, and persists them itself; the daemon is a lean "tab
+server".
 
 ```
 src/                React app (Vite)
@@ -140,7 +144,7 @@ src/                React app (Vite)
   store/             zustand state: sessions, profiles, launchers, prefs, ui
 src-tauri/src/
   daemon.rs          the session daemon (PTYs + VTE + reattach over a socket)
-  pty.rs             SessionManager: routes terminals to the daemon or a PTY
+  pty.rs             forwards the terminal commands to the daemon
   git.rs             worktree/branch commands
   lib.rs             Tauri command surface + plugin wiring
 scripts/             icon generator

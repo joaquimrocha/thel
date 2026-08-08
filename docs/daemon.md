@@ -16,7 +16,7 @@ The daemon enforces strict local-security bounds:
 2. **Socket Permissions**: The Unix Domain Socket is restricted to `0600` permissions.
 3. **Peer Verification**: The daemon matches the connecting peer's UID against its own before performing the handshake — via `SO_PEERCRED` on Linux and `LOCAL_PEERCRED` on macOS.
 
-The daemon runs on Linux and macOS. Both provide what it needs to reap a shell's whole session (by session id) and to identify a stray daemon process: Linux through `/proc`, macOS through libproc (`proc_listallpids`, `proc_pidpath`) and `sysctl(KERN_PROCARGS2)`. Windows has no unix-socket daemon and falls back to a direct, non-persistent PTY.
+The daemon runs on Linux and macOS. Both provide what it needs to reap a shell's whole session (by session id) and to identify a stray daemon process: Linux through `/proc`, macOS through libproc (`proc_listallpids`, `proc_pidpath`) and `sysctl(KERN_PROCARGS2)`. Windows has no unix-socket daemon, and since the daemon owns every terminal, it has no terminals: the session commands return an error there until it grows a port.
 
 ## Wire Protocol
 
