@@ -152,6 +152,9 @@ export const useProfiles = create<ProfilesState>((set, get) => ({
     if (id === get().currentId) return;
     const label = labelFor(id);
     if (opening.has(label)) return;
+    // Claimed before the first await, or two calls landing together would both
+    // get past the existence check below and open a window each.
+    opening.add(label);
     try {
       const existing = await WebviewWindow.getByLabel(label);
       if (existing) {
@@ -159,7 +162,6 @@ export const useProfiles = create<ProfilesState>((set, get) => ({
         return;
       }
       const profile = get().profiles.find((p) => p.id === id);
-      opening.add(label);
       // The new window loads the same app and reads its own label to know which
       // profile (and which session layout) to show.
       const w = new WebviewWindow(label, {
@@ -177,13 +179,19 @@ export const useProfiles = create<ProfilesState>((set, get) => ({
         minWidth: 640,
         minHeight: 400,
       });
-      // Release the guard once the window exists (or fails to), so a later
-      // re-open can still happen after this window is closed.
-      w.once("tauri://created", () => opening.delete(label));
-      w.once("tauri://error", () => opening.delete(label));
+      // Awaited so a caller knows the window is really there before acting on
+      // it, and so the guard above outlives the gap where a lookup can't yet
+      // see it.
+      await new Promise<void>((resolve) => {
+        w.once("tauri://created", () => resolve());
+        w.once("tauri://error", () => resolve());
+      });
     } catch (e) {
-      opening.delete(label);
       console.error("failed to switch profile", e);
+    } finally {
+      // Released either way, so a later re-open still works once this window
+      // is closed.
+      opening.delete(label);
     }
   },
 
