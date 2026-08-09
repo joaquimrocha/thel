@@ -36,7 +36,12 @@ import { activateNotification } from "@/store/notifications";
 import { useUI } from "@/store/ui";
 import { usePrefs, initPrefsSync } from "@/store/prefs";
 import { askQuitSessions } from "@/lib/quitPrompt";
-import { useProfiles } from "@/store/profiles";
+import {
+  useProfiles,
+  restoreOpenProfiles,
+  releaseProfileWindow,
+  windowStays,
+} from "@/store/profiles";
 import { isMac } from "@/lib/platform";
 import { initNativeMenu } from "@/lib/nativeMenu";
 
@@ -66,9 +71,10 @@ export default function App() {
       .catch((e) => console.error("setTitle failed", e));
   }, [activeName, profileName]);
 
-  // Load the profile registry (for the title-bar menu and the window title).
+  // Load the profile registry (for the title-bar menu and the window title),
+  // then reopen the profile windows that were on screen when the app last quit.
   useEffect(() => {
-    void useProfiles.getState().hydrate();
+    void useProfiles.getState().hydrate().then(restoreOpenProfiles);
   }, []);
 
   // Custom title bar means OS decorations off, and vice versa. Sync the window
@@ -124,21 +130,26 @@ export default function App() {
         .sessions.map((s) => sessionTerminals(s).filter((t) => !t.exited))
         .filter((ts) => ts.length);
       const terminals = live.flat();
-      // Nothing running: no decision to make, and nothing to prompt about.
-      if (!terminals.length) return;
-
-      const setting = usePrefs.getState().sessionsOnClose;
-      const choice =
-        setting === "ask"
-          ? await askQuitSessions({
-              terminals: terminals.length,
-              sessions: live.length,
-            })
-          : setting;
-      // Nothing has been stopped yet, so the window simply stays as it was.
-      if (choice === "cancel") return event.preventDefault();
-      if (choice === "keep") return;
-      await Promise.allSettled(terminals.map((t) => killTerminalWindow(t.id)));
+      // Something running needs a decision first, since the window may yet stay.
+      if (terminals.length) {
+        const setting = usePrefs.getState().sessionsOnClose;
+        const choice =
+          setting === "ask"
+            ? await askQuitSessions({
+                terminals: terminals.length,
+                sessions: live.length,
+              })
+            : setting;
+        // Nothing has been stopped yet, so the window simply stays as it was.
+        if (choice === "cancel") return event.preventDefault();
+        if (choice === "stop")
+          await Promise.allSettled(
+            terminals.map((t) => killTerminalWindow(t.id)),
+          );
+      }
+      // The window is closing for real now, so take it out of the list of
+      // profiles to reopen on the next launch.
+      await releaseProfileWindow();
     });
     return () => void unlisten.then((f) => f());
   }, []);
@@ -151,6 +162,9 @@ export default function App() {
   useEffect(() => {
     let unsubscribe = () => {};
     void (async () => {
+      // A main window that's only here to reopen other profiles is about to go,
+      // so it must not start this profile's terminals on the way out.
+      if (!(await windowStays())) return;
       const health = await checkDaemon().catch(() => "none" as const);
       if (health === "skew") {
         useUI.getState().setDaemonSkew(true);

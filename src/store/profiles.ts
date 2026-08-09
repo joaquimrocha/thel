@@ -37,6 +37,7 @@ export const PROFILE_COLORS = [
 
 const FILE = "thel-profiles.json";
 const KEY = "profiles";
+const OPEN_KEY = "open";
 
 // The default profile is the main window; others get a profile-<id> window.
 const labelFor = (id: string) => (id === "default" ? "main" : `profile-${id}`);
@@ -82,6 +83,80 @@ async function persistProfiles(profiles: Profile[]) {
   } catch (e) {
     console.error("failed to save profiles", e);
   }
+}
+
+// The profiles whose window is currently on screen. Every window adds itself on
+// start and drops itself when closed, so whatever survives a quit is what was
+// open at the time.
+async function readOpen(): Promise<string[]> {
+  try {
+    const store = await getStore();
+    return (await store.get<string[]>(OPEN_KEY)) ?? [];
+  } catch (e) {
+    console.error("failed to load open profiles", e);
+    return [];
+  }
+}
+
+async function writeOpen(ids: string[]) {
+  try {
+    const store = await getStore();
+    await store.set(OPEN_KEY, ids);
+    await store.save();
+  } catch (e) {
+    console.error("failed to save open profiles", e);
+  }
+}
+
+// Read once, before the app mounts: the main window has to know whether it is
+// staying before it starts anything a discarded window would leave behind.
+const startupOpen = readOpen();
+
+/** Whether this window is one the last quit left open. The OS launches the main
+ * window either way, so when the default profile wasn't open it exists only to
+ * reopen the profiles that were, and then goes. Nothing that starts terminals
+ * should run in it until this says it stays. */
+export async function windowStays(): Promise<boolean> {
+  if (currentProfileId() !== "default") return true;
+  const open = await startupOpen;
+  // A first run (or a wiped list) has nothing to restore, so main is the app.
+  return open.length === 0 || open.includes("default");
+}
+
+/** Register this window as open and, in the main window, reopen the profile
+ * windows that were open when the app last quit. Call after hydrate(), which
+ * loads the registry this prunes deleted profiles against. */
+export async function restoreOpenProfiles() {
+  const id = currentProfileId();
+  const open = await startupOpen;
+  if (id !== "default") {
+    if (!open.includes(id)) await writeOpen([...open, id]);
+    return;
+  }
+  const { profiles, switchProfile } = useProfiles.getState();
+  // A profile deleted since the last run has no window to reopen.
+  const restore = open.filter(
+    (x) => x !== "default" && profiles.some((p) => p.id === x),
+  );
+  // Nothing came back to hand over to: better a main window that shouldn't be
+  // here than no window at all and no way to reach the app.
+  const leaving = !(await windowStays()) && restore.length > 0;
+  await writeOpen(leaving ? restore : ["default", ...restore]);
+  // Hide first: a main window that's leaving shouldn't flash on screen while
+  // the windows it's here to open are still being created.
+  if (leaving) await getCurrentWindow().hide().catch(() => {});
+  // Awaited, so the windows exist before a leaving main window takes its
+  // webview (and the pending creation calls) down with it.
+  for (const x of restore) await switchProfile(x);
+  if (leaving) await getCurrentWindow().destroy();
+}
+
+/** Drop this window from the open list as it closes. The last window is left in
+ * place: the app is quitting, and that list is what the next launch restores. */
+export async function releaseProfileWindow() {
+  const open = await readOpen();
+  if (open.length <= 1) return;
+  await writeOpen(open.filter((x) => x !== currentProfileId()));
 }
 
 interface ProfilesState {
