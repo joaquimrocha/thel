@@ -15,6 +15,7 @@ import { LaunchersDialog } from "@/components/LaunchersDialog";
 import { NotificationsDialog } from "@/components/NotificationsDialog";
 import { SessionsDialog } from "@/components/SessionsDialog";
 import { DaemonSkewDialog } from "@/components/DaemonSkewDialog";
+import { QuitSessionsDialog } from "@/components/QuitSessionsDialog";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import { SessionSettingsDialog } from "@/components/SessionSettingsDialog";
 import { SessionUsageDialog } from "@/components/SessionUsageDialog";
@@ -34,6 +35,7 @@ import { useSessions, sessionTerminals } from "@/store/sessions";
 import { activateNotification } from "@/store/notifications";
 import { useUI } from "@/store/ui";
 import { usePrefs, initPrefsSync } from "@/store/prefs";
+import { askQuitSessions } from "@/lib/quitPrompt";
 import { useProfiles } from "@/store/profiles";
 import { isMac } from "@/lib/platform";
 import { initNativeMenu } from "@/lib/nativeMenu";
@@ -103,28 +105,40 @@ export default function App() {
 
   // Writes are debounced, so flush any pending change before the window closes
   // (e.g. a session created right before quitting). onCloseRequested awaits this
-  // handler and then destroys the window itself (we don't preventDefault), so we
-  // just flush and return. Needs the window:allow-destroy capability.
+  // handler and destroys the window afterwards unless we preventDefault, which
+  // is what lets the prompt below hold the close open. Needs the
+  // window:allow-destroy capability.
   useEffect(() => {
-    const unlisten = getCurrentWindow().onCloseRequested(async () => {
+    const unlisten = getCurrentWindow().onCloseRequested(async (event) => {
       await Promise.allSettled([
         flushSessions(),
         flushLaunchers(),
         flushKeybindings(),
         flushNotes(),
       ]);
-      // With background sessions off, the terminals this window was showing
-      // stop with it. Only this window's, so another profile's window keeps
-      // its own; a crash skips this entirely, which is what makes an
-      // interrupted run recoverable.
-      if (usePrefs.getState().keepSessions) return;
-      await Promise.allSettled(
-        useSessions.getState().sessions.flatMap((s) =>
-          sessionTerminals(s)
-            .filter((t) => !t.exited)
-            .map((t) => killTerminalWindow(t.id)),
-        ),
-      );
+      // Only this window's terminals, so another profile's window keeps its
+      // own; a crash skips this entirely, which is what makes an interrupted
+      // run recoverable.
+      const live = useSessions
+        .getState()
+        .sessions.map((s) => sessionTerminals(s).filter((t) => !t.exited))
+        .filter((ts) => ts.length);
+      const terminals = live.flat();
+      // Nothing running: no decision to make, and nothing to prompt about.
+      if (!terminals.length) return;
+
+      const setting = usePrefs.getState().sessionsOnClose;
+      const choice =
+        setting === "ask"
+          ? await askQuitSessions({
+              terminals: terminals.length,
+              sessions: live.length,
+            })
+          : setting;
+      // Nothing has been stopped yet, so the window simply stays as it was.
+      if (choice === "cancel") return event.preventDefault();
+      if (choice === "keep") return;
+      await Promise.allSettled(terminals.map((t) => killTerminalWindow(t.id)));
     });
     return () => void unlisten.then((f) => f());
   }, []);
@@ -246,6 +260,7 @@ export default function App() {
       <NotificationsDialog />
       <SessionsDialog />
       <DaemonSkewDialog />
+      <QuitSessionsDialog />
       <ShortcutsDialog />
       <SessionSettingsDialog />
       <SessionUsageDialog />

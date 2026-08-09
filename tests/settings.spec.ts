@@ -58,13 +58,31 @@ test("copy-toast toggle persists across reload", async ({ page }) => {
   await expect(page.getByRole("switch")).not.toBeChecked();
 });
 
-test("sessions tab shows the daemon option where the daemon runs", async ({ page }) => {
+test("sessions tab offers the three close behaviours, keep selected", async ({
+  page,
+}) => {
   await gotoApp(page);
   await openSettings(page);
   await page.getByRole("tab", { name: "Sessions" }).click();
-  await expect(
-    page.getByText("Keep sessions running in the background"),
-  ).toBeVisible();
+  const group = page.getByRole("radiogroup", { name: "When you close a window" });
+  await expect(group.getByRole("radio")).toHaveText([
+    "Keep them running",
+    "Stop them",
+    "Ask each time",
+  ]);
+  await expect(group.getByRole("radio", { name: "Keep them running" })).toBeChecked();
+});
+
+test("choosing ask each time sticks across a reload", async ({ page }) => {
+  await gotoApp(page);
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Sessions" }).click();
+  await page.getByRole("radio", { name: "Ask each time" }).click();
+
+  await page.reload();
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Sessions" }).click();
+  await expect(page.getByRole("radio", { name: "Ask each time" })).toBeChecked();
 });
 
 test("the notifications dialog opens its settings", async ({ page }) => {
