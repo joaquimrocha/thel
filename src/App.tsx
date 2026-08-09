@@ -122,7 +122,7 @@ export default function App() {
         useSessions.getState().sessions.flatMap((s) =>
           sessionTerminals(s)
             .filter((t) => !t.exited)
-            .map((t) => killTerminalWindow(s.id, t.id)),
+            .map((t) => killTerminalWindow(t.id)),
         ),
       );
     });

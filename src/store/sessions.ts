@@ -290,7 +290,7 @@ export const useSessions = create<SessionState>((set, get) => ({
     const session = get().sessions.find((x) => x.id === id);
     if (session) {
       for (const g of session.groups) {
-        for (const t of g.terminals) void killTerminalWindow(id, t.id);
+        for (const t of g.terminals) void killTerminalWindow(t.id);
       }
     }
     // The session is gone, so its notes have nothing left to describe.
@@ -403,13 +403,9 @@ export const useSessions = create<SessionState>((set, get) => ({
     set((s) => ({ sessions: patchTerminal(s.sessions, terminalId, { zoom }) })),
 
   closeTerminal: (terminalId) => {
-    // Permanently kill the terminal's backend process (daemon tab or direct
-    // PTY). Found before the state update so we still know which session it
-    // belonged to.
-    const owner = get().sessions.find((ss) =>
-      ss.groups.some((g) => g.terminals.some((t) => t.id === terminalId)),
-    );
-    if (owner) void killTerminalWindow(owner.id, terminalId);
+    // Permanently kill the terminal's daemon tab, which is addressed by id
+    // alone, before dropping it from the layout.
+    void killTerminalWindow(terminalId);
     set((s) => ({
       sessions: s.sessions.map((ss) => {
         const gi = ss.groups.findIndex((g) =>

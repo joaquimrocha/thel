@@ -61,8 +61,8 @@ export const sessionUsage = (ids: string[]) =>
   invoke<Record<string, TerminalUsage>>("session_usage", { ids });
 
 /** Permanently destroy a terminal (kills its process; the user closed the tab). */
-export const killTerminalWindow = (sessionId: string, id: string) =>
-  invoke<void>("kill_terminal_window", { sessionId, id });
+export const killTerminalWindow = (id: string) =>
+  invoke<void>("kill_terminal_window", { id });
 
 /** Launch a command detached in its own session, fire-and-forget -- for
  * no-shell "app" launchers, which aren't terminals and must outlive any tab. */

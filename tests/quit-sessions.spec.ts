@@ -14,12 +14,19 @@ async function seedKeepSessions(page: Page, keep: boolean) {
   }, keep ? "1" : "0");
 }
 
-async function createSession(page: Page) {
+// Creates a session and returns the id of the terminal that came with it, so a
+// test can name what it expects to be killed rather than counting.
+async function createSession(page: Page): Promise<string> {
   await page.keyboard.press("Control+Shift+N");
   const create = page.getByRole("button", { name: "Create session" });
   await expect(create).toBeEnabled();
   await create.click();
   await expect(page.getByText("No sessions open.")).toBeHidden();
+  const pane = page.locator("[data-terminal-pane]").first();
+  await expect(pane).toBeVisible();
+  const id = await pane.getAttribute("data-terminal-pane");
+  expect(id).toBeTruthy();
+  return id ?? "";
 }
 
 // Fire the OS close flow the way the X button does, then report what the close
@@ -49,9 +56,9 @@ test("background sessions off: closing the window kills its terminals", async ({
 }) => {
   await seedKeepSessions(page, false);
   await gotoApp(page);
-  await createSession(page);
+  const id = await createSession(page);
 
-  expect(await closeAndCollectKills(page)).toHaveLength(1);
+  expect(await closeAndCollectKills(page)).toEqual([id]);
 });
 
 test("background sessions on: closing the window leaves them running", async ({
@@ -61,5 +68,5 @@ test("background sessions on: closing the window leaves them running", async ({
   await gotoApp(page);
   await createSession(page);
 
-  expect(await closeAndCollectKills(page)).toHaveLength(0);
+  expect(await closeAndCollectKills(page)).toEqual([]);
 });
