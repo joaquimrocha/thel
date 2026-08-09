@@ -1,8 +1,8 @@
 import { test, expect, describe } from "vitest";
 import {
   hasVisibleOutput,
-  oscClipboardWrite,
   oscNotifications,
+  scanClipboardWrites,
   terminalTitleFromOutput,
 } from "./ansi";
 
@@ -97,46 +97,94 @@ describe("terminalTitleFromOutput", () => {
   });
 });
 
-describe("oscClipboardWrite", () => {
+describe("scanClipboardWrites", () => {
   const b64 = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+  // A single chunk, which is all most sequences ever need.
+  const scan = (data: string) => scanClipboardWrites("", data);
 
   test("decodes a clipboard write, with either terminator", () => {
-    expect(oscClipboardWrite(`${ESC}]52;c;${b64("hello")}${BEL}`)).toBe("hello");
-    expect(oscClipboardWrite(`${ESC}]52;c;${b64("hello")}${ST}`)).toBe("hello");
+    expect(scan(`${ESC}]52;c;${b64("hello")}${BEL}`).text).toBe("hello");
+    expect(scan(`${ESC}]52;c;${b64("hello")}${ST}`).text).toBe("hello");
   });
 
   test("an empty target list means the clipboard", () => {
-    expect(oscClipboardWrite(`${ESC}]52;;${b64("copied")}${BEL}`)).toBe("copied");
+    expect(scan(`${ESC}]52;;${b64("copied")}${BEL}`).text).toBe("copied");
   });
 
   test("ignores a read request, which would leak the clipboard back", () => {
-    expect(oscClipboardWrite(`${ESC}]52;c;?${BEL}`)).toBeUndefined();
+    expect(scan(`${ESC}]52;c;?${BEL}`).text).toBeUndefined();
   });
 
   test("ignores a write aimed only at the primary selection", () => {
-    expect(oscClipboardWrite(`${ESC}]52;p;${b64("nope")}${BEL}`)).toBeUndefined();
+    expect(scan(`${ESC}]52;p;${b64("nope")}${BEL}`).text).toBeUndefined();
   });
 
   test("survives a payload that isn't valid base64", () => {
-    expect(oscClipboardWrite(`${ESC}]52;c;not base64!${BEL}`)).toBeUndefined();
+    expect(scan(`${ESC}]52;c;not base64!${BEL}`).text).toBeUndefined();
   });
 
   test("drops an oversized payload rather than truncating it", () => {
     const huge = "A".repeat(1024 * 1024 + 4);
-    expect(oscClipboardWrite(`${ESC}]52;c;${huge}${BEL}`)).toBeUndefined();
+    expect(scan(`${ESC}]52;c;${huge}${BEL}`).text).toBeUndefined();
   });
 
   test("keeps multibyte text intact", () => {
-    expect(oscClipboardWrite(`${ESC}]52;c;${b64("héllo ❤")}${BEL}`)).toBe("héllo ❤");
+    expect(scan(`${ESC}]52;c;${b64("héllo ❤")}${BEL}`).text).toBe("héllo ❤");
   });
 
   test("the last write in a chunk wins", () => {
     const data = `${ESC}]52;c;${b64("first")}${BEL}x${ESC}]52;c;${b64("second")}${BEL}`;
-    expect(oscClipboardWrite(data)).toBe("second");
+    expect(scan(data).text).toBe("second");
   });
 
-  test("plain output asks for nothing", () => {
-    expect(oscClipboardWrite("just text")).toBeUndefined();
-    expect(oscClipboardWrite(`${ESC}]0;title${BEL}`)).toBeUndefined();
+  test("plain output asks for nothing and carries nothing", () => {
+    expect(scan("just text")).toEqual({ text: undefined, carry: "" });
+    expect(scan(`${ESC}]0;title${BEL}`).text).toBeUndefined();
+  });
+
+  test("drops one trailing newline, so a paste can't self-execute", () => {
+    expect(scan(`${ESC}]52;c;${b64("rm -rf /\n")}${BEL}`).text).toBe("rm -rf /");
+    expect(scan(`${ESC}]52;c;${b64("rm -rf /\r\n")}${BEL}`).text).toBe("rm -rf /");
+    // Only the last one: an intentionally copied blank line survives.
+    expect(scan(`${ESC}]52;c;${b64("a\n\n")}${BEL}`).text).toBe("a\n");
+  });
+
+  describe("across chunk boundaries", () => {
+    // Output arrives in 8 KB frames, so any copy over ~6 KB is split.
+    const whole = `${ESC}]52;c;${b64("split payload")}${BEL}`;
+
+    test("a sequence cut anywhere still copies", () => {
+      for (let at = 1; at < whole.length; at++) {
+        const first = scanClipboardWrites("", whole.slice(0, at));
+        expect(first.text).toBeUndefined();
+        expect(scanClipboardWrites(first.carry, whole.slice(at)).text).toBe(
+          "split payload",
+        );
+      }
+    });
+
+    test("a sequence cut into three still copies", () => {
+      const a = scanClipboardWrites("", whole.slice(0, 4));
+      const b = scanClipboardWrites(a.carry, whole.slice(4, 11));
+      expect(scanClipboardWrites(b.carry, whole.slice(11)).text).toBe("split payload");
+    });
+
+    test("surrounding output is not carried", () => {
+      const r = scanClipboardWrites("", `before${whole}after`);
+      expect(r.text).toBe("split payload");
+      expect(r.carry).toBe("");
+    });
+
+    test("an abandoned sequence is dropped, not carried forever", () => {
+      // A fresh escape after the introducer means this one will never finish.
+      expect(scan(`${ESC}]52;c;abc${ESC}[0m`).carry).toBe("");
+      // Terminated but malformed (no payload field): also unfinishable.
+      expect(scan(`${ESC}]52;c${BEL}`).carry).toBe("");
+    });
+
+    test("the carry is bounded, so an endless sequence can't grow it", () => {
+      const flood = `${ESC}]52;c;${"A".repeat(1024 * 1024 + 8)}`;
+      expect(scan(flood).carry).toBe("");
+    });
   });
 });
