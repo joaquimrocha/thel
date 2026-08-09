@@ -1,0 +1,59 @@
+name: release-prep
+
+# Manually open the pull request that starts a release: bump the version in
+# package.json, refresh the lockfile if the bump touched it, and push a branch
+# with a pull request against main. Cutting the tag and building the binaries
+# stays with release-linux and release-macos, which run once this is merged.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New version, e.g. 0.5.0 (a leading v is dropped)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
+
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - env:
+          INPUT: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${INPUT#v}"
+          # The version ends up in a branch name and a shell command, so take
+          # only what a version can be.
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "not a version: $INPUT" >&2; exit 1 ;;
+          esac
+
+          # Fails when package.json already says this, which is the answer.
+          pnpm version --no-git-tag-version "$version"
+          pnpm install --no-frozen-lockfile --ignore-scripts
+
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git switch -c "release/v$version"
+          # The lockfile only moves when the root version is recorded in it,
+          # so add whatever install left behind rather than naming files.
+          git commit -am "release: v$version"
+          git push -u origin "release/v$version"
+          gh pr create --base main --title "release: v$version" \
+            --body "Version bump for v$version. Merge, then run release-linux and release-macos against the draft release."
