@@ -33,17 +33,32 @@ export function SessionNotesPanel() {
   const text = useNotes((s) => (sessionId ? (s.notes[sessionId] ?? "") : ""));
   const setNote = useNotes((s) => s.setNote);
   const [editing, setEditing] = useState(false);
+  // The note has been read from disk, so there is something to show.
+  const [ready, setReady] = useState(false);
   const editor = useRef<HTMLTextAreaElement>(null);
   const view = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   // Where the caret goes once a rewritten note has been committed to the DOM.
   const caret = useRef<number | null>(null);
 
-  // Open straight into the editor when there is nothing to render yet, and
-  // leave the editor when the panel moves to another session.
+  // Notes are read from disk on demand, so wait for the file before choosing
+  // between the editor and the rendered view: a session with nothing saved
+  // opens straight into the editor.
   useEffect(() => {
     if (!sessionId) return;
-    setEditing(!useNotes.getState().notes[sessionId]);
+    let live = true;
+    setReady(false);
+    void useNotes
+      .getState()
+      .loadNote(sessionId)
+      .then(() => {
+        if (!live) return;
+        setEditing(!useNotes.getState().notes[sessionId]);
+        setReady(true);
+      });
+    return () => {
+      live = false;
+    };
   }, [sessionId]);
 
   // The panel belongs to one session, so navigating away would leave it stale:
@@ -77,8 +92,8 @@ export function SessionNotesPanel() {
   // own keys work right away and the notes scroll with the keyboard. The
   // editor focuses itself on mount, so this only covers the rendered view.
   useEffect(() => {
-    if (sessionId && !editing) view.current?.focus();
-  }, [sessionId, editing]);
+    if (sessionId && ready && !editing) view.current?.focus();
+  }, [sessionId, ready, editing]);
 
   // Esc, on the window in the capture phase, ahead of the dismissable layers.
   // Radix would otherwise decide this: a menu that has just closed can still
@@ -162,7 +177,9 @@ export function SessionNotesPanel() {
           </DialogDescription>
         </div>
 
-        {editing ? (
+        {!ready ? (
+          <div className="flex-1" />
+        ) : editing ? (
           <textarea
             ref={editor}
             autoFocus

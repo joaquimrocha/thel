@@ -494,6 +494,69 @@ fn open_url(url: String) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// Where a session's notes live: one markdown file per session in thel's
+/// config dir. Debug builds get their own folder for the same reason the store
+/// files are prefixed there, a dev run shares the bundle id with the installed
+/// app.
+fn note_path(app: &tauri::AppHandle, session_id: &str) -> Result<std::path::PathBuf, String> {
+    // The id comes from the frontend, so keep it to a bare filename: nothing
+    // here may reach outside the notes folder.
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("invalid session id".into());
+    }
+    let dir = if cfg!(debug_assertions) {
+        "dev-notes"
+    } else {
+        "notes"
+    };
+    Ok(app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join(dir)
+        .join(format!("{session_id}.md")))
+}
+
+/// A session's notes, empty when it has none yet.
+#[tauri::command]
+fn read_note(app: tauri::AppHandle, session_id: String) -> Result<String, String> {
+    let path = note_path(&app, &session_id)?;
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Save a session's notes. Emptying them removes the file, so cleared notes
+/// leave nothing behind.
+#[tauri::command]
+fn write_note(app: tauri::AppHandle, session_id: String, text: String) -> Result<(), String> {
+    let path = note_path(&app, &session_id)?;
+    if text.is_empty() {
+        return delete_note(app, session_id);
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, text).map_err(|e| e.to_string())
+}
+
+/// Drop a session's notes (its session was closed).
+#[tauri::command]
+fn delete_note(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+    let path = note_path(&app, &session_id)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// The files on the clipboard (a file-manager "Copy"), as paths. Empty when
 /// the clipboard holds no file list, so a paste can fall back to text.
 #[tauri::command]
@@ -679,6 +742,9 @@ pub fn run() {
             notify,
             open_url,
             clipboard_files,
+            read_note,
+            write_note,
+            delete_note,
             git::git_info,
             git::worktree_info,
             git::list_worktrees,

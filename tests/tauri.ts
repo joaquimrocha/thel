@@ -259,6 +259,18 @@ function install(config: MockConfig) {
         (w.__MOCK__ as Record<string, unknown>).created = list;
         return String(args.path);
       }
+      // Session notes, in localStorage so they survive a reload like the files
+      // they stand in for.
+      case "read_note":
+        return localStorage.getItem("__note__" + args.sessionId) ?? "";
+      case "write_note":
+        if (args.text)
+          localStorage.setItem("__note__" + args.sessionId, String(args.text));
+        else localStorage.removeItem("__note__" + args.sessionId);
+        return null;
+      case "delete_note":
+        localStorage.removeItem("__note__" + args.sessionId);
+        return null;
       case "check_daemon":
         return m.daemonHealth ?? "none";
       case "restart_daemon":

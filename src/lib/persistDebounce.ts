@@ -21,5 +21,11 @@ export function debouncedWriter<T>(write: (v: T) => Promise<void>, delay: number
     timer = window.setTimeout(() => void flush(), delay);
   };
 
-  return { schedule, flush };
+  /** Drop a pending write, for when its target is being deleted anyway. */
+  const cancel = (): void => {
+    pending = null;
+    clearTimeout(timer);
+  };
+
+  return { schedule, flush, cancel };
 }
