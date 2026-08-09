@@ -45,14 +45,47 @@ export function oscNotifications(data: string): { texts: string[]; rest: string 
 // Payloads above the cap are dropped rather than truncated, since half a
 // base64 blob is not what anyone meant to copy.
 const MAX_CLIPBOARD_B64 = 1024 * 1024;
+const OSC52 = "\x1b]52;";
 
-// The last clipboard text a chunk asks for, or undefined. Later writes in one
-// chunk win, matching how the clipboard itself behaves.
-export function oscClipboardWrite(data: string): string | undefined {
+// What survives a chunk that ends mid-sequence: the unterminated OSC 52 tail to
+// prepend to the next chunk, or "" when there is nothing to finish. Output
+// arrives in 8 KB frames and a base64 payload inflates by 4/3, so any copy over
+// about 6 KB spans frames and would otherwise be lost entirely.
+function pendingTail(buf: string, searchFrom: number): string {
+  const start = buf.lastIndexOf(OSC52);
+  if (start >= searchFrom) {
+    const tail = buf.slice(start);
+    // A terminator or a fresh escape after the introducer means this one is
+    // over (or was abandoned) without ever being a write we honour.
+    // eslint-disable-next-line no-control-regex
+    if (/[\x07\x1b]/.test(tail.slice(OSC52.length))) return "";
+    // Bounded, so a stream that opens a sequence and never closes it can't grow
+    // the carry without limit.
+    return tail.length <= MAX_CLIPBOARD_B64 + OSC52.length ? tail : "";
+  }
+  // The introducer itself can be split; keep just enough to finish it.
+  for (let n = OSC52.length - 1; n > 0; n--) {
+    if (buf.endsWith(OSC52.slice(0, n))) return buf.slice(-n);
+  }
+  return "";
+}
+
+/**
+ * Scan one chunk (with `carry` from the last call prepended) for clipboard
+ * writes. Returns the last text asked for, matching how the clipboard itself
+ * behaves, and the carry for the next chunk.
+ */
+export function scanClipboardWrites(
+  carry: string,
+  data: string,
+): { text?: string; carry: string } {
+  const buf = carry + data;
   let text: string | undefined;
+  let end = 0;
   // eslint-disable-next-line no-control-regex
   const re = /\x1b\]52;([^;\x07\x1b]*);([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
-  for (let m = re.exec(data); m; m = re.exec(data)) {
+  for (let m = re.exec(buf); m; m = re.exec(buf)) {
+    end = m.index + m[0].length;
     const [, targets, payload] = m;
     // Targets name which selection to set; "c" (or the default) is the
     // clipboard. A primary-selection-only write has nowhere to go here.
@@ -60,12 +93,15 @@ export function oscClipboardWrite(data: string): string | undefined {
     if (payload === "?" || payload.length > MAX_CLIPBOARD_B64) continue;
     try {
       const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
-      text = new TextDecoder().decode(bytes);
+      // Drop one trailing newline. Pasting into a shell runs whatever ends in
+      // one, and nothing can see that a remote just set the clipboard, so a
+      // hostile host could otherwise plant a command that executes on paste.
+      text = new TextDecoder().decode(bytes).replace(/\r?\n$/, "");
     } catch {
       // Not valid base64: ignore rather than paste garbage.
     }
   }
-  return text;
+  return { text, carry: pendingTail(buf, end) };
 }
 
 // The last window/icon title set in a chunk via OSC 0 or OSC 2, or undefined.

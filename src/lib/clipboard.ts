@@ -1,5 +1,6 @@
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke } from "@tauri-apps/api/core";
+import { scanClipboardWrites } from "@/lib/ansi";
 
 // Clipboard via the Tauri plugin (reliable under WebKitGTK, where the browser
 // Clipboard API is restricted). Best-effort: failures are swallowed.
@@ -10,6 +11,21 @@ export async function copyText(text: string): Promise<void> {
   } catch {
     // ignore
   }
+}
+
+/**
+ * A sink for one terminal's output that copies what the program asks for with
+ * OSC 52. Stateful, because a sequence can span output frames, so each terminal
+ * needs its own; both the mounted pane and the background listener use this so
+ * a tab you aren't watching copies exactly like the one you are.
+ */
+export function createClipboardSink(): (data: string) => void {
+  let carry = "";
+  return (data) => {
+    const scan = scanClipboardWrites(carry, data);
+    carry = scan.carry;
+    if (scan.text !== undefined) void copyText(scan.text);
+  };
 }
 
 export async function pasteText(): Promise<string> {

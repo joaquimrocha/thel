@@ -15,11 +15,10 @@ import { createTerminalActivity, AGENT_QUIET_MS } from "@/lib/termActivity";
 import { notify } from "@/store/notifications";
 import {
   hasVisibleOutput,
-  oscClipboardWrite,
   oscNotifications,
   terminalTitleFromOutput,
 } from "@/lib/ansi";
-import { copyText } from "@/lib/clipboard";
+import { createClipboardSink } from "@/lib/clipboard";
 import { TerminalPane } from "./TerminalPane";
 import { TerminalTabs } from "./TerminalTabs";
 
@@ -93,7 +92,6 @@ export function TerminalArea() {
   }, []);
 
   const rendered = sessions.filter((s) => s.id === activeSessionId);
-
 
   const isPaneMounted = (group: PaneGroup, t: Terminal) =>
     t.id === group.activeTerminalId;
@@ -260,6 +258,7 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
       }, AGENT_QUIET_MS);
     };
 
+    const clipboard = createClipboardSink();
     createSession(
       {
         id: terminal.id,
@@ -280,14 +279,12 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
           // the bell check uses the stripped rest so an OSC terminator byte
           // doesn't also ring. Both are gated by the replay state internally.
           const osc = oscNotifications(msg.data);
-          if (osc.texts.length || osc.rest.includes("\x07"))
           for (const text of osc.texts) activity.noteMessage(text);
           if (osc.rest.includes("\x07")) activity.noteBell();
           activity.noteOutput(visible);
-          // A program can copy from a tab you aren't looking at, same as it can
-          // from the one you are.
-          const copied = oscClipboardWrite(msg.data);
-          if (copied !== undefined) void copyText(copied);
+          // A program can copy from a tab you aren't looking at, same as it
+          // can from the one you are.
+          clipboard(msg.data);
           // Waiting-for-input fallback: a sustained work burst arms it, then
           // AGENT_QUIET_MS of silence while still busy fires it once. No screen
           // buffer here, so it works off output bursts rather than screen text.
