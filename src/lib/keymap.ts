@@ -181,6 +181,16 @@ export const SHORTCUTS: Shortcut[] = [
     run: () => {},
   },
   {
+    id: "terminal-copy-mode",
+    description: "Copy mode (select with the keyboard)",
+    terminalOnly: true,
+    defaultCombo: def(
+      { code: "Space", meta: true, shift: true },
+      { code: "Space", ctrl: true, shift: true },
+    ),
+    run: () => {},
+  },
+  {
     id: "next-terminal",
     description: "Next terminal",
     defaultCombo: { code: "PageDown", ctrl: true },
