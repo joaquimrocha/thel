@@ -101,6 +101,11 @@ test("notes survive closing and reopening the panel", async ({ page }) => {
   // The panel takes focus as it opens, so its keys work without a click first.
   await page.keyboard.press("Control+Enter");
   await expect(panel.getByRole("textbox")).toBeFocused();
+
+  // Nothing is kept in memory across a restart: this comes back off disk.
+  await page.reload();
+  await openNotes(page, rows(page).first());
+  await expect(panel.getByText("remember this")).toBeVisible();
 });
 
 test("closing a session takes its notes with it", async ({ page }) => {
