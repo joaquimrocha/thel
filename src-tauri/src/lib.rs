@@ -79,8 +79,8 @@ fn session_usage(ids: Vec<String>) -> std::collections::HashMap<String, pty::Usa
 
 /// Permanently destroy a terminal (the user closed the tab, or its window).
 #[tauri::command]
-fn kill_terminal_window(session_id: String, id: String) {
-    pty::kill_window(&session_id, &id);
+fn kill_terminal_window(id: String) {
+    pty::kill_window(&id);
 }
 
 /// Where a terminal's shell currently is, so a new terminal can open there.

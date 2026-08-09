@@ -140,7 +140,9 @@ pub fn resize(id: &str, cols: u16, rows: u16) -> Result<(), String> {
 }
 
 /// Detach this terminal's view: the daemon keeps the tab running so a later
-/// mount (or a restarted GUI) reattaches to it by id.
+/// mount (or a restarted GUI) reattaches to it by id. Off unix this is Ok
+/// rather than the usual refusal: nothing was ever opened, and a closing tab
+/// has no use for an error.
 pub fn close(id: &str) -> Result<(), String> {
     #[cfg(unix)]
     let res = crate::daemon::detach(id);
@@ -154,7 +156,7 @@ pub fn close(id: &str) -> Result<(), String> {
 
 /// Permanently destroy a terminal: the user closed the tab, or closed a window
 /// with background sessions off.
-pub fn kill_window(_session_id: &str, term_id: &str) {
+pub fn kill_window(term_id: &str) {
     #[cfg(unix)]
     let _ = crate::daemon::kill(term_id);
     #[cfg(not(unix))]
@@ -184,6 +186,11 @@ pub fn status(id: &str) -> TermStatus {
 /// processes, so it does the sampling; ids with no live process are simply
 /// absent from the result.
 pub fn usage(ids: &[String]) -> HashMap<String, Usage> {
+    if ids.is_empty() {
+        return HashMap::new();
+    }
+    // Sampling walks every tab's process tree, and the usage dialog asks on a
+    // tick, so an empty request must not pay for it.
     #[cfg(unix)]
     let out = {
         let all = crate::daemon::usages();
