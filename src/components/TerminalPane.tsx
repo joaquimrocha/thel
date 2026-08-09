@@ -55,6 +55,12 @@ import {
   zoomedFontSize,
 } from "@/lib/theme";
 import { hasVisibleOutput } from "@/lib/ansi";
+import {
+  step as copyModeStep,
+  selection as copyModeSelection,
+  type CopyModeState,
+  type Grid,
+} from "@/lib/copyMode";
 
 type CopyMode = "raw" | "dedent" | "paragraph";
 
@@ -190,6 +196,9 @@ export function TerminalPane({
   const fitRef = useRef<FitAddon | null>(null);
   // Drives the enabled state of the right-click Copy items.
   const [hasSelection, setHasSelection] = useState(false);
+  // Copy mode is on for this pane (drives the hint bar); the cursor itself
+  // lives in a ref, since the key handler is registered once.
+  const [copyModeOn, setCopyModeOn] = useState(false);
   // The URL currently under the pointer (from the link addon's hover).
   const [linkUrl, setLinkUrl] = useState<string | null>(null);
   // What the pointer was on when the menu opened. Opening it blanks pointer
@@ -275,6 +284,36 @@ export function TerminalPane({
     const clearAttention = () => {
       if (hasAttention()) setAttention(tab.id, false);
     };
+    // Copy mode: a keyboard cursor over the buffer. With no anchor set the
+    // selection is the single cell under the cursor, so xterm's own selection
+    // highlight *is* the cursor and nothing extra has to be painted.
+    // ponytail: output keeps flowing while the mode is on. Anchors are absolute
+    // buffer rows, so they only drift once the scrollback ring trims; freeze the
+    // pane if that ever bites.
+    let copy: CopyModeState | null = null;
+    const grid = (): Grid => {
+      const buf = term.buffer.active;
+      return {
+        cols: term.cols,
+        rows: term.rows,
+        maxY: buf.length - 1,
+        line: (y) => buf.getLine(y)?.translateToString(true) ?? "",
+      };
+    };
+    const showCopy = () => {
+      const { column, row, length } = copyModeSelection(copy!, term.cols);
+      term.select(column, row, length);
+      // Follow the cursor when it walks out of the viewport.
+      const top = term.buffer.active.viewportY;
+      if (copy!.y < top) term.scrollLines(copy!.y - top);
+      else if (copy!.y >= top + term.rows)
+        term.scrollLines(copy!.y - top - term.rows + 1);
+    };
+    const exitCopy = () => {
+      copy = null;
+      setCopyModeOn(false);
+      term.clearSelection();
+    };
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       // A real keystroke means you're attending this terminal. Done here, not in
@@ -285,6 +324,7 @@ export function TerminalPane({
       // PageUp/PageDown still reach the program. Exclude Ctrl/Alt so the
       // tab/session move shortcuts (Ctrl+Shift+PageUp etc.) still get through.
       if (
+        !copy &&
         e.shiftKey &&
         !e.ctrlKey &&
         !e.altKey &&
@@ -295,19 +335,36 @@ export function TerminalPane({
         term.scrollPages(e.key === "PageUp" ? -1 : 1);
         return false;
       }
-      if (matches(e, "terminal-copy-dedent")) {
+      // The copy combos keep working inside copy mode (and end it), so they're
+      // matched before copy mode claims the keyboard.
+      for (const mode of ["dedent", "paragraph", "raw"] as const) {
+        const id = mode === "raw" ? "terminal-copy" : `terminal-copy-${mode}`;
+        if (matches(e, id)) {
+          e.preventDefault();
+          copyTermSelection(term, mode);
+          if (copy) exitCopy();
+          return false;
+        }
+      }
+      if (copy) {
         e.preventDefault();
-        copyTermSelection(term, "dedent");
+        const r = copyModeStep(copy, e, grid());
+        if (r.kind === "exit") exitCopy();
+        else if (r.kind === "copy") {
+          copyTermSelection(term, "raw");
+          exitCopy();
+        } else if (r.kind === "state") {
+          copy = r.state;
+          showCopy();
+        }
         return false;
       }
-      if (matches(e, "terminal-copy-paragraph")) {
+      if (matches(e, "terminal-copy-mode")) {
         e.preventDefault();
-        copyTermSelection(term, "paragraph");
-        return false;
-      }
-      if (matches(e, "terminal-copy")) {
-        e.preventDefault();
-        copyTermSelection(term, "raw");
+        const buf = term.buffer.active;
+        copy = { x: buf.cursorX, y: buf.baseY + buf.cursorY, anchor: null };
+        setCopyModeOn(true);
+        showCopy();
         return false;
       }
       if (matches(e, "terminal-paste")) {
@@ -655,6 +712,15 @@ export function TerminalPane({
             <div className="pointer-events-none absolute bottom-1 left-1 max-w-[calc(100%-0.5rem)] truncate rounded border border-border bg-popover/90 px-1.5 py-0.5 text-xs text-muted-foreground shadow-sm">
               {linkUrl}
               <span className="pl-1.5 opacity-60">{OPEN_LINK_HINT}</span>
+            </div>
+          )}
+          {copyModeOn && (
+            <div
+              data-copy-mode
+              className="pointer-events-none absolute bottom-1 right-1 rounded border bg-popover/90 px-2 py-0.5 text-xs text-muted-foreground backdrop-blur-sm"
+            >
+              Copy mode · hjkl/arrows move · w/b word · Space select · y copy ·
+              Esc exit
             </div>
           )}
         </div>

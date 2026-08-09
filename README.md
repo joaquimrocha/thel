@@ -49,6 +49,9 @@ See [docs/install.md](docs/install.md) for that step and for direct downloads.
 - **Keyboard-friendly.** Every major action is reachable from the keyboard,
   through a fuzzy command palette with quick filters or direct shortcuts, and the
   keymap is fully rebindable and persisted.
+- **Copy mode.** Select and copy scrollback without touching the mouse: vi-style
+  motions (`hjkl`, `w`/`b`, `0`/`$`, `g`/`G`), Space to start the selection, `y`
+  to copy.
 - **Session icons.** Assign custom icons to your sessions to quickly identify
   them at a glance in the sidebar.
 - **Session notes.** A markdown scratchpad docked beside each session, with
