@@ -1209,76 +1209,11 @@ pub fn kill(id: &str) -> Result<(), String> {
     on_client_error(c.send_frame(CONTROL, &serde_json::to_vec(&cmd).unwrap_or_default()))
 }
 
-/// Busy state of every daemon tab, for the GUI's working-dot poll. Uses a
-/// short-lived query connection (like probe_existing) so the reply doesn't have
-/// to be correlated against the multiplexed output stream. Returns an empty map
-/// on any error rather than failing the whole status poll.
-pub fn statuses() -> std::collections::HashMap<String, bool> {
-    let empty = std::collections::HashMap::new();
-    let Ok(mut stream) = UnixStream::connect(socket_path()) else {
-        return empty;
-    };
-    let hello = serde_json::to_vec(&Hello {
-        protocol: PROTOCOL_VERSION,
-        build: build_version(),
-    })
-    .unwrap_or_default();
-    if write_frame(&mut stream, CONTROL, &hello).is_err() {
-        return empty;
-    }
-    match read_frame(&mut stream) {
-        Ok((CONTROL, p)) => match parse_json::<HelloReply>(&p) {
-            Some(r) if r.ok => {}
-            _ => return empty,
-        },
-        _ => return empty,
-    }
-    let cmd = serde_json::to_vec(&Command::Status).unwrap_or_default();
-    if write_frame(&mut stream, CONTROL, &cmd).is_err() {
-        return empty;
-    }
-    match read_frame(&mut stream) {
-        Ok((CONTROL, p)) => parse_json::<StatusReply>(&p).map(|r| r.busy).unwrap_or(empty),
-        _ => empty,
-    }
-}
-
-/// CPU time and memory of every daemon tab, for the GUI's session usage dialog.
-/// Short-lived query connection like statuses(); empty on any error, so the
-/// dialog shows the terminals without numbers rather than failing.
-pub fn usages() -> std::collections::HashMap<String, crate::pty::Usage> {
-    let empty = std::collections::HashMap::new();
-    let Ok(mut stream) = UnixStream::connect(socket_path()) else {
-        return empty;
-    };
-    let hello = serde_json::to_vec(&Hello {
-        protocol: PROTOCOL_VERSION,
-        build: build_version(),
-    })
-    .unwrap_or_default();
-    if write_frame(&mut stream, CONTROL, &hello).is_err() {
-        return empty;
-    }
-    match read_frame(&mut stream) {
-        Ok((CONTROL, p)) => match parse_json::<HelloReply>(&p) {
-            Some(r) if r.ok => {}
-            _ => return empty,
-        },
-        _ => return empty,
-    }
-    let cmd = serde_json::to_vec(&Command::Usage).unwrap_or_default();
-    if write_frame(&mut stream, CONTROL, &cmd).is_err() {
-        return empty;
-    }
-    match read_frame(&mut stream) {
-        Ok((CONTROL, p)) => parse_json::<UsageReply>(&p).map(|r| r.usage).unwrap_or(empty),
-        _ => empty,
-    }
-}
-
-/// Where a daemon-owned tab's shell currently is. Short-lived connection like
-/// usages(): Hello, one Cwd command, close.
-pub fn cwd(id: &str) -> Option<String> {
+/// Connect, handshake, send one command. A short-lived connection of its own
+/// (like probe_existing) so a reply doesn't have to be correlated against the
+/// long-lived client's multiplexed output stream. `None` on any failure: the
+/// callers all degrade to "no answer" rather than surfacing an error.
+fn query_send(cmd: &Command) -> Option<UnixStream> {
     let mut stream = UnixStream::connect(socket_path()).ok()?;
     let hello = serde_json::to_vec(&Hello {
         protocol: PROTOCOL_VERSION,
@@ -1287,52 +1222,60 @@ pub fn cwd(id: &str) -> Option<String> {
     .unwrap_or_default();
     write_frame(&mut stream, CONTROL, &hello).ok()?;
     match read_frame(&mut stream) {
+        // A daemon speaking another protocol rejects the hello, so this returns
+        // rather than waiting on a reply it would never send. The GUI's skew
+        // prompt is what resolves that.
         Ok((CONTROL, p)) => match parse_json::<HelloReply>(&p) {
-            // A daemon too old to know Cwd rejects the hello over the protocol
-            // bump, so this returns rather than waiting on a reply it would
-            // never send. The GUI's skew prompt is what resolves that.
             Some(r) if r.ok => {}
             _ => return None,
         },
         _ => return None,
     }
-    let cmd = serde_json::to_vec(&Command::Cwd { id: id.to_string() }).unwrap_or_default();
-    write_frame(&mut stream, CONTROL, &cmd).ok()?;
+    let payload = serde_json::to_vec(cmd).unwrap_or_default();
+    write_frame(&mut stream, CONTROL, &payload).ok()?;
+    Some(stream)
+}
+
+/// Ask the daemon one command and decode the reply it sends back.
+fn query<T: DeserializeOwned>(cmd: &Command) -> Option<T> {
+    let mut stream = query_send(cmd)?;
     match read_frame(&mut stream) {
-        Ok((CONTROL, p)) => parse_json::<CwdReply>(&p)?.cwd,
+        Ok((CONTROL, p)) => parse_json::<T>(&p),
         _ => None,
     }
 }
 
+/// Busy state of every daemon tab, for the GUI's working-dot poll. Empty on any
+/// error rather than failing the whole status poll.
+pub fn statuses() -> std::collections::HashMap<String, bool> {
+    query::<StatusReply>(&Command::Status)
+        .map(|r| r.busy)
+        .unwrap_or_default()
+}
+
+/// CPU time and memory of every daemon tab, for the GUI's session usage dialog.
+/// Empty on any error, so the dialog shows the terminals without numbers rather
+/// than failing.
+pub fn usages() -> std::collections::HashMap<String, crate::pty::Usage> {
+    query::<UsageReply>(&Command::Usage)
+        .map(|r| r.usage)
+        .unwrap_or_default()
+}
+
+/// Where a daemon-owned tab's shell currently is.
+pub fn cwd(id: &str) -> Option<String> {
+    query::<CwdReply>(&Command::Cwd { id: id.to_string() })?.cwd
+}
+
 /// Post a notification for `id` through the daemon (out-of-band, no tty needed).
-/// Short-lived connection like statuses(): Hello, then one Notify command, then
-/// close. Returns whether it was handed off. Used by `thel notify` when a running
-/// daemon owns the tab.
+/// Returns whether it was handed off, which says the daemon accepted the frame,
+/// not that it owns the tab. Used by `thel notify` when a daemon is running.
 pub fn send_notify(id: &str, message: &str) -> bool {
-    let Ok(mut stream) = UnixStream::connect(socket_path()) else {
-        return false;
-    };
-    let hello = serde_json::to_vec(&Hello {
-        protocol: PROTOCOL_VERSION,
-        build: build_version(),
-    })
-    .unwrap_or_default();
-    if write_frame(&mut stream, CONTROL, &hello).is_err() {
-        return false;
-    }
-    match read_frame(&mut stream) {
-        Ok((CONTROL, p)) => match parse_json::<HelloReply>(&p) {
-            Some(r) if r.ok => {}
-            _ => return false,
-        },
-        _ => return false,
-    }
-    let cmd = serde_json::to_vec(&Command::Notify {
+    query_send(&Command::Notify {
         id: id.to_string(),
         message: message.to_string(),
     })
-    .unwrap_or_default();
-    write_frame(&mut stream, CONTROL, &cmd).is_ok()
+    .is_some()
 }
 
 fn client_read_loop(mut r: UnixStream, routes: Arc<Mutex<HashMap<String, Channel<TermMsg>>>>) {
