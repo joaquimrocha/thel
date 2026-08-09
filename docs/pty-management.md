@@ -33,7 +33,13 @@ the daemon needs from the platform.
 | Pane mounts | `create_session` | `Open`: attach to the tab, or spawn it |
 | Pane unmounts, session switch | `close_session` | `Detach`: stop streaming, keep it running |
 | User closes a tab | `kill_terminal_window` | `Kill`: end the shell's whole session |
-| Window closes, background sessions off | `kill_terminal_window` per tab | as above |
+| Window closes, terminals set to stop | `kill_terminal_window` per tab | as above |
+
+What a closing window does to its terminals is a three-way preference: keep
+them running, stop them, or ask at the time. The prompt runs inside
+`onCloseRequested` before anything is killed, so cancelling it leaves the
+window and its terminals untouched. A crash never reaches this path at all,
+which is what makes an interrupted run recoverable regardless of the setting.
 
 `Kill` without an established daemon connection is a no-op: if the GUI never
 connected there is no daemon holding the tab, and spawning one to kill nothing

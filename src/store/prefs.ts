@@ -8,8 +8,11 @@ const COPY_TOASTS_KEY = "thel.copyToasts";
 const ZOOM_KEY = "thel.terminalZoom";
 const CUSTOM_TITLEBAR_KEY = "thel.customTitlebar";
 const SESSION_DIR_KEY = "thel.newTerminalInSessionDir";
-// Named for the daemon it used to switch on; kept so the setting survives.
-const KEEP_SESSIONS_KEY = "thel.useDaemon";
+// Named for the daemon it originally switched on. Kept, along with the "1"/"0"
+// it has always stored for keep/stop, so the setting survives an upgrade in
+// either direction: a build that predates "ask each time" reads that one value
+// as stop, which is the safe half of the question it can't pose.
+const SESSIONS_ON_CLOSE_KEY = "thel.useDaemon";
 const NOTIFY_DESKTOP_KEY = "thel.notifyDesktop";
 const NOTIFY_BELL_KEY = "thel.notifyBell";
 const NOTIFY_WAITING_KEY = "thel.notifyAgentWaiting";
@@ -21,7 +24,7 @@ const NOTIFY_FINISHED_KEY = "thel.notifyCommandFinished";
 // guards against re-emitting a change we just received.
 const SYNC_EVENT = "prefs:changed";
 let applyingRemote = false;
-function broadcast(key: string, value: boolean | number): void {
+function broadcast(key: string, value: boolean | number | string): void {
   if (applyingRemote) return;
   void emit(SYNC_EVENT, { key, value }).catch(() => {});
 }
@@ -50,10 +53,38 @@ function readBool(key: string, def: boolean): boolean {
   return v === null ? def : v === "1";
 }
 
+function persistStr(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+  broadcast(key, value);
+}
+
 function readNum(key: string, def: number): number {
   if (typeof localStorage === "undefined") return def;
   const n = Number(localStorage.getItem(key));
   return Number.isFinite(n) ? n : def;
+}
+
+/** What a window closing does to the terminals it was showing. */
+export type SessionsOnClose = "keep" | "stop" | "ask";
+
+const ON_CLOSE_STORED: Record<SessionsOnClose, string> = {
+  keep: "1",
+  stop: "0",
+  ask: "ask",
+};
+
+/** Decode the stored value; anything unrecognised means the default, keep. */
+function toSessionsOnClose(v: string | null): SessionsOnClose {
+  return v === "0" ? "stop" : v === "ask" ? "ask" : "keep";
+}
+
+function readSessionsOnClose(): SessionsOnClose {
+  if (typeof localStorage === "undefined") return "keep";
+  return toSessionsOnClose(localStorage.getItem(SESSIONS_ON_CLOSE_KEY));
 }
 
 interface PrefsState {
@@ -71,10 +102,10 @@ interface PrefsState {
   // the one you were last in. Default off, so new terminals follow.
   newTerminalInSessionDir: boolean;
   setNewTerminalInSessionDir: (value: boolean) => void;
-  // Let terminals outlive the window that showed them (unix); off stops them
-  // when it closes. Default on.
-  keepSessions: boolean;
-  setKeepSessions: (value: boolean) => void;
+  // What happens to a window's terminals when it closes (unix): keep them
+  // running in the background, stop them, or ask at the time. Default keep.
+  sessionsOnClose: SessionsOnClose;
+  setSessionsOnClose: (value: SessionsOnClose) => void;
   // Desktop (OS) notifications when the window is unfocused; the in-app
   // notification list is unaffected. Master switch for the ones below.
   notifyDesktop: boolean;
@@ -118,10 +149,10 @@ export const usePrefs = create<PrefsState>((set) => ({
   // Only where the daemon runs (Linux + macOS). Off elsewhere regardless of any
   // saved value, so Windows never activates the daemon (and never restores
   // terminals expecting reattach).
-  keepSessions: runsDaemon && readBool(KEEP_SESSIONS_KEY, true),
-  setKeepSessions: (keepSessions) => {
-    persistBool(KEEP_SESSIONS_KEY, keepSessions);
-    set({ keepSessions });
+  sessionsOnClose: runsDaemon ? readSessionsOnClose() : "stop",
+  setSessionsOnClose: (sessionsOnClose) => {
+    persistStr(SESSIONS_ON_CLOSE_KEY, ON_CLOSE_STORED[sessionsOnClose]);
+    set({ sessionsOnClose });
   },
   notifyDesktop: readBool(NOTIFY_DESKTOP_KEY, true),
   setNotifyDesktop: (notifyDesktop) => {
@@ -154,7 +185,8 @@ const REMOTE_APPLIERS: Record<string, (value: unknown) => void> = {
   [CUSTOM_TITLEBAR_KEY]: (v) => usePrefs.getState().setCustomTitlebar(Boolean(v)),
   [SESSION_DIR_KEY]: (v) =>
     usePrefs.getState().setNewTerminalInSessionDir(Boolean(v)),
-  [KEEP_SESSIONS_KEY]: (v) => usePrefs.getState().setKeepSessions(Boolean(v)),
+  [SESSIONS_ON_CLOSE_KEY]: (v) =>
+    usePrefs.getState().setSessionsOnClose(toSessionsOnClose(String(v))),
   [NOTIFY_DESKTOP_KEY]: (v) => usePrefs.getState().setNotifyDesktop(Boolean(v)),
   [NOTIFY_BELL_KEY]: (v) => usePrefs.getState().setNotifyBell(Boolean(v)),
   [NOTIFY_WAITING_KEY]: (v) => usePrefs.getState().setNotifyAgentWaiting(Boolean(v)),

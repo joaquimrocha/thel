@@ -21,11 +21,36 @@ import {
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useUI } from "@/store/ui";
 import { useTheme } from "@/store/theme";
-import { usePrefs } from "@/store/prefs";
+import { usePrefs, type SessionsOnClose } from "@/store/prefs";
 import { zoomedFontSize } from "@/lib/theme";
 import { runsDaemon } from "@/lib/platform";
 import { openUrl } from "@/lib/pty";
+import { cn } from "@/lib/utils";
 import { Logo } from "@/components/Logo";
+
+// What a closing window does to the terminals it was showing. The hint below the
+// choices describes the selected one.
+const SESSIONS_ON_CLOSE: {
+  value: SessionsOnClose;
+  label: string;
+  hint: string;
+}[] = [
+  {
+    value: "keep",
+    label: "Keep them running",
+    hint: "Terminals carry on in the background and come back with their screen when you reopen thel.",
+  },
+  {
+    value: "stop",
+    label: "Stop them",
+    hint: "Terminals end with the window that was showing them, along with whatever they were running.",
+  },
+  {
+    value: "ask",
+    label: "Ask each time",
+    hint: "Closing a window with terminals still running asks what to do, and lets you change your mind.",
+  },
+];
 import { ProfilesSettings } from "@/components/ProfilesSettings";
 
 export function SettingsDialog() {
@@ -46,8 +71,8 @@ export function SettingsDialog() {
   const setNewTerminalInSessionDir = usePrefs(
     (s) => s.setNewTerminalInSessionDir,
   );
-  const keepSessions = usePrefs((s) => s.keepSessions);
-  const setKeepSessions = usePrefs((s) => s.setKeepSessions);
+  const sessionsOnClose = usePrefs((s) => s.sessionsOnClose);
+  const setSessionsOnClose = usePrefs((s) => s.setSessionsOnClose);
   const notifyDesktop = usePrefs((s) => s.notifyDesktop);
   const setNotifyDesktop = usePrefs((s) => s.setNotifyDesktop);
   const notifyBell = usePrefs((s) => s.notifyBell);
@@ -165,18 +190,36 @@ export function SettingsDialog() {
             <TabsContent value="sessions" className="mt-0 space-y-4">
               {runsDaemon && (
                 <div className="space-y-1.5">
-                  <label className="flex items-center gap-2 text-sm">
-                    <Switch
-                      checked={keepSessions}
-                      onCheckedChange={setKeepSessions}
-                    />
-                    Keep sessions running in the background
-                  </label>
-                  <p className="pl-9 text-xs text-muted-foreground">
-                    Terminals keep running in the background after you close the
-                    app, and come back with their screen restored when you reopen
-                    it. When off, closing a window stops the terminals it was
-                    showing. If thel crashes instead, they survive and come back.
+                  <p className="text-sm">When you close a window</p>
+                  <div
+                    role="radiogroup"
+                    aria-label="When you close a window"
+                    className="flex gap-1.5"
+                  >
+                    {SESSIONS_ON_CLOSE.map((o) => (
+                      <button
+                        key={o.value}
+                        role="radio"
+                        aria-checked={sessionsOnClose === o.value}
+                        onClick={() => setSessionsOnClose(o.value)}
+                        className={cn(
+                          "rounded-md border px-2.5 py-1 text-xs transition-colors",
+                          sessionsOnClose === o.value
+                            ? "border-primary bg-primary/10 text-foreground"
+                            : "border-border text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {
+                      SESSIONS_ON_CLOSE.find((o) => o.value === sessionsOnClose)
+                        ?.hint
+                    }{" "}
+                    If thel crashes instead, they survive either way and come
+                    back when you reopen it.
                   </p>
                 </div>
               )}

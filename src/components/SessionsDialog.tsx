@@ -1,4 +1,4 @@
-import { CheckCircle2, Minus } from "lucide-react";
+import { CheckCircle2, HelpCircle, Minus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -23,7 +23,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 export function SessionsDialog() {
   const open = useUI((s) => s.sessionsOpen);
   const setOpen = useUI((s) => s.setSessionsOpen);
-  const keepSessions = usePrefs((s) => s.keepSessions);
+  const sessionsOnClose = usePrefs((s) => s.sessionsOnClose);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -37,15 +37,22 @@ export function SessionsDialog() {
 
         <dl className="space-y-2 text-sm">
           <Row label="On close">
-            {keepSessions ? (
+            {sessionsOnClose === "keep" && (
               <>
                 <CheckCircle2 className="size-4 text-emerald-500" />
                 Keeps running in the background
               </>
-            ) : (
+            )}
+            {sessionsOnClose === "stop" && (
               <>
                 <Minus className="size-4 text-muted-foreground" />
                 Stops with the window
+              </>
+            )}
+            {sessionsOnClose === "ask" && (
+              <>
+                <HelpCircle className="size-4 text-muted-foreground" />
+                Asks each time
               </>
             )}
           </Row>
