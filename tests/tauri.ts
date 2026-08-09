@@ -49,6 +49,8 @@ function install(config: MockConfig) {
   // The id of the registered tauri://close-requested handler, so a test can fire
   // the OS close flow (see __fireCloseRequested below).
   let closeReqHandlerId: number | null = null;
+  // Labels of the windows the app asked to open (see __createdWindows).
+  const created: string[] = [];
   // Each started terminal's channel callback, keyed by terminal id so a remount
   // (e.g. React StrictMode) replaces the dead one. A test pushes output (e.g. a
   // bell) into a terminal by creation order (see __emitTerminal).
@@ -311,6 +313,16 @@ function install(config: MockConfig) {
       // Record a programmatic window close (the skew dialog's way out).
       if (cmd === "plugin:window|close")
         (w.__MOCK__ as Record<string, unknown>).closed = true;
+      // Only this page exists; a profile window the app opens is recorded by
+      // label rather than actually created (see __createdWindows). Lookups still
+      // report it, as real Tauri does, so opening it twice is caught here too.
+      if (cmd === "plugin:window|get_all_windows")
+        return Promise.resolve([cfg.label || "main", ...created]);
+      if (cmd === "plugin:webview|create_webview_window") {
+        const opts = a.options as { label: string };
+        created.push(opts.label);
+        return Promise.resolve(null);
+      }
       // Window/webview/event/app plugin calls: harmless no-ops.
       if (cmd.startsWith("plugin:")) return Promise.resolve(null);
       return Promise.resolve(appInvoke(cmd, a));
@@ -339,6 +351,8 @@ function install(config: MockConfig) {
     // Whether the app has registered its close-requested handler (so a test can
     // wait for it before firing exactly once, as the X button does).
     __closeRequestedReady: () => closeReqHandlerId !== null,
+    // Labels of the profile windows the app opened, in order.
+    __createdWindows: () => [...created],
     // Push output into the index-th started terminal (creation order), e.g. a
     // bell ("\x07") to exercise the attention indicator.
     __emitTerminal: (index: number, data: string) =>
