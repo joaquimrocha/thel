@@ -5,7 +5,7 @@ import { test } from "./coverage";
 /** Install the Tauri mock, open the app, and wait for it to finish hydrating. */
 export async function gotoApp(page: Page, config: MockConfig = {}) {
   await installTauriMock(page, config);
-  await page.goto("/");
+  await page.goto(config.spawned ? "/?spawned" : "/");
   // The app-menu (logo) title bar button is always present once the app has mounted.
   await expect(appMenuButton(page)).toBeVisible({ timeout: 15_000 });
 }

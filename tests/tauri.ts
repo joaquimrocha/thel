@@ -3,6 +3,9 @@ import type { Page } from "@playwright/test";
 export interface MockConfig {
   // Window label this page reports (default "main" = the default profile).
   label?: string;
+  // Whether this window was opened by the app rather than launched by the OS
+  // (gotoApp puts the marker the real window carries in the URL).
+  spawned?: boolean;
   // Whether dir_exists reports folders as existing (default true).
   dirExists?: boolean;
   // terminal_status responses.

@@ -122,6 +122,21 @@ test("the main window steps aside when the default profile wasn't open", async (
   expect(spawns).toBeUndefined();
 });
 
+test("opening the default profile by hand keeps its window", async ({
+  page,
+}) => {
+  // The last quit left only Work open, so the saved list says the main window
+  // should step aside. This one was opened from the menu instead, and stepping
+  // aside would take the window the user just asked for with it.
+  await seed(page, ["w1"]);
+  await gotoApp(page, { spawned: true });
+
+  await expect.poll(() => openList(page)).toEqual(["w1", "default"]);
+  expect(await destroyed(page)).toBeFalsy();
+  // Work already has its window; reopening it would only pull focus back.
+  expect(await created(page)).toEqual([]);
+});
+
 test("the main window stays when it has nothing to hand over to", async ({
   page,
 }) => {

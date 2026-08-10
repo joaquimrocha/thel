@@ -38,6 +38,7 @@ export const PROFILE_COLORS = [
 const FILE = "thel-profiles.json";
 const KEY = "profiles";
 const OPEN_KEY = "open";
+const SPAWNED = "spawned";
 
 // The default profile is the main window; others get a profile-<id> window.
 const labelFor = (id: string) => (id === "default" ? "main" : `profile-${id}`);
@@ -48,6 +49,12 @@ const idFromLabel = (label: string) =>
 export function currentProfileId(): string {
   return idFromLabel(getCurrentWindow().label);
 }
+
+// Windows the app opens itself carry this in their URL; the one the OS launches
+// has a bare one. The main window is reused for the default profile, so without
+// it a default window opened by hand would read the same saved list as the
+// launch and mistake itself for the stub that hands over and goes.
+const spawned = new URLSearchParams(location.search).has(SPAWNED);
 
 let storePromise: Promise<Store> | null = null;
 const getStore = () =>
@@ -117,7 +124,7 @@ const startupOpen = readOpen();
  * reopen the profiles that were, and then goes. Nothing that starts terminals
  * should run in it until this says it stays. */
 export async function windowStays(): Promise<boolean> {
-  if (currentProfileId() !== "default") return true;
+  if (spawned || currentProfileId() !== "default") return true;
   const open = await startupOpen;
   // A first run (or a wiped list) has nothing to restore, so main is the app.
   return open.length === 0 || open.includes("default");
@@ -129,7 +136,9 @@ export async function windowStays(): Promise<boolean> {
 export async function restoreOpenProfiles() {
   const id = currentProfileId();
   const open = await startupOpen;
-  if (id !== "default") {
+  // A window the app opened is here because someone asked for it: it only has
+  // to join the list, never to restore anything.
+  if (spawned || id !== "default") {
     if (!open.includes(id)) await writeOpen([...open, id]);
     return;
   }
@@ -240,7 +249,7 @@ export const useProfiles = create<ProfilesState>((set, get) => ({
       // The new window loads the same app and reads its own label to know which
       // profile (and which session layout) to show.
       const w = new WebviewWindow(label, {
-        url: "index.html",
+        url: `index.html?${SPAWNED}`,
         title: profile ? `thel — ${profile.name}` : "thel",
         // Created without decorations like the main window, then App.tsx turns
         // them on where the native window is used (macOS, or the native-title-bar
