@@ -28,6 +28,9 @@ export interface MockConfig {
     branch?: string;
     dirty?: boolean;
     branches?: string[];
+    remotes?: string[];
+    // Remote branches that only exist upstream, so they appear once fetched.
+    fetchedRemotes?: string[];
     worktrees?: {
       path: string;
       branch: string | null;
@@ -250,11 +253,22 @@ function install(config: MockConfig) {
           detached: false,
           ...wt,
         }));
-      case "branches":
+      case "branches": {
+        const store = w.__MOCK__ as Record<string, unknown>;
+        const pulled = store.fetched ? m.git?.fetchedRemotes || [] : [];
+        const remotes = [...(m.git?.remotes || []), ...pulled];
         return {
           branches: m.git?.branches || [],
+          remotes,
           default_branch: m.git?.branches?.[0] ?? null,
+          has_remote: remotes.length > 0 || !!m.git?.fetchedRemotes?.length,
         };
+      }
+      case "fetch_remote": {
+        const store = w.__MOCK__ as Record<string, unknown>;
+        store.fetched = ((store.fetched as number) || 0) + 1;
+        return null;
+      }
       case "create_worktree": {
         const created = (w.__MOCK__ as Record<string, unknown>).created as
           | unknown[]

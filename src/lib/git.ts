@@ -30,11 +30,16 @@ export const listWorktrees = (cwd: string) =>
 
 export interface Branches {
   branches: string[];
+  remotes: string[];
   default_branch: string | null;
+  has_remote: boolean;
 }
 
 export const branches = (cwd: string) =>
   invoke<Branches>("branches", { cwd });
+
+export const fetchRemote = (cwd: string) =>
+  invoke<void>("fetch_remote", { cwd });
 
 export const createWorktree = (
   repoRoot: string,

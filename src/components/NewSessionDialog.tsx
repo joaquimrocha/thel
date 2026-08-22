@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Folder, GitBranch, Check, ChevronRight } from "lucide-react";
+import { Folder, GitBranch, Check, ChevronRight, RefreshCw } from "lucide-react";
 import { cn, inputClass } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +17,7 @@ import {
   listWorktrees,
   gitInfo,
   branches,
+  fetchRemote,
   createWorktree,
   worktreeInfo,
   type Worktree,
@@ -45,6 +46,11 @@ export function NewSessionDialog() {
   const [repoRoot, setRepoRoot] = useState<string | null>(null);
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   const [branchList, setBranchList] = useState<string[]>([]);
+  const [remoteList, setRemoteList] = useState<string[]>([]);
+  const [hasRemote, setHasRemote] = useState(false);
+  const [fetching, setFetching] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [fetched, setFetched] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
 
@@ -67,6 +73,26 @@ export function NewSessionDialog() {
   // Anchor to a directory: select it and load its git state (if any). Paths
   // arrive with a trailing slash from the default and from completions; strip
   // it so the anchored path compares equal to the ones git reports.
+  const clearBranches = () => {
+    setBranchList([]);
+    setRemoteList([]);
+    setHasRemote(false);
+    setFetchError(null);
+  };
+
+  // Load a repo's branches; the fetch button reloads through here as well.
+  const loadBranches = async (root: string) => {
+    const b = await branches(root).catch(() => null);
+    if (!b) {
+      clearBranches();
+      return null;
+    }
+    setBranchList(b.branches);
+    setRemoteList(b.remotes);
+    setHasRemote(b.has_remote);
+    return b;
+  };
+
   const loadDir = async (raw: string) => {
     const dir = raw.length > 1 ? raw.replace(/\/+$/, "") : raw;
     const req = ++loadReq.current;
@@ -81,7 +107,7 @@ export function NewSessionDialog() {
       setSelected(null);
       setRepoRoot(null);
       setWorktrees([]);
-      setBranchList([]);
+      clearBranches();
     };
     if (!dir) {
       setNotFound(false);
@@ -105,16 +131,15 @@ export function NewSessionDialog() {
       setRepoRoot(info.repo_root);
       const [wts, b] = await Promise.all([
         listWorktrees(info.repo_root).catch(() => []),
-        branches(info.repo_root).catch(() => ({ branches: [], default_branch: null })),
+        loadBranches(info.repo_root),
       ]);
       setWorktrees(wts);
-      setBranchList(b.branches);
       // Default the base to the repo's main branch (falls back to HEAD on use).
-      setBase(b.default_branch ?? "");
+      setBase(b?.default_branch ?? "");
     } else {
       setRepoRoot(null);
       setWorktrees([]);
-      setBranchList([]);
+      clearBranches();
     }
   };
 
@@ -128,7 +153,7 @@ export function NewSessionDialog() {
     setCwd(null);
     setRepoRoot(null);
     setWorktrees([]);
-    setBranchList([]);
+    clearBranches();
     setSelected(null);
     setTab("create");
     setTabPicked(false);
@@ -176,6 +201,24 @@ export function NewSessionDialog() {
     if (!dir || Array.isArray(dir)) return;
     setPathInput(abbreviatePath(dir));
     await loadDir(dir);
+  };
+
+  // Pull down refs so a branch pushed since the last fetch can be used as a
+  // base. Reloads the list even when the fetch reports an error, since a fetch
+  // can bring refs down and still exit non-zero.
+  const fetchRefs = async () => {
+    if (!repoRoot || fetching) return;
+    setFetching(true);
+    setFetchError(null);
+    try {
+      await fetchRemote(repoRoot);
+      setFetched(true);
+      setTimeout(() => setFetched(false), 2000);
+    } catch (e) {
+      setFetchError(String(e));
+    }
+    await loadBranches(repoRoot);
+    setFetching(false);
   };
 
   // Default worktree location: a sibling of the project dir, "PROJECT.branch".
@@ -343,14 +386,45 @@ export function NewSessionDialog() {
                     </button>
                     {showOpts && (
                       <div className="mt-2 space-y-3">
-                        <Field label="Base">
-                          <BranchInput
-                            value={base}
-                            onChange={setBase}
-                            options={branchList}
-                            placeholder="HEAD"
-                          />
-                        </Field>
+                        <div className="flex items-end gap-2">
+                          <div className="min-w-0 flex-1">
+                            <Field label="Base">
+                              <BranchInput
+                                value={base}
+                                onChange={setBase}
+                                options={[...branchList, ...remoteList]}
+                                placeholder="HEAD"
+                              />
+                            </Field>
+                          </div>
+                          {hasRemote && (
+                            <ActionTooltip label="Fetch remote branches">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={fetchRefs}
+                                disabled={fetching}
+                                aria-label="Fetch remote branches"
+                              >
+                                {fetched ? (
+                                  <Check className="size-4" />
+                                ) : (
+                                  <RefreshCw
+                                    className={cn(
+                                      "size-4",
+                                      fetching && "animate-spin",
+                                    )}
+                                  />
+                                )}
+                              </Button>
+                            </ActionTooltip>
+                          )}
+                        </div>
+                        {fetchError && (
+                          <p className="break-words text-xs text-destructive">
+                            {fetchError}
+                          </p>
+                        )}
                         <Field label="Location">
                           <input
                             value={shownPath}

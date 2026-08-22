@@ -118,23 +118,80 @@ pub fn worktree_info(cwd: String) -> Option<WorktreeInfo> {
 pub struct Branches {
     /// Local branch names, most recently committed first.
     branches: Vec<String>,
+    /// Remote-tracking branches ("origin/main"), most recently committed first.
+    remotes: Vec<String>,
     /// The repo's main/default branch, whatever it's named.
     default_branch: Option<String>,
+    /// The repo has a remote, so there is something to fetch from.
+    has_remote: bool,
+}
+
+/// Short names of the refs under `pattern`, most recently committed first.
+fn ref_names(cwd: &str, pattern: &str) -> Vec<String> {
+    git(
+        cwd,
+        &["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", pattern],
+    )
+    .map(|s| s.lines().map(|l| l.to_string()).collect())
+    .unwrap_or_default()
 }
 
 #[tauri::command]
 pub fn branches(cwd: String) -> Branches {
-    let branches: Vec<String> = git(
-        &cwd,
-        &["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads"],
-    )
-    .map(|s| s.lines().map(|l| l.to_string()).collect())
-    .unwrap_or_default();
+    let branches = ref_names(&cwd, "refs/heads");
+    // Every remote-tracking branch shortens to "<remote>/<branch>". The one ref
+    // that comes back without a slash is refs/remotes/<remote>/HEAD, a symref
+    // onto the default branch rather than a branch to start from.
+    let remotes: Vec<String> = ref_names(&cwd, "refs/remotes")
+        .into_iter()
+        .filter(|r| r.contains('/'))
+        .collect();
     let default_branch = detect_default_branch(&cwd, &branches);
+    let has_remote = git(&cwd, &["remote"])
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
     Branches {
         branches,
+        remotes,
         default_branch,
+        has_remote,
     }
+}
+
+/// Fetch from the repo's remote so a branch pushed since the last fetch can be
+/// used as a base.
+///
+/// A plain `git fetch`, which takes the remote the current branch tracks and
+/// falls back to origin. Deliberately not `--all`, so that one unreachable
+/// remote among several doesn't fail a fetch the others answered, and not
+/// `--prune`: deleting remote-tracking refs is not what a button offering to
+/// find new branches should do behind the user's back.
+///
+/// Async so the fetch runs off the main thread and the window stays responsive.
+/// `GIT_TERMINAL_PROMPT=0` keeps git from waiting on a password prompt that a
+/// windowed app has no terminal to show. A credential helper still runs, so an
+/// https remote works when the helper is on the app's PATH; when it isn't, the
+/// error says so instead of hanging.
+/// ponytail: no timeout, so an unreachable host takes git's own; add one if
+/// that wait turns out to be long enough to matter.
+#[tauri::command]
+pub async fn fetch_remote(cwd: String) -> Result<(), String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&cwd)
+        .arg("fetch")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(if err.is_empty() {
+        "git fetch failed.".into()
+    } else {
+        err
+    })
 }
 
 fn detect_default_branch(cwd: &str, branches: &[String]) -> Option<String> {
@@ -298,6 +355,53 @@ mod tests {
         // No origin remote, so it falls back to the conventional "main".
         assert_eq!(b.default_branch.as_deref(), Some("main"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fetch_remote_adds_new_branches_without_deleting_any() {
+        if !git_available() {
+            return;
+        }
+        let upstream = setup_repo();
+        let clone = upstream.with_extension("clone");
+        let _ = std::fs::remove_dir_all(&clone);
+        let ok = Command::new("git")
+            .args(["clone", upstream.to_str().unwrap(), clone.to_str().unwrap()])
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "clone failed");
+        let c = clone.to_string_lossy().to_string();
+
+        let before = branches(c.clone());
+        assert!(before.has_remote);
+        assert!(before.remotes.iter().any(|r| r == "origin/main"));
+        // refs/remotes/origin/HEAD shortens to a bare "origin"; it is a symref,
+        // not a branch, so it must not be offered as a base.
+        assert!(!before.remotes.iter().any(|r| r == "origin"));
+        assert!(!before.remotes.iter().any(|r| r == "origin/pushed"));
+
+        // A branch that appeared upstream after the clone shows up once fetched.
+        run(&upstream, &["branch", "pushed"]);
+        tauri::async_runtime::block_on(fetch_remote(c.clone())).unwrap();
+        let after = branches(c.clone());
+        assert!(after.remotes.iter().any(|r| r == "origin/pushed"));
+        // Fetching adds no local branch; the base is a remote-tracking ref.
+        assert!(!after.branches.iter().any(|b| b == "pushed"));
+
+        // Fetching only ever adds. A branch deleted upstream keeps its
+        // remote-tracking ref here: pruning it is the user's call to make, not
+        // a side effect of asking what new branches exist.
+        run(&upstream, &["branch", "-D", "pushed"]);
+        tauri::async_runtime::block_on(fetch_remote(c.clone())).unwrap();
+        assert!(branches(c).remotes.iter().any(|r| r == "origin/pushed"));
+
+        // A repo with no remote reports nothing to fetch from.
+        assert!(!branches(upstream.to_string_lossy().to_string()).has_remote);
+
+        let _ = std::fs::remove_dir_all(&upstream);
+        let _ = std::fs::remove_dir_all(&clone);
     }
 
     #[test]
