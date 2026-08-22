@@ -683,6 +683,7 @@ pub fn run() {
             git::worktree_info,
             git::list_worktrees,
             git::branches,
+            git::fetch_remote,
             git::create_worktree,
             git::remove_worktree,
         ])

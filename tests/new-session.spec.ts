@@ -179,3 +179,46 @@ test("Enter selects the highlighted folder completion", async ({ page }) => {
     page.getByText("Anchor a session to a folder or git worktree."),
   ).toBeVisible();
 });
+
+test("fetching offers a branch that was only pushed upstream", async ({
+  page,
+}) => {
+  await gotoApp(page, {
+    git: { ...gitRepo, remotes: ["origin/main"], fetchedRemotes: ["origin/new-feature"] },
+  });
+  await openNew(page);
+  await page.getByRole("tab", { name: "Create Worktree" }).click();
+  await page.getByRole("button", { name: "Options" }).click();
+
+  const base = page.getByPlaceholder("HEAD");
+  await base.click();
+  await expect(page.getByRole("button", { name: "origin/main" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "origin/new-feature" })).toBeHidden();
+
+  await page.getByRole("button", { name: "Fetch remote branches" }).click();
+  await base.click();
+  const pushed = page.getByRole("button", { name: "origin/new-feature" });
+  await expect(pushed).toBeVisible();
+
+  // Picking it makes the fetched branch the base the worktree starts from.
+  await pushed.click();
+  await expect(base).toHaveValue("origin/new-feature");
+  await page.getByPlaceholder("my-new-branch").fill("my-fix");
+  await page.getByRole("button", { name: "Create session" }).click();
+  const created = await page.evaluate(
+    () => (window as Record<string, any>).__MOCK__.created?.[0],
+  );
+  expect(created.base).toBe("origin/new-feature");
+  expect(created.branch).toBe("my-fix");
+});
+
+test("a repo with no remote offers no fetch button", async ({ page }) => {
+  await gotoApp(page, { git: gitRepo });
+  await openNew(page);
+  await page.getByRole("tab", { name: "Create Worktree" }).click();
+  await page.getByRole("button", { name: "Options" }).click();
+  await expect(page.getByPlaceholder("HEAD")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Fetch remote branches" }),
+  ).toBeHidden();
+});
