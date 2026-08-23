@@ -45,7 +45,8 @@ See [docs/install.md](docs/install.md) for that step and for direct downloads.
 - **Status and notifications.** A live "working" dot while a command runs, and
   auto-detected attention: a finished command, a bell, a coding agent that's done
   and waiting, or an exit. Raises an in-app dot plus an OS banner when the window
-  is unfocused; tune which events notify in settings.
+  is unfocused; tune which events notify in settings, or mute a noisy terminal
+  from its tab.
 - **Keyboard-friendly.** Every major action is reachable from the keyboard,
   through a fuzzy command palette with quick filters or direct shortcuts, and the
   keymap is fully rebindable and persisted.

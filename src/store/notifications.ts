@@ -65,8 +65,9 @@ export const useNotifications = create<NotificationsState>((set) => ({
 
 /** Record a notification for a terminal, resolving its session/terminal names.
  * Raises the terminal's attention dot and, when the window is unfocused, an OS
- * banner. Per-kind and desktop toggles (prefs) gate it centrally, so a disabled
- * kind raises nothing (no dot, no list entry, no banner). */
+ * banner. Per-kind and desktop toggles (prefs) and the terminal's own mute gate
+ * it centrally, so a disabled kind or a muted terminal raises nothing (no dot,
+ * no list entry, no banner). */
 export function notify(
   terminalId: string,
   kind: NotificationKind,
@@ -87,6 +88,9 @@ export function notify(
       // in, none asked for. Once the user has typed into it, a bell is a real
       // "wants input"/done signal (e.g. Claude finishing a task).
       if (kind === "bell" && !t.interacted) return;
+      // A muted terminal is silent whatever it does: no dot, no list entry, no
+      // banner. Same idea as muting a browser tab.
+      if (t.muted) return;
       setAttention(terminalId, true);
       const title = terminalDisplayTitle(t);
       useNotifications.getState().add({

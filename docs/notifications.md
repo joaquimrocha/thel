@@ -90,3 +90,11 @@ heuristic and can be turned off under **Settings → Notifications → "An agent
 finishes and waits for input"** if it fires at the wrong time. The reliable
 alternative is to have the agent run `thel notify` (or emit an OSC 9) when it
 finishes.
+
+## Muting a terminal
+
+A terminal that keeps crying wolf (a slow compile, a chatty log) can be muted
+from its tab's right-click menu, the way you mute a browser tab. A muted
+terminal raises nothing at all: no attention dot, no panel entry, no desktop
+notification. Its tab shows a crossed-out bell; click it to unmute. The setting
+is per terminal and survives a restart.

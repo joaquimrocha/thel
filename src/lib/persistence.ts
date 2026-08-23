@@ -46,6 +46,7 @@ interface PersistedTerminal {
   args: string[];
   cwd?: string;
   zoom?: number;
+  muted?: boolean;
 }
 
 // Project a live terminal down to just its persisted fields, dropping runtime
@@ -61,6 +62,7 @@ export function toPersistedTerminal(t: Terminal): PersistedTerminal {
     args: t.args,
     cwd: t.cwd,
     zoom: t.zoom,
+    muted: t.muted,
   };
 }
 
@@ -118,6 +120,7 @@ export async function hydrateSessions(): Promise<void> {
       args: t.args,
       cwd: t.cwd,
       zoom: t.zoom,
+      muted: t.muted,
     });
     useSessions.setState({
       activeSessionId: layout.activeSessionId,
