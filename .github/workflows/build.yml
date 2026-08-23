@@ -1,8 +1,9 @@
 name: build
 
-# Build the Linux binary on every pull request and on main, upload it as a run
-# artifact you can download from the workflow run, and report its size: to the
-# job summary always, and as a pull request comment when the token allows.
+# Build the Linux binary for each architecture on every pull request and on
+# main, upload each as a run artifact you can download from the workflow run,
+# and report the x86_64 size: to the job summary always, and as a pull request
+# comment when the token allows.
 on:
   pull_request:
   push:
@@ -13,7 +14,13 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # One native runner per architecture; no cross-compiling. Let the other
+    # leg finish so a failure names the architecture that broke.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       # Needed to post the size comment. GitHub grants this only to pull
@@ -25,7 +32,10 @@ jobs:
       - id: build
         uses: ./.github/actions/build-binary
 
+      # Only x86_64 reports size: the aarch64 leg exists to catch build
+      # breakage, and two legs editing one comment would race each other.
       - id: measure
+        if: matrix.runner == 'ubuntu-latest'
         env:
           TARBALL: ${{ steps.build.outputs.tarball }}
         run: |
@@ -53,6 +63,7 @@ jobs:
       # is read-only whatever `permissions` says, so the API call would 403.
       # Skip rather than fail a build that is otherwise fine.
       - if: >-
+          matrix.runner == 'ubuntu-latest' &&
           github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository
         env:
@@ -75,6 +86,6 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: thel-linux-x86_64
+          name: thel-linux-${{ steps.build.outputs.arch }}
           path: ${{ steps.build.outputs.tarball }}
           retention-days: 14

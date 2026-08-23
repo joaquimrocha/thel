@@ -11,6 +11,9 @@ outputs:
   tarball:
     description: Path to the packaged tar.xz.
     value: ${{ steps.package.outputs.tarball }}
+  arch:
+    description: Architecture of the built binary, as uname -m reports it.
+    value: ${{ steps.package.outputs.arch }}
 
 runs:
   using: composite
@@ -54,11 +57,14 @@ runs:
       run: |
         bin=src-tauri/target/release/thel
         test -f "$bin" || { echo "binary not found at $bin" >&2; exit 1; }
+        # Every build is native, so the runner's arch is the binary's arch.
+        arch=$(uname -m)
         if [ -n "$VERSION" ]; then
-          tarball="thel-${VERSION}-linux-x86_64.tar.xz"
+          tarball="thel-${VERSION}-linux-${arch}.tar.xz"
         else
-          tarball="thel-linux-x86_64.tar.xz"
+          tarball="thel-linux-${arch}.tar.xz"
         fi
         # tar the binary alone (keeps the executable bit).
         tar -cJf "$tarball" -C "$(dirname "$bin")" "$(basename "$bin")"
         echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+        echo "arch=$arch" >> "$GITHUB_OUTPUT"
