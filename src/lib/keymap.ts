@@ -151,6 +151,16 @@ export const SHORTCUTS: Shortcut[] = [
     run: () => {},
   },
   {
+    id: "terminal-find",
+    description: "Find in terminal output",
+    terminalOnly: true,
+    defaultCombo: def(
+      { code: "KeyF", meta: true },
+      { code: "KeyF", ctrl: true, shift: true },
+    ),
+    run: () => {},
+  },
+  {
     id: "terminal-paste",
     description: "Paste",
     terminalOnly: true,

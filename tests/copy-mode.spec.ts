@@ -54,3 +54,36 @@ test("copy mode swallows keys instead of typing them", async ({ page }) => {
   await page.keyboard.press("Enter");
   expect(await clipboard(page)).toBe("$ hello");
 });
+
+test("copy mode picks up the find bar's match, ready to copy", async ({
+  page,
+}) => {
+  await sessionWithOutput(page, "alpha needle omega\r\n");
+
+  await page.keyboard.press("Control+Shift+F");
+  await page.keyboard.type("needle");
+
+  // Straight from the query field: the match carries over as the selection.
+  await page.keyboard.press("Control+Shift+Space");
+  await expect(hint(page)).toBeVisible();
+  await page.keyboard.press("y");
+
+  await expect(hint(page)).toBeHidden();
+  expect(await clipboard(page)).toBe("needle");
+});
+
+test("copy mode extends the match instead of starting over", async ({
+  page,
+}) => {
+  await sessionWithOutput(page, "alpha needle omega\r\n");
+
+  await page.keyboard.press("Control+Shift+F");
+  await page.keyboard.type("needle");
+  await page.keyboard.press("Control+Shift+Space");
+  // The cursor sits at the match's end, so a motion grows the selection from
+  // there rather than collapsing it.
+  await page.keyboard.press("$");
+  await page.keyboard.press("y");
+
+  expect(await clipboard(page)).toBe("needle omega");
+});

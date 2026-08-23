@@ -47,12 +47,15 @@ See [docs/install.md](docs/install.md) for that step and for direct downloads.
   and waiting, or an exit. Raises an in-app dot plus an OS banner when the window
   is unfocused; tune which events notify in settings, or mute a noisy terminal
   from its tab. Programs reporting OSC progress get a bar on their tab.
+- **Find in output.** Search a terminal's scrollback forwards and backwards
+  without leaving the keyboard. The bar belongs to its tab and is still there,
+  query included, when you come back to it.
 - **Keyboard-friendly.** Every major action is reachable from the keyboard,
   through a fuzzy command palette with quick filters or direct shortcuts, and the
   keymap is fully rebindable and persisted.
 - **Copy mode.** Select and copy scrollback without touching the mouse: vi-style
   motions (`hjkl`, `w`/`b`, `0`/`$`, `g`/`G`), Space to start the selection, `y`
-  to copy.
+  to copy. Entered from a find match, it starts with that match selected.
 - **Session icons.** Assign custom icons to your sessions to quickly identify
   them at a glance in the sidebar.
 - **Session notes.** A markdown scratchpad docked beside each session, with

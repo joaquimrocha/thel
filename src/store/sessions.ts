@@ -39,6 +39,11 @@ export interface Terminal {
   // Notifications are suppressed for this terminal (like muting a browser tab);
   // persisted, since a noisy terminal stays noisy across restarts. See notify().
   muted?: boolean;
+  // Runtime-only: the find bar's state, kept on the terminal rather than in the
+  // pane because a background tab has no pane -- only the group's active
+  // terminal is mounted -- and the bar has to come back with the tab.
+  findOpen?: boolean;
+  findQuery?: string;
 }
 
 // A pane: its own tab strip of terminals and the one currently shown. A session
@@ -211,6 +216,8 @@ export interface SessionState {
   setMuted: (terminalId: string, muted: boolean) => void;
   // undefined clears the progress bar.
   setProgress: (terminalId: string, progress: TermProgress | undefined) => void;
+  setFindOpen: (terminalId: string, open: boolean) => void;
+  setFindQuery: (terminalId: string, query: string) => void;
 }
 
 // Pick the neighbor that slides into a removed item's slot, clamping to the end.
@@ -605,6 +612,16 @@ export const useSessions = create<SessionState>((set, get) => ({
   setProgress: (terminalId, progress) =>
     set((s) => ({
       sessions: patchTerminal(s.sessions, terminalId, { progress }),
+    })),
+
+  setFindOpen: (terminalId, findOpen) =>
+    set((s) => ({
+      sessions: patchTerminal(s.sessions, terminalId, { findOpen }),
+    })),
+
+  setFindQuery: (terminalId, findQuery) =>
+    set((s) => ({
+      sessions: patchTerminal(s.sessions, terminalId, { findQuery }),
     })),
 
   setMuted: (terminalId, muted) =>
