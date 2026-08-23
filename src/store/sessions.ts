@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { killTerminalWindow } from "@/lib/pty";
 import { useNotes } from "@/store/notes";
+import type { TermProgress } from "@/lib/ansi";
 
 export interface Terminal {
   id: string;
@@ -21,6 +22,9 @@ export interface Terminal {
   exitCode?: number | null;
   // Runtime-only: wants attention (bell or process exit while not focused).
   attention?: boolean;
+  // Runtime-only: how far along the running program says it is, from its OSC
+  // 9;4 progress reports (see oscProgress). Undefined means it reported none.
+  progress?: TermProgress;
   // Runtime-only: a foreground process is running (vs an idle shell). Driven by
   // the daemon's pushed busy events (see TerminalPane's channel handler).
   busy?: boolean;
@@ -205,6 +209,8 @@ export interface SessionState {
   // zoom = undefined resets the terminal to the default zoom.
   setZoom: (terminalId: string, zoom: number | undefined) => void;
   setMuted: (terminalId: string, muted: boolean) => void;
+  // undefined clears the progress bar.
+  setProgress: (terminalId: string, progress: TermProgress | undefined) => void;
 }
 
 // Pick the neighbor that slides into a removed item's slot, clamping to the end.
@@ -594,6 +600,11 @@ export const useSessions = create<SessionState>((set, get) => ({
   markInteracted: (terminalId) =>
     set((s) => ({
       sessions: patchTerminal(s.sessions, terminalId, { interacted: true }),
+    })),
+
+  setProgress: (terminalId, progress) =>
+    set((s) => ({
+      sessions: patchTerminal(s.sessions, terminalId, { progress }),
     })),
 
   setMuted: (terminalId, muted) =>

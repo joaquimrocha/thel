@@ -2,6 +2,8 @@ import { test, expect, describe } from "vitest";
 import {
   hasVisibleOutput,
   oscNotifications,
+  oscProgress,
+  progressFromOsc9,
   scanClipboardWrites,
   terminalTitleFromOutput,
 } from "./ansi";
@@ -186,5 +188,38 @@ describe("scanClipboardWrites", () => {
       const flood = `${ESC}]52;c;${"A".repeat(1024 * 1024 + 8)}`;
       expect(scan(flood).carry).toBe("");
     });
+  });
+});
+
+describe("OSC 9;4 progress", () => {
+  test("states map to a value, indeterminate, or a clear", () => {
+    expect(progressFromOsc9("4;1;42")).toBe(42);
+    // Error and paused still carry a percentage.
+    expect(progressFromOsc9("4;2;70")).toBe(70);
+    expect(progressFromOsc9("4;4;70")).toBe(70);
+    expect(progressFromOsc9("4;3")).toBe("indeterminate");
+    expect(progressFromOsc9("4;0")).toBeNull();
+    // Out of range values are clamped rather than dropped.
+    expect(progressFromOsc9("4;1;150")).toBe(100);
+  });
+
+  test("a plain notification body is not progress", () => {
+    expect(progressFromOsc9("build done")).toBeUndefined();
+    expect(progressFromOsc9("4 files changed")).toBeUndefined();
+  });
+
+  test("a message that merely looks like one still notifies", () => {
+    // Only progressFromOsc9 decides, so a body it rejects stays a message
+    // rather than falling between the two.
+    const { texts } = oscNotifications(`${ESC}]9;4;5 files changed${BEL}`);
+    expect(texts).toEqual(["4;5 files changed"]);
+  });
+
+  test("the last report in a chunk wins, and it never notifies", () => {
+    const data = `${ESC}]9;4;1;10${BEL}output${ESC}]9;4;1;90${BEL}`;
+    expect(oscProgress(data)).toBe(90);
+    expect(oscNotifications(data).texts).toEqual([]);
+    expect(oscProgress(`${ESC}]9;4;0${ST}`)).toBeNull();
+    expect(oscProgress("plain output")).toBeUndefined();
   });
 });

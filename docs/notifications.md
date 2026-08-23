@@ -66,6 +66,9 @@ emitted directly by programs, so anything already using these works too:
 - **OSC 777** — `ESC ] 777 ; notify ; <title> ; <body> BEL` (rxvt-style).
 - **OSC 99** — `ESC ] 99 ; <metadata> ; <body> BEL` (kitty-style, body only).
 
+`ESC ] 9 ; 4 ; ...` is not a message: it is ConEmu's progress report, which thel
+draws as a bar on the tab instead (see below).
+
 Any program that emits one of these gets picked up automatically. For example, a
 tool that can run a shell command on completion can do:
 
@@ -98,3 +101,19 @@ from its tab's right-click menu, the way you mute a browser tab. A muted
 terminal raises nothing at all: no attention dot, no panel entry, no desktop
 notification. Its tab shows a crossed-out bell; click it to unmute. The setting
 is per terminal and survives a restart.
+
+## Progress reports
+
+Programs that know how far along they are (flatpak, systemd, and anything else
+speaking ConEmu's convention) can say so with `ESC ] 9 ; 4 ; <state> ; <value>
+BEL`, the same sequence Windows Terminal and Ptyxis show. thel draws it as a
+bar along the bottom of the terminal's tab, so a background job's progress is
+visible without switching to it.
+
+- `state` 0 clears the bar, 1 sets it to `value` percent, 2 (error) and 4
+  (paused) also carry a percentage, and 3 is an indeterminate bar.
+
+```sh
+printf '\033]9;4;1;40\007'   # 40%
+printf '\033]9;4;0\007'      # done
+```

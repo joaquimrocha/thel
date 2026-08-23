@@ -54,7 +54,7 @@ import {
   loadTerminalFont,
   zoomedFontSize,
 } from "@/lib/theme";
-import { hasVisibleOutput } from "@/lib/ansi";
+import { hasVisibleOutput, progressFromOsc9 } from "@/lib/ansi";
 import {
   step as copyModeStep,
   selection as copyModeSelection,
@@ -465,6 +465,10 @@ export function TerminalPane({
         } else if (msg.kind === "busy") {
           // Pushed by the daemon (heartbeat while busy, once on going idle).
           activity.noteBusy(msg.busy);
+          // A progress bar belongs to a running command. One that ends without
+          // clearing its own (Ctrl+C, a crash, a program that just forgets)
+          // would otherwise leave the bar on the tab for good.
+          if (!msg.busy) useSessions.getState().setProgress(tab.id, undefined);
         } else if (msg.kind === "notify") {
           // `thel notify` routed through the daemon (out-of-band, tty-independent).
           // It's a live, explicit request, so it skips the replay gate; suppress
@@ -519,7 +523,14 @@ export function TerminalPane({
       activity.noteMessage(body);
       return true;
     };
-    const osc9Disp = term.parser.registerOscHandler(9, oscNotify);
+    // OSC 9 carries two unrelated things: a notification message, and ConEmu's
+    // progress reports (`9;4;state;value`), which drive the tab's progress bar.
+    const osc9Disp = term.parser.registerOscHandler(9, (body) => {
+      const p = progressFromOsc9(body);
+      if (p === undefined) return oscNotify(body);
+      useSessions.getState().setProgress(tab.id, p ?? undefined);
+      return true;
+    });
     const osc777Disp = term.parser.registerOscHandler(777, (data) => {
       const [k, title, ...rest] = data.split(";");
       if (k !== "notify") return false;

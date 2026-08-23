@@ -391,6 +391,12 @@ function install(config: MockConfig) {
       send?.({ kind: "data", data });
       return !!send;
     },
+    // The daemon's pushed foreground-busy state for one terminal.
+    __busyTerminalById: (id: string, busy: boolean) => {
+      const send = termChannels.get(id);
+      send?.({ kind: "busy", busy });
+      return !!send;
+    },
     // Report the index-th terminal's process exit (the Direct path's exit
     // signal). code 0 = clean exit.
     __exitTerminal: (index: number, code: number | null) =>
