@@ -16,6 +16,7 @@ import { notify } from "@/store/notifications";
 import {
   hasVisibleOutput,
   oscNotifications,
+  oscProgress,
   terminalTitleFromOutput,
 } from "@/lib/ansi";
 import { createClipboardSink } from "@/lib/clipboard";
@@ -228,6 +229,7 @@ function DaemonBackgroundListeners({
 function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
   const setBusy = useSessions((s) => s.setBusy);
   const setProcTitle = useSessions((s) => s.setProcTitle);
+  const setProgress = useSessions((s) => s.setProgress);
   const closeTerminal = useSessions((s) => s.closeTerminal);
 
   useEffect(() => {
@@ -280,6 +282,9 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
           // doesn't also ring. Both are gated by the replay state internally.
           const osc = oscNotifications(msg.data);
           for (const text of osc.texts) activity.noteMessage(text);
+          const progress = oscProgress(msg.data);
+          if (progress !== undefined)
+            setProgress(terminal.id, progress ?? undefined);
           if (osc.rest.includes("\x07")) activity.noteBell();
           activity.noteOutput(visible);
           // A program can copy from a tab you aren't looking at, same as it
@@ -294,6 +299,8 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
           }
         } else if (msg.kind === "busy") {
           activity.noteBusy(msg.busy);
+          // The command that owned the progress bar is over; see TerminalPane.
+          if (!msg.busy) setProgress(terminal.id, undefined);
         } else if (msg.kind === "notify") {
           // `thel notify` via the daemon: a background tab is never watched, so
           // deliver it straight through (skips the replay gate -- it's live).
@@ -315,6 +322,7 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
     closeTerminal,
     setBusy,
     setProcTitle,
+    setProgress,
     terminal.args,
     terminal.command,
     terminal.cwd,

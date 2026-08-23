@@ -31,11 +31,47 @@ export function oscNotifications(data: string): { texts: string[]; rest: string 
   const re =
     /\x1b\](?:9;([^\x07\x1b]*)|777;notify;([^\x07\x1b]*)|99;[^\x07\x1b;]*;([^\x07\x1b]*))(?:\x07|\x1b\\)/g;
   const rest = data.replace(re, (_m, m9, m777, m99) => {
+    // An OSC 9 that parses as a progress report is not a message; progress is
+    // what it means, and progressFromOsc9 alone decides which bodies those are.
+    if (m9 !== undefined && progressFromOsc9(m9) !== undefined) return "";
     const text = (m9 ?? m777?.replace(";", ": ") ?? m99 ?? "").trim();
     if (text) texts.push(text);
     return "";
   });
   return { texts, rest };
+}
+
+// How far along a program says it is: a percentage, or a bar of unknown length.
+export type TermProgress = number | "indeterminate";
+
+/** Parse the body of an OSC 9 as a ConEmu progress report (`4;state;value`),
+ * which flatpak, systemd and friends emit and Windows Terminal and Ptyxis show.
+ * State 0 clears it (null), 3 is indeterminate, and 1/2/4 (normal, error,
+ * paused) carry a percentage. Returns undefined when the body is a plain OSC 9
+ * notification message instead. */
+export function progressFromOsc9(
+  body: string,
+): TermProgress | null | undefined {
+  const m = /^4;(\d+)(?:;(\d+))?$/.exec(body);
+  if (!m) return undefined;
+  const state = Number(m[1]);
+  if (state === 0) return null;
+  if (state === 3) return "indeterminate";
+  return Math.max(0, Math.min(100, Number(m[2] ?? 0)));
+}
+
+/** The last progress report in a raw output chunk, for the background listener
+ * (a mounted pane gets the bodies from xterm's OSC handler instead). undefined
+ * when the chunk has none. */
+export function oscProgress(data: string): TermProgress | null | undefined {
+  // eslint-disable-next-line no-control-regex
+  const re = /\x1b\]9;([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+  let last: TermProgress | null | undefined;
+  for (const m of data.matchAll(re)) {
+    const p = progressFromOsc9(m[1]);
+    if (p !== undefined) last = p;
+  }
+  return last;
 }
 
 // A program can put text on the clipboard with OSC 52 (`ESC ] 52 ; targets ;

@@ -270,13 +270,32 @@ export function TerminalTabs({
               useUI.getState().focusTerminal();
             }}
             className={cn(
-              "group flex h-8 max-w-52 shrink-0 cursor-pointer items-center gap-2 rounded-md px-3 text-sm",
+              "group relative flex h-8 max-w-52 shrink-0 cursor-pointer items-center gap-2 rounded-md px-3 text-sm",
               t.id === group.activeTerminalId
                 ? "bg-secondary text-secondary-foreground"
                 : "text-muted-foreground hover:bg-secondary/50",
               dragging === t.id && "opacity-0",
             )}
           >
+            {/* What the running program reports via OSC 9;4 (flatpak, systemd). */}
+            {t.progress !== undefined && (
+              <div
+                data-testid="tab-progress"
+                data-progress={t.progress}
+                className="absolute inset-x-1 bottom-0.5 h-0.5 overflow-hidden rounded-full bg-muted"
+              >
+                <div
+                  className={cn(
+                    "h-full bg-primary",
+                    t.progress === "indeterminate" && "animate-pulse",
+                  )}
+                  style={{
+                    width:
+                      t.progress === "indeterminate" ? "100%" : `${t.progress}%`,
+                  }}
+                />
+              </div>
+            )}
             <StatusDot state={terminalDotState(t)} />
             <EditableLabel
               value={terminalDisplayTitle(t)}
