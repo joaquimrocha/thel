@@ -4,6 +4,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { SearchAddon } from "@xterm/addon-search";
+import { ChevronDown, ChevronUp, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import {
   createSession,
   writeSession,
@@ -122,7 +125,7 @@ function createXterm(
   container: HTMLDivElement,
   zoom: number,
   onLinkHover: (uri: string | null) => void,
-): { term: Terminal; fit: FitAddon } {
+): { term: Terminal; fit: FitAddon; search: SearchAddon } {
   const font = getTerminalFont();
   // Open links in the system browser; the webview's default window.open (what
   // WebLinksAddon uses otherwise) does nothing under WebKitGTK.
@@ -162,6 +165,8 @@ function createXterm(
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
+  const search = new SearchAddon();
+  term.loadAddon(search);
   term.loadAddon(new WebLinksAddon(openLink, { hover, leave }));
   // Use Unicode 11 width tables so emoji and other wide glyphs occupy two cells;
   // otherwise the next character overlaps them.
@@ -177,7 +182,7 @@ function createXterm(
     // WebGL unavailable (e.g. headless/software GL); DOM renderer is fine.
   }
   fit.fit();
-  return { term, fit };
+  return { term, fit, search };
 }
 
 export function TerminalPane({
@@ -194,6 +199,32 @@ export function TerminalPane({
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
+  // Set by the mount effect, which owns copy mode's state; lets the find bar
+  // (rendered out here) start the mode on the match it just highlighted.
+  const enterCopyModeRef = useRef<(() => void) | null>(null);
+  // Same trick the other way: the key handler is registered once at mount, so
+  // it reads the current opener through a ref instead of closing over a stale
+  // one.
+  const openFindRef = useRef<(() => void) | null>(null);
+  // Set when the right-click menu opened the bar, so the menu's closing
+  // focus restore can be suppressed just for that case.
+  const findFromMenu = useRef(false);
+  // The find bar's state lives on the terminal, not here: a background tab has
+  // no pane (only the group's active terminal is mounted), and the bar has to
+  // come back with the tab.
+  const findOpen = tab.findOpen ?? false;
+  const query = tab.findQuery ?? "";
+  const setFindOpen = useSessions((s) => s.setFindOpen);
+  const setFindQuery = useSessions((s) => s.setFindQuery);
+  // Bumped by every request to open the bar, so asking for it while it is
+  // already open still pulls focus back into the field. Opening alone cannot
+  // do that: setting open over open is not a state change.
+  const [findFocusReq, setFindFocusReq] = useState(0);
+  // Whether the current query matched. Local, since it describes this
+  // terminal instance's scrollback, which a remount rebuilds anyway.
+  const [noMatch, setNoMatch] = useState(false);
+  const findInputRef = useRef<HTMLInputElement>(null);
   // Drives the enabled state of the right-click Copy items.
   const [hasSelection, setHasSelection] = useState(false);
   // Copy mode is on for this pane (drives the hint bar); the cursor itself
@@ -255,13 +286,14 @@ export function TerminalPane({
     // (dev) mounts twice: the first child is spawned then killed on cleanup, and
     // its real exit must NOT mark the (re-spawned) terminal as exited.
     let closed = false;
-    const { term, fit } = createXterm(
+    const { term, fit, search } = createXterm(
       containerRef.current!,
       zoomRef.current,
       setLinkUrl,
     );
     termRef.current = term;
     fitRef.current = fit;
+    searchRef.current = search;
 
     // Clipboard, handled here (not the global shortcut handler) because it needs
     // the focused terminal's selection. The combos are the rebindable terminal-*
@@ -309,6 +341,26 @@ export function TerminalPane({
       else if (copy!.y >= top + term.rows)
         term.scrollLines(copy!.y - top - term.rows + 1);
     };
+    // Start copy mode over the existing selection, so a find match (or a
+    // mouse-dragged selection) carries straight into the mode with its text
+    // already selected and the cursor at its end. Nothing selected means the
+    // shell cursor, as before. xterm reports the selection 0-based with an
+    // exclusive end column.
+    const enterCopy = () => {
+      const buf = term.buffer.active;
+      const sel = term.hasSelection() ? term.getSelectionPosition() : undefined;
+      copy = sel
+        ? {
+            x: Math.max(0, sel.end.x - 1),
+            y: sel.end.y,
+            anchor: { x: sel.start.x, y: sel.start.y },
+          }
+        : { x: buf.cursorX, y: buf.baseY + buf.cursorY, anchor: null };
+      setCopyModeOn(true);
+      showCopy();
+    };
+    enterCopyModeRef.current = enterCopy;
+
     const exitCopy = () => {
       copy = null;
       setCopyModeOn(false);
@@ -359,12 +411,16 @@ export function TerminalPane({
         }
         return false;
       }
+      // After the copy-mode block above, so its keys keep the keyboard while
+      // it's active.
+      if (matches(e, "terminal-find")) {
+        e.preventDefault();
+        openFindRef.current?.();
+        return false;
+      }
       if (matches(e, "terminal-copy-mode")) {
         e.preventDefault();
-        const buf = term.buffer.active;
-        copy = { x: buf.cursorX, y: buf.baseY + buf.cursorY, anchor: null };
-        setCopyModeOn(true);
-        showCopy();
+        enterCopy();
         return false;
       }
       if (matches(e, "terminal-paste")) {
@@ -695,6 +751,56 @@ export function TerminalPane({
     }
   }, [focusNonce, focused]);
 
+  const openFind = () => {
+    setFindOpen(tab.id, true);
+    setFindFocusReq((n) => n + 1);
+  };
+  openFindRef.current = openFind;
+
+  // Reopening the bar re-selects the previous query, so the next search can
+  // just be typed over it.
+  useEffect(() => {
+    if (!findFocusReq) return;
+    findInputRef.current?.focus();
+    findInputRef.current?.select();
+  }, [findFocusReq]);
+
+  // Search this pane's scrollback. xterm scrolls the hit into view and selects
+  // it, which is the highlight. A search driven by typing is incremental, so
+  // each keystroke refines the match under the cursor instead of walking
+  // forward to the next one.
+  const find = (dir: "next" | "prev", q = query, incremental = false) => {
+    const search = searchRef.current;
+    if (!search || !q) {
+      setNoMatch(false);
+      return;
+    }
+    setNoMatch(
+      !(dir === "next"
+        ? search.findNext(q, { incremental })
+        : search.findPrevious(q, { incremental })),
+    );
+  };
+
+  const closeFind = (keepSelection = false) => {
+    setFindOpen(tab.id, false);
+    setNoMatch(false);
+    if (!keepSelection) termRef.current?.clearSelection();
+    termRef.current?.focus();
+  };
+
+  // The copy-mode shortcut works from the find bar too: the terminal's own key
+  // handler never sees it while the query field has focus, so match it here and
+  // hand the highlighted match to copy mode instead of dropping it.
+  const findToCopyMode = (e: React.KeyboardEvent) => {
+    const combo = effectiveCombo("terminal-copy-mode");
+    if (!combo || !comboMatches(e.nativeEvent, combo)) return false;
+    e.preventDefault();
+    closeFind(true);
+    enterCopyModeRef.current?.();
+    return true;
+  };
+
   // Right-click menu acts on this exact pane's terminal.
   const copySelection = (mode: CopyMode) => {
     if (termRef.current) copyTermSelection(termRef.current, mode);
@@ -715,6 +821,62 @@ export function TerminalPane({
           style={{ visibility: visible ? "visible" : "hidden" }}
         >
           <div ref={containerRef} className="h-full w-full" />
+          {findOpen && (
+            // z-10 clears xterm's layer canvases (the link layer sits at
+            // z-index 2): they are transparent, so without it the bar is
+            // visible but every click on it lands on the canvas instead.
+            <div className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md border border-border bg-popover px-2 py-1 shadow-md">
+              <input
+                ref={findInputRef}
+                value={query}
+                placeholder="Find"
+                spellCheck={false}
+                aria-label="Find in terminal output"
+                // Colour alone would leave a screen reader with no idea the
+                // query found nothing.
+                aria-invalid={noMatch}
+                onChange={(e) => {
+                  setFindQuery(tab.id, e.target.value);
+                  find("next", e.target.value, true);
+                }}
+                onKeyDown={(e) => {
+                  if (findToCopyMode(e)) return;
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    find(e.shiftKey ? "prev" : "next");
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    closeFind();
+                  }
+                }}
+                className={cn(
+                  "w-40 bg-transparent text-sm outline-none",
+                  noMatch && "text-destructive",
+                )}
+              />
+              <button
+                onClick={() => find("prev")}
+                aria-label="Find previous"
+                className="rounded hover:bg-secondary"
+              >
+                <ChevronUp className="size-4" />
+              </button>
+              <button
+                onClick={() => find("next")}
+                aria-label="Find next"
+                className="rounded hover:bg-secondary"
+              >
+                <ChevronDown className="size-4" />
+              </button>
+              <button
+                onClick={() => closeFind()}
+                aria-label="Close find"
+                className="rounded hover:bg-secondary"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+          )}
           {/* Where a link goes, browser-style, since a terminal has no status
               bar to put it in. Sits outside the xterm element and takes no
               pointer events, so it can never swallow a click meant for the
@@ -736,7 +898,14 @@ export function TerminalPane({
           )}
         </div>
       </ContextMenuTrigger>
-      <ContextMenuContent>
+      <ContextMenuContent
+        onCloseAutoFocus={(e) => {
+          if (findFromMenu.current) {
+            findFromMenu.current = false;
+            e.preventDefault();
+          }
+        }}
+      >
         {menuLink && (
           <>
             <ContextMenuItem
@@ -772,6 +941,19 @@ export function TerminalPane({
         <ContextMenuItem onSelect={pasteClipboard}>
           Paste
           <ContextMenuShortcut>{shortcutLabel("terminal-paste")}</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          // Deferred past the menu's close (which also has to be told to leave
+          // focus alone, above): both, because the menu blurs on its way out
+          // whether or not it restores the trigger.
+          onSelect={() => {
+            findFromMenu.current = true;
+            setTimeout(openFind, 0);
+          }}
+        >
+          Find
+          <ContextMenuShortcut>{shortcutLabel("terminal-find")}</ContextMenuShortcut>
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
