@@ -1,7 +1,8 @@
 name: release-linux
 
-# Manually build thel and attach the Linux binary (a portable tar.xz) to an
-# existing draft release, identified by its title (the version, e.g. v0.1.0-beta).
+# Manually build thel and attach the Linux binaries (a portable tar.xz per
+# architecture) to an existing draft release, identified by its title (the
+# version, e.g. v0.1.0-beta).
 # macOS has its own workflow (release-macos) so the two can be cut independently.
 # Uses the built-in GITHUB_TOKEN via the permissions below, so no token or secret
 # needs to be set up.
@@ -18,7 +19,11 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # One native runner per architecture; no cross-compiling.
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
 

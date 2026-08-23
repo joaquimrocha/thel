@@ -1,7 +1,7 @@
 # Installing thel
 
-thel is beta. It runs on Linux (x86_64) and macOS (Apple silicon). Windows is a
-goal but untested.
+thel is beta. It runs on Linux (x86_64 and aarch64) and macOS (Apple silicon).
+Windows is a goal but untested.
 
 ## macOS
 
@@ -42,13 +42,14 @@ brew install --cask joaquimrocha/tap/thel
 
 ### Direct download
 
-Download `thel-<version>-linux-x86_64.tar.xz` from the
+Download `thel-<version>-linux-<arch>.tar.xz` for your architecture (`x86_64`
+or `aarch64`) from the
 [latest release](https://github.com/joaquimrocha/thel/releases/latest) and
 unpack it. It contains a single self-contained `thel` binary, so put it
 anywhere on your `PATH`:
 
 ```sh
-tar -xf thel-*-linux-x86_64.tar.xz
+tar -xf thel-*-linux-$(uname -m).tar.xz
 install -Dm755 thel ~/.local/bin/thel
 ```
 
