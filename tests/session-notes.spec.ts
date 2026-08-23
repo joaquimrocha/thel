@@ -127,3 +127,28 @@ test("closing a session takes its notes with it", async ({ page }) => {
   await openNotes(page, rows(page).first());
   await expect(panel.getByRole("textbox")).toHaveValue("");
 });
+
+test("selecting text in the rendered notes does not open the editor", async ({
+  page,
+}) => {
+  await gotoApp(page);
+  await createSession(page);
+  const panel = page.getByRole("dialog");
+  const editor = panel.getByRole("textbox");
+
+  await openNotes(page, rows(page).first());
+  await editor.fill("some copyable words here");
+  await panel.getByRole("button", { name: "Save" }).click();
+
+  // Double-clicking a word is how you select it; the editor must stay away so
+  // the selection survives long enough to be copied.
+  await panel.getByText("some copyable words here").dblclick();
+  await expect(editor).toBeHidden();
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toContain(
+    "copyable",
+  );
+
+  // The keyboard still gets into the editor.
+  await page.keyboard.press("Control+Enter");
+  await expect(editor).toBeVisible();
+});
