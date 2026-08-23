@@ -32,6 +32,9 @@ export interface Terminal {
   // Per-terminal zoom as a px offset from the system font size; persisted so a
   // terminal reopens at its set zoom. Undefined falls back to the default zoom.
   zoom?: number;
+  // Notifications are suppressed for this terminal (like muting a browser tab);
+  // persisted, since a noisy terminal stays noisy across restarts. See notify().
+  muted?: boolean;
 }
 
 // A pane: its own tab strip of terminals and the one currently shown. A session
@@ -201,6 +204,7 @@ export interface SessionState {
   markInteracted: (terminalId: string) => void;
   // zoom = undefined resets the terminal to the default zoom.
   setZoom: (terminalId: string, zoom: number | undefined) => void;
+  setMuted: (terminalId: string, muted: boolean) => void;
 }
 
 // Pick the neighbor that slides into a removed item's slot, clamping to the end.
@@ -590,6 +594,16 @@ export const useSessions = create<SessionState>((set, get) => ({
   markInteracted: (terminalId) =>
     set((s) => ({
       sessions: patchTerminal(s.sessions, terminalId, { interacted: true }),
+    })),
+
+  setMuted: (terminalId, muted) =>
+    set((s) => ({
+      // Muting also drops the attention it already raised, so the tab stops
+      // asking for you the moment you silence it.
+      sessions: patchTerminal(s.sessions, terminalId, {
+        muted,
+        ...(muted ? { attention: false } : {}),
+      }),
     })),
 }));
 

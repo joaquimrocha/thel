@@ -70,3 +70,26 @@ describe("startup-bell suppression", () => {
     expect(items()[0].kind).toBe("idle");
   });
 });
+
+describe("muted terminal", () => {
+  test("raises nothing while muted, and notifies again once unmuted", () => {
+    const id = freshTerminal();
+    useSessions.getState().setMuted(id, true);
+    notify(id, "idle");
+    expect(items()).toHaveLength(0);
+    expect(attention(id)).toBeFalsy();
+
+    useSessions.getState().setMuted(id, false);
+    notify(id, "idle");
+    expect(items()).toHaveLength(1);
+    expect(attention(id)).toBe(true);
+  });
+
+  test("muting clears the attention already raised", () => {
+    const id = freshTerminal();
+    notify(id, "idle");
+    expect(attention(id)).toBe(true);
+    useSessions.getState().setMuted(id, true);
+    expect(attention(id)).toBeFalsy();
+  });
+});

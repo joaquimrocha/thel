@@ -5,6 +5,7 @@ import {
   SplitSquareHorizontal,
   SplitSquareVertical,
   Trash2,
+  BellOff,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -45,6 +46,7 @@ export function TerminalTabs({
   const renameTerminal = useSessions((s) => s.renameTerminal);
   const reorderTerminal = useSessions((s) => s.reorderTerminal);
   const moveTerminalToGroup = useSessions((s) => s.moveTerminalToGroup);
+  const setMuted = useSessions((s) => s.setMuted);
 
   // The tab currently being dragged (synchronous ref for the dragover handler,
   // state for dimming it).
@@ -287,6 +289,20 @@ export function TerminalTabs({
                 groupActive && t.id === group.activeTerminalId && "font-semibold",
               )}
             />
+            {t.muted && (
+              <ActionTooltip label="Unmute notifications">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMuted(t.id, false);
+                  }}
+                  className="rounded hover:bg-background/60"
+                  aria-label="Unmute notifications"
+                >
+                  <BellOff className="size-3.5" />
+                </button>
+              </ActionTooltip>
+            )}
             <ActionTooltip label="Close terminal" shortcutId="close-terminal">
               <button
                 onClick={(e) => {
@@ -326,6 +342,9 @@ export function TerminalTabs({
               >
                 Rename
                 <ContextMenuShortcut>{shortcutLabel("rename-terminal")}</ContextMenuShortcut>
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => setMuted(t.id, !t.muted)}>
+                {t.muted ? "Unmute notifications" : "Mute notifications"}
               </ContextMenuItem>
               <ContextMenuItem
                 // May open a confirm dialog; defer past the menu's close like
