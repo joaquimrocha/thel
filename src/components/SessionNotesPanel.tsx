@@ -194,14 +194,16 @@ export function SessionNotesPanel() {
           <div
             ref={view}
             tabIndex={-1}
-            onDoubleClick={() => setEditing(true)}
+            // No click opens the editor: double-click is how you select a word
+            // here, and the editor would replace the text being selected. The
+            // Edit button and the key below are the way in.
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
                 setEditing(true);
               }
             }}
-            title="Double-click to edit"
+            title={`${EDIT_KEYS} to edit`}
             className="flex-1 overflow-y-auto px-4 py-3 text-sm outline-none"
           >
             <Rendered
