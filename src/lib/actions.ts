@@ -201,6 +201,15 @@ export function renameActiveTerminal() {
   if (id) useUI.getState().requestTerminalRename(id);
 }
 
+/** Mute or unmute the active terminal's notifications. */
+export function toggleActiveTerminalMute() {
+  const id = activeTerminalId();
+  if (!id) return;
+  const { sessions, setMuted } = useSessions.getState();
+  const t = sessions.flatMap(sessionTerminals).find((x) => x.id === id);
+  if (t) setMuted(id, !t.muted);
+}
+
 /** Zoom the active terminal in (+1) or out (-1), one px step per press. */
 export function zoomActiveTerminal(delta: 1 | -1) {
   const id = activeTerminalId();

@@ -10,6 +10,7 @@ import {
   moveTerminal,
   moveSession,
   renameActiveTerminal,
+  toggleActiveTerminalMute,
   openActiveSessionSettings,
   toggleActiveSessionUsage,
   toggleActiveSessionNotes,
@@ -129,6 +130,16 @@ export const SHORTCUTS: Shortcut[] = [
     // Shift so plain F2 still reaches TUI apps (htop, mc) in the terminal.
     defaultCombo: { code: "F2", shift: true },
     run: () => renameActiveTerminal(),
+  },
+  {
+    id: "mute-terminal",
+    description: "Mute / unmute terminal",
+    // M alone is the app menu, so mute takes Alt and keeps the mnemonic.
+    defaultCombo: def(
+      { code: "KeyM", meta: true, alt: true },
+      { code: "KeyM", ctrl: true, alt: true },
+    ),
+    run: () => toggleActiveTerminalMute(),
   },
   {
     id: "close-session",
