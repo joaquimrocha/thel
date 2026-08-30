@@ -364,6 +364,7 @@ export function TerminalTabs({
               </ContextMenuItem>
               <ContextMenuItem onSelect={() => setMuted(t.id, !t.muted)}>
                 {t.muted ? "Unmute notifications" : "Mute notifications"}
+                <ContextMenuShortcut>{shortcutLabel("mute-terminal")}</ContextMenuShortcut>
               </ContextMenuItem>
               <ContextMenuItem
                 // May open a confirm dialog; defer past the menu's close like
