@@ -600,9 +600,13 @@ export const useSessions = create<SessionState>((set, get) => ({
     })),
 
   setBusy: (terminalId, value) =>
-    set((s) => ({
-      sessions: patchTerminal(s.sessions, terminalId, { busy: value }),
-    })),
+    set((s) => {
+      // Arrives at the daemon's poll rate. Returning the same state, not just
+      // the same sessions array, is what stops zustand waking every
+      // subscriber, persistence's whole-layout serialize included.
+      const sessions = patchTerminal(s.sessions, terminalId, { busy: value });
+      return sessions === s.sessions ? s : { sessions };
+    }),
 
   markInteracted: (terminalId) =>
     set((s) => ({

@@ -9,7 +9,7 @@ import {
   type Terminal,
 } from "@/store/sessions";
 import { shortcutLabel } from "@/store/keybindings";
-import { createSession, closeSession } from "@/lib/pty";
+import { createSession, closeSession, seedBusy } from "@/lib/pty";
 import { clearActivity, noteBurst } from "@/lib/activity";
 import { createTerminalActivity, AGENT_QUIET_MS } from "@/lib/termActivity";
 import { notify } from "@/store/notifications";
@@ -260,6 +260,13 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
       }, AGENT_QUIET_MS);
     };
 
+    // A core created after the daemon's last busy message (a remount, the
+    // handoff on a session switch) hears nothing and would keep whatever the
+    // store held, so ask for the state once.
+    const supersedeSeed = seedBusy(terminal.id, (busy) => {
+      if (!closed) activity.noteBusy(busy);
+    });
+
     const clipboard = createClipboardSink();
     createSession(
       {
@@ -298,6 +305,7 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
             if (agentArmed.current) armAgentTimer();
           }
         } else if (msg.kind === "busy") {
+          supersedeSeed();
           activity.noteBusy(msg.busy);
           // The command that owned the progress bar is over; see TerminalPane.
           if (!msg.busy) setProgress(terminal.id, undefined);
