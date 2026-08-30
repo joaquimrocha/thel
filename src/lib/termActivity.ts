@@ -77,7 +77,6 @@ export function createTerminalActivity(
   let bellPending = false;
   let bellAt = 0;
   let busy = false;
-  let working = false;
   let resizeQuietUntil = 0;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -176,11 +175,13 @@ export function createTerminalActivity(
       // known to have been busy when it finishes.
       if (next) markBusy(id);
       // Animate only while a foreground command is actively producing output.
-      const w = next && outputAgeMs(id) < ACTIVE_WINDOW_MS;
-      if (working !== w) {
-        working = w;
-        onWorking(w);
-      }
+      // Sent as a level, not an edge: the store outlives any one core.
+      const working = next && outputAgeMs(id) < ACTIVE_WINDOW_MS;
+      // Recency is unreadable mid-replay: neither the replayed screen nor the
+      // handoff gap counts as output. So a still-busy terminal keeps the level
+      // it had rather than reading that silence as stopped; an idle one clears.
+      if (!replaySettled && next && !working) return;
+      onWorking(working);
     },
 
     noteResize() {

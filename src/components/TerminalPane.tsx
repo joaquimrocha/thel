@@ -9,6 +9,7 @@ import { ChevronDown, ChevronUp, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   createSession,
+  seedBusy,
   writeSession,
   resizeSession,
   closeSession,
@@ -497,6 +498,13 @@ export function TerminalPane({
       }
     };
 
+    // A core created after the daemon's last busy message (a remount, the
+    // handoff on a session switch) hears nothing and would keep whatever the
+    // store held, so ask for the state once.
+    const supersedeSeed = seedBusy(tab.id, (busy) => {
+      if (!closed) activity.noteBusy(busy);
+    });
+
     const clipboard = createClipboardSink();
     createSession(
       {
@@ -520,6 +528,7 @@ export function TerminalPane({
           clipboard(msg.data);
         } else if (msg.kind === "busy") {
           // Pushed by the daemon (heartbeat while busy, once on going idle).
+          supersedeSeed();
           activity.noteBusy(msg.busy);
           // A progress bar belongs to a running command. One that ends without
           // clearing its own (Ctrl+C, a crash, a program that just forgets)

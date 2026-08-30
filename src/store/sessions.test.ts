@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeEach } from "vitest";
+import { test, expect, describe, beforeEach, vi } from "vitest";
 import { useSessions, type Session, type Terminal } from "./sessions";
 
 const term = (id: string, extra: Partial<Terminal> = {}): Terminal => ({
@@ -70,6 +70,17 @@ describe("patchTerminal identity preservation", () => {
     const afterTitle = S();
     useSessions.getState().setProcTitle("t1", "same"); // same title
     expect(S()).toBe(afterTitle);
+  });
+
+  test("a redundant busy heartbeat notifies nobody", () => {
+    // Persistence subscribes without a selector and serializes the whole
+    // layout, so a heartbeat that changed nothing has to stop at the setter.
+    useSessions.getState().setBusy("t1", true);
+    const woken = vi.fn();
+    const unsub = useSessions.subscribe(woken);
+    useSessions.getState().setBusy("t1", true);
+    expect(woken).not.toHaveBeenCalled();
+    unsub();
   });
 });
 

@@ -192,7 +192,49 @@ describe("working animation", () => {
     core.noteOutput(true);
     vi.advanceTimersByTime(1001); // output ages out of the active window
     core.noteBusy(true);
-    expect(working).not.toHaveBeenCalled();
+    expect(working).not.toHaveBeenCalledWith(true);
+  });
+
+  test("a fresh core can clear a dot an earlier core lit", () => {
+    // The pane/listener handoff on a session switch: the store keeps the
+    // animation on, so the replacement reports the level, not an unseen edge.
+    const { core, working, id } = makeCore();
+    settle(core);
+    core.noteOutput(true);
+    core.noteBusy(true);
+    expect(working).toHaveBeenLastCalledWith(true);
+    core.dispose();
+    const next = createTerminalActivity({
+      id,
+      watched: () => false,
+      onNotify: () => {},
+      onWorking: working,
+    });
+    next.noteBusy(false);
+    expect(working).toHaveBeenLastCalledWith(false);
+    next.dispose();
+  });
+
+  test("a session switch doesn't blank the dot of a still-busy terminal", () => {
+    // The fresh core sees only the replayed screen, which isn't counted as
+    // output, so recency looks stale though the program never stopped.
+    const { core, working, id } = makeCore();
+    settle(core);
+    core.noteOutput(true);
+    core.noteBusy(true);
+    expect(working).toHaveBeenLastCalledWith(true);
+    core.dispose();
+    vi.advanceTimersByTime(1500); // the handoff gap, past the active window
+    const next = createTerminalActivity({
+      id,
+      watched: () => false,
+      onNotify: () => {},
+      onWorking: working,
+    });
+    next.noteBusy(true); // the attach seed, then the daemon's heartbeat
+    next.noteBusy(true);
+    expect(working).not.toHaveBeenCalledWith(false);
+    next.dispose();
   });
 
   test("the reattach replay burst doesn't light the dot for an idle agent", () => {
@@ -201,7 +243,7 @@ describe("working animation", () => {
     const { core, working } = makeCore();
     core.noteOutput(true); // replayed screen content, before settle
     core.noteBusy(true); // busy (foreground agent)
-    expect(working).not.toHaveBeenCalled();
+    expect(working).not.toHaveBeenCalledWith(true);
   });
 });
 

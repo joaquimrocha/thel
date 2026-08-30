@@ -48,6 +48,25 @@ export const terminalStatus = (id: string) =>
 export const terminalBusy = (id: string) =>
   terminalStatus(id).then((s) => s.busy);
 
+/** Ask for a terminal's current busy state and hand it to `apply`, unless the
+ * returned function has been called first.
+ *
+ * The daemon pushes busy only while a tab is busy, plus once as it goes idle,
+ * so a listener attached after that edge hears nothing and would keep whatever
+ * it already believed. Call the returned function when a pushed busy message
+ * arrives: that message is fresher than this answer, whichever lands first. */
+export function seedBusy(id: string, apply: (busy: boolean) => void) {
+  let superseded = false;
+  terminalBusy(id)
+    .then((busy) => {
+      if (!superseded) apply(busy);
+    })
+    .catch(() => {});
+  return () => {
+    superseded = true;
+  };
+}
+
 export interface TerminalUsage {
   // Cumulative CPU seconds of the terminal's whole process tree, not a rate:
   // two samples make a percentage.
