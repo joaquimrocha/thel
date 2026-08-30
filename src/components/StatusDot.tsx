@@ -10,10 +10,11 @@ export type DotState =
   | "busy" // a foreground process is running
   | "attention"; // wants attention (bell / exit while unfocused)
 
+// Muting covers the pulse too: it is a bid for attention like the rest.
 export function terminalDotState(t: Terminal): DotState {
   if (t.attention) return "attention";
   if (t.exited) return "exited";
-  return t.busy ? "busy" : "running";
+  return t.busy && !t.muted ? "busy" : "running";
 }
 
 export function sessionDotState(s: Session): DotState {
@@ -21,7 +22,7 @@ export function sessionDotState(s: Session): DotState {
   if (terminals.length === 0) return "none";
   if (terminals.some((t) => t.attention)) return "attention";
   const live = terminals.filter((t) => !t.exited);
-  if (live.some((t) => t.busy)) return "busy";
+  if (live.some((t) => t.busy && !t.muted)) return "busy";
   return live.length ? "running" : "exited";
 }
 
