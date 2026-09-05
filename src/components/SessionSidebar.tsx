@@ -20,7 +20,11 @@ import { useUI, SIDEBAR_MIN, SIDEBAR_MAX } from "@/store/ui";
 import { closeSessionConfirmed } from "@/lib/actions";
 import { shortcutLabel } from "@/store/keybindings";
 import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
-import { groupSessionsByRepo, type RepoGroup } from "@/lib/sessionGroups";
+import {
+  groupSessionsByRepo,
+  sessionNameInGroup,
+  type RepoGroup,
+} from "@/lib/sessionGroups";
 import { StatusDot, sessionDotState } from "./StatusDot";
 import { ActionTooltip } from "./ActionTooltip";
 import { ProfileMenu } from "./Titlebar";
@@ -232,10 +236,13 @@ export function SessionSidebar() {
 
   // Drag indices are positions in the flat session order, whichever way the
   // list is drawn; the keyboard highlight follows the drawn order.
-  const renderRow = (session: Session) => (
+  const renderRow = (session: Session, groupName?: string) => (
     <SessionRow
       key={session.id}
       session={session}
+      displayName={
+        groupName ? sessionNameInGroup(session.name, groupName) : session.name
+      }
       active={session.id === activeSessionId}
       highlighted={
         navFocused &&
@@ -340,10 +347,10 @@ export function SessionSidebar() {
             {grouped.groups.length > 0 && grouped.rest.length > 0 && (
               <div role="separator" className="!my-1.5 border-t border-border" />
             )}
-            {grouped.rest.map(renderRow)}
+            {grouped.rest.map((s) => renderRow(s))}
           </>
         ) : (
-          sessions.map(renderRow)
+          sessions.map((s) => renderRow(s))
         )}
       </div>
 
@@ -500,7 +507,7 @@ function RepoGroupRows({
   group: RepoGroup;
   folded: boolean;
   onToggle: () => void;
-  renderRow: (session: Session) => React.ReactNode;
+  renderRow: (session: Session, groupName?: string) => React.ReactNode;
 }) {
   const Chevron = folded ? ChevronRight : ChevronDown;
   // A folded group still has to show that something inside wants you.
@@ -526,13 +533,18 @@ function RepoGroupRows({
           {group.sessions.length}
         </span>
       </button>
-      {!folded && <div className="space-y-0.5 pl-2">{group.sessions.map(renderRow)}</div>}
+      {!folded && (
+        <div className="space-y-0.5 pl-2">
+          {group.sessions.map((s) => renderRow(s, group.name))}
+        </div>
+      )}
     </div>
   );
 }
 
 function SessionRow({
   session,
+  displayName,
   active,
   highlighted,
   dragging,
@@ -544,6 +556,7 @@ function SessionRow({
   onMenuOpenChange,
 }: {
   session: Session;
+  displayName: string;
   active: boolean;
   highlighted: boolean;
   dragging: boolean;
@@ -591,7 +604,7 @@ function SessionRow({
       </span>
       <div className="min-w-0 flex-1">
         <span className="block truncate" title="Double-click for session settings">
-          {session.name}
+          {displayName}
         </span>
         {session.branch && (
           <span className="flex items-center gap-1 text-xs text-muted-foreground/80">
