@@ -228,17 +228,42 @@ export function resetActiveTerminalZoom() {
   if (id) useSessions.getState().setZoom(id, usePrefs.getState().terminalZoom);
 }
 
-/** Cycle the active session (+1 next, -1 prev), in sidebar order. */
+/** Cycle the active session (+1 next, -1 prev), in sidebar order. Folded
+ * repo groups are skipped, so cycling doesn't spring one open; if every
+ * session is hidden that way, falls back to the full order. */
 export function cycleSession(dir: 1 | -1) {
   const { sessions, activeSessionId, setActiveSession } = useSessions.getState();
-  const order = sessionsInDisplayOrder(
-    sessions,
-    usePrefs.getState().groupSessionsByRepo,
-  );
+  const grouping = usePrefs.getState().groupSessionsByRepo;
+  const collapsedRepos = useUI.getState().collapsedRepos;
+  const order = sessionsInDisplayOrder(sessions, grouping, collapsedRepos);
   if (order.length === 0) return;
+
   const i = order.findIndex((x) => x.id === activeSessionId);
-  const next = (i + dir + order.length) % order.length;
-  setActiveSession(order[next].id);
+  if (i !== -1) {
+    const next = (i + dir + order.length) % order.length;
+    setActiveSession(order[next].id);
+    return;
+  }
+
+  // Active session is in a folded group and not present in `order`. Find the
+  // nearest visible session in direction `dir` from its slot in full order.
+  const fullOrder = sessionsInDisplayOrder(sessions, grouping, []);
+  const fullIndex = fullOrder.findIndex((x) => x.id === activeSessionId);
+  if (fullIndex === -1) {
+    setActiveSession(order[dir === 1 ? 0 : order.length - 1].id);
+    return;
+  }
+
+  const visibleIds = new Set(order.map((s) => s.id));
+  const len = fullOrder.length;
+  for (let k = 1; k < len; k++) {
+    const idx = (fullIndex + (dir * k) % len + len) % len;
+    const candidate = fullOrder[idx];
+    if (visibleIds.has(candidate.id)) {
+      setActiveSession(candidate.id);
+      return;
+    }
+  }
 }
 
 /** Move the active terminal within its pane one slot left (-1) or right (1). */
@@ -277,6 +302,7 @@ export function moveSession(dir: 1 | -1) {
   const order = sessionsInDisplayOrder(
     sessions,
     usePrefs.getState().groupSessionsByRepo,
+    useUI.getState().collapsedRepos,
   );
   const i = order.findIndex((x) => x.id === activeSessionId);
   const neighbour = order[i + dir];
