@@ -51,6 +51,18 @@ export function sessionsInDisplayOrder(
   return [...groups.flatMap((g) => g.sessions), ...rest];
 }
 
+/**
+ * A session's name as shown inside its repo group: worktree checkouts are
+ * usually named "<repo>.<branch>", and the group header already says the repo,
+ * so drop that prefix. A session named exactly after the repo keeps its name.
+ */
+export function sessionNameInGroup(name: string, groupName: string): string {
+  const prefix = `${groupName}.`;
+  return name.startsWith(prefix) && name.length > prefix.length
+    ? name.slice(prefix.length)
+    : name;
+}
+
 function lastSegment(p: string): string {
   const parts = p.replace(/[/\\]+$/, "").split(/[/\\]/);
   return parts[parts.length - 1] || p;

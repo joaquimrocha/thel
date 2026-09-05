@@ -126,3 +126,24 @@ test("keyboard navigation skips the rows of a folded group", async ({ page }) =>
   // The only visible row is the ungrouped session, so Enter lands there.
   await expect(page.locator("[data-row-id='s2']")).toHaveClass(/bg-secondary/);
 });
+
+test("a grouped row drops the repo name its session is prefixed with", async ({
+  page,
+}) => {
+  await open(page, true, {
+    activeSessionId: "s0",
+    sessions: [
+      session("s0", "thel", "/work/thel"),
+      session("s1", "thel.feature", "/work/thel.feature"),
+      session("s2", "thel.notes", "/home/u/notes"),
+    ],
+  });
+  // The header already says "thel", so only the part after it is left; the
+  // session named exactly after the repo keeps its name, and an ungrouped one
+  // is untouched.
+  await expect(group(page).locator("[data-row-id]")).toHaveText([
+    /^thel/,
+    /^feature/,
+  ]);
+  await expect(rows(page).last()).toContainText("thel.notes");
+});
