@@ -4,6 +4,7 @@ import {
   Plus,
   Bell,
   GitBranch,
+  PanelLeft,
   PanelLeftClose,
   PanelLeftOpen,
   Zap,
@@ -13,12 +14,13 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { useSessions, revertBrokenIcon, type Session } from "@/store/sessions";
 import { usePrefs } from "@/store/prefs";
 import { useNotifications } from "@/store/notifications";
 import { useUI, SIDEBAR_MIN, SIDEBAR_MAX } from "@/store/ui";
 import { closeSessionConfirmed } from "@/lib/actions";
-import { shortcutLabel } from "@/store/keybindings";
+import { shortcutLabel, useKeybindings } from "@/store/keybindings";
 import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
 import {
   groupSessionsByRepo,
@@ -356,24 +358,11 @@ export function SessionSidebar() {
       </div>
 
       <div className="flex items-center justify-between border-t border-border px-2 py-1.5">
-        <ActionTooltip
-          label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          shortcutId="toggle-sidebar"
-        >
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7"
-            onClick={handleToggle}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
-            {collapsed ? (
-              <PanelLeftOpen className="size-4" />
-            ) : (
-              <PanelLeftClose className="size-4" />
-            )}
-          </Button>
-        </ActionTooltip>
+        <SidebarMenu
+          collapsed={collapsed}
+          onToggleCollapsed={handleToggle}
+          shortcutTarget={!collapsed}
+        />
         <div className="flex items-center gap-0.5">{globalActions}</div>
       </div>
     </>
@@ -474,17 +463,7 @@ export function SessionSidebar() {
         ))}
       </div>
       <div className="flex justify-center border-t border-border py-1.5">
-        <ActionTooltip label="Expand sidebar" shortcutId="toggle-sidebar">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7"
-            onClick={handleToggle}
-            aria-label="Expand sidebar"
-          >
-            <PanelLeftOpen className="size-4" />
-          </Button>
-        </ActionTooltip>
+        <SidebarMenu collapsed onToggleCollapsed={handleToggle} shortcutTarget />
       </div>
 
       {hovered && !suppressOverlay && (
@@ -493,6 +472,161 @@ export function SessionSidebar() {
           className="absolute left-0 top-0 z-30 flex h-full flex-col border-r border-border bg-background shadow-xl duration-150 animate-in fade-in-0 slide-in-from-left-2"
         >
           {body}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The sidebar's own menu, anchored at the foot of the panel: it collapses or
+ * expands the sidebar and carries the settings that shape the session list.
+ * Hovering opens it, so the options are one gesture away, and clicking still
+ * works for keyboard and touch.
+ *
+ * `shortcutTarget` marks the instance the shortcut drives. A collapsed sidebar
+ * renders one menu on the rail and another in the hover fly-out, and only the
+ * rail's is always on screen, so it takes the shortcut.
+ */
+function SidebarMenu({
+  collapsed,
+  onToggleCollapsed,
+  shortcutTarget,
+}: {
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  shortcutTarget: boolean;
+}) {
+  const grouping = usePrefs((s) => s.groupSessionsByRepo);
+  const setGrouping = usePrefs((s) => s.setGroupSessionsByRepo);
+  // Re-render on a rebind so the shortcuts shown here stay current.
+  useKeybindings((s) => s.overrides);
+  // The shortcut toggles the store's flag, so the instance it drives reads its
+  // open state from there; the other keeps its own, purely for hover.
+  const storeOpen = useUI((s) => s.sidebarMenuOpen);
+  const setStoreOpen = useUI((s) => s.setSidebarMenuOpen);
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = shortcutTarget ? storeOpen : localOpen;
+  const setOpen = shortcutTarget ? setStoreOpen : setLocalOpen;
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // A hover-opened menu must not steal focus from the terminal; one opened by
+  // the shortcut or a click has to take it, or there is no way to walk it.
+  const byPointer = useRef(false);
+  // Closing lags the pointer leaving by a moment so the gap between the button
+  // and the menu doesn't snap it shut on the way in.
+  const closeTimer = useRef<number | null>(null);
+  const cancelClose = () => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+  useEffect(() => cancelClose, []);
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer.current = window.setTimeout(() => setOpen(false), 200);
+  };
+
+  // Leave the shared flag down when this instance goes away (collapsing the
+  // sidebar swaps which one is on screen), so the next one doesn't come up open.
+  useEffect(() => {
+    if (!shortcutTarget) return;
+    return () => setStoreOpen(false);
+  }, [shortcutTarget, setStoreOpen]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      rootRef.current?.querySelector("button")?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, setOpen]);
+
+  useEffect(() => {
+    // Arm the next open: a shortcut press has no pointer behind it.
+    if (!open) {
+      byPointer.current = false;
+      return;
+    }
+    if (byPointer.current) return;
+    menuRef.current?.querySelector<HTMLElement>("button")?.focus();
+  }, [open]);
+
+  const keys = shortcutLabel("toggle-sidebar");
+  return (
+    <div
+      ref={rootRef}
+      className="relative"
+      onMouseEnter={() => {
+        cancelClose();
+        byPointer.current = true;
+        setOpen(true);
+      }}
+      onMouseLeave={scheduleClose}
+    >
+      <ActionTooltip label="Sidebar menu" shortcutId="sidebar-menu">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7"
+          onClick={() => {
+            byPointer.current = true;
+            setOpen(!open);
+          }}
+          aria-label="Sidebar menu"
+          aria-haspopup="menu"
+          aria-expanded={open}
+        >
+          <PanelLeft className="size-4" />
+        </Button>
+      </ActionTooltip>
+      {open && (
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label="Sidebar menu"
+          aria-orientation="vertical"
+          onBlur={(e) => {
+            // Tabbing out of the menu closes it; focus moving between its own
+            // items does not.
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+              setOpen(false);
+          }}
+          className="absolute bottom-full left-0 z-50 mb-1 w-56 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+        >
+          <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-accent hover:text-accent-foreground">
+            <Switch
+              checked={grouping}
+              onCheckedChange={setGrouping}
+              aria-label="Group sessions by repo"
+            />
+            Group sessions by repo
+          </label>
+          <div role="separator" className="my-1 border-t border-border" />
+          <button
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onToggleCollapsed();
+            }}
+            className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+          >
+            {collapsed ? (
+              <PanelLeftOpen className="size-4 shrink-0" />
+            ) : (
+              <PanelLeftClose className="size-4 shrink-0" />
+            )}
+            <span>{collapsed ? "Expand sidebar" : "Collapse sidebar"}</span>
+            {keys && (
+              <kbd className="ml-auto rounded border border-border bg-muted px-1 font-mono text-[10px] text-muted-foreground">
+                {keys}
+              </kbd>
+            )}
+          </button>
         </div>
       )}
     </div>

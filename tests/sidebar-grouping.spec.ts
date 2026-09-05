@@ -163,3 +163,38 @@ test("a group's + button opens a new session anchored to its repo root", async (
   ).toBeVisible();
   await expect(page.getByPlaceholder("/path/to/folder")).toHaveValue("/work/thel/");
 });
+
+test("the sidebar menu toggles grouping and collapses the panel", async ({
+  page,
+}) => {
+  await open(page);
+  await expect(header(page)).toHaveCount(0);
+
+  // Hovering the menu button is enough to reach the options.
+  await page.getByRole("button", { name: "Sidebar menu" }).hover();
+  const menu = page.getByRole("menu", { name: "Sidebar menu" });
+  await expect(menu).toBeVisible();
+
+  await menu.getByRole("switch", { name: "Group sessions by repo" }).click();
+  await expect(header(page)).toBeVisible();
+
+  await menu.getByRole("menuitem", { name: /Collapse sidebar/ }).click();
+  await expect(page.locator("[data-session-list]")).toBeHidden();
+});
+
+test("Ctrl+Alt+B toggles the sidebar menu", async ({ page }) => {
+  await open(page);
+  const menu = page.getByRole("menu", { name: "Sidebar menu" });
+  await expect(menu).toBeHidden();
+
+  await page.keyboard.press("Control+Alt+B");
+  await expect(menu).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+
+  // The rail's menu takes over once the sidebar is collapsed.
+  await page.keyboard.press("Control+Shift+B");
+  await expect(page.locator("[data-session-list]")).toBeHidden();
+  await page.keyboard.press("Control+Alt+B");
+  await expect(menu).toBeVisible();
+});
