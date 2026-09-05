@@ -762,8 +762,15 @@ function SessionRow({
         </span>
         {session.branch && (
           <span className="flex items-center gap-1 text-xs text-muted-foreground/80">
-            <GitBranch className="size-3 shrink-0" />
-            <span className="truncate">{session.branch}</span>
+            <GitBranch data-branch-icon className="size-3 shrink-0" />
+            {/* The name above already says the branch when they match (a
+                worktree named after its own branch), so only the icon
+                needs to show; naming it again would be noise. */}
+            {session.branch !== displayName && (
+              <span data-branch-name className="truncate">
+                {session.branch}
+              </span>
+            )}
             {session.dirty && <span className="text-amber-500">✱</span>}
           </span>
         )}

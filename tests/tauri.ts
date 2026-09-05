@@ -242,7 +242,12 @@ function install(config: MockConfig) {
       case "git_info": {
         const g = m.git;
         const cwd = String(args.cwd || "");
-        if (g && (cwd === g.root || cwd.startsWith(g.root + "/"))) {
+        // A linked worktree ("<root>.<branch>") is still inside the repo, same
+        // as worktree_info below treats it.
+        if (
+          g &&
+          (cwd === g.root || cwd.startsWith(g.root + "/") || cwd.startsWith(g.root + "."))
+        ) {
           return { repo_root: g.root, branch: g.branch || "main", dirty: !!g.dirty };
         }
         return null;
