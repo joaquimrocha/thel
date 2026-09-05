@@ -29,7 +29,12 @@ function session(id: string, name: string, cwd: string) {
   };
 }
 
-async function open(page: Page, grouping?: boolean, l: typeof layout = layout) {
+async function open(
+  page: Page,
+  grouping?: boolean,
+  l: typeof layout = layout,
+  branch?: string,
+) {
   await page.addInitScript(
     ([l, g]) => {
       localStorage.setItem("__store__thel-layout.json", JSON.stringify({ layout: l }));
@@ -37,7 +42,7 @@ async function open(page: Page, grouping?: boolean, l: typeof layout = layout) {
     },
     [l, grouping] as const,
   );
-  await gotoApp(page, { git: { root: "/work/thel" } });
+  await gotoApp(page, { git: { root: "/work/thel", branch } });
 }
 
 const rows = (page: Page) => page.locator("[data-session-list] [data-row-id]");
@@ -175,6 +180,34 @@ test("cycling still works when every group is folded", async ({ page }) => {
   await page.keyboard.press("Control+Alt+PageDown");
   await expect(header(page)).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator("[data-row-id='s1']")).toHaveClass(/bg-secondary/);
+});
+
+test("a row hides the branch name when it matches, but keeps the branch icon", async ({
+  page,
+}) => {
+  await open(
+    page,
+    true,
+    {
+      activeSessionId: "s0",
+      sessions: [
+        session("s0", "thel", "/work/thel"),
+        session("s1", "thel.feature", "/work/thel.feature"),
+      ],
+    },
+    "feature",
+  );
+  // s1's displayed name is "feature" (the group prefix dropped) and its
+  // branch is also "feature": the icon still marks it as a branch, but the
+  // name isn't repeated.
+  const row = page.locator("[data-row-id='s1']");
+  await expect(row.locator("[data-branch-icon]")).toBeVisible();
+  await expect(row.locator("[data-branch-name]")).toHaveCount(0);
+
+  // s0's branch is also "feature" but its name is "thel": still different,
+  // so the branch line spells it out.
+  const s0 = page.locator("[data-row-id='s0']");
+  await expect(s0.locator("[data-branch-name]")).toHaveText("feature");
 });
 
 test("a grouped row drops the repo name its session is prefixed with", async ({
