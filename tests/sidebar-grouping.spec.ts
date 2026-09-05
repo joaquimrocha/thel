@@ -57,18 +57,23 @@ test("off by default; the settings switch groups a repo's worktrees under it", a
   await page.keyboard.press("Escape");
 
   await expect(header(page)).toBeVisible();
-  await expect(header(page)).toContainText("2");
+  // Expanded: the sessions are visible, so no need for a count.
+  await expect(header(page)).not.toContainText("2");
   await expect(group(page).locator("[data-row-id]")).toHaveText([/thel/, /feature/]);
   // The non-repo session stays a plain row after the groups.
   await expect(rows(page).last()).toContainText("notes");
   await expect(group(page).locator("[data-row-id='s2']")).toHaveCount(0);
 });
 
-test("folding a group hides its rows and survives a reload", async ({ page }) => {
+test("folding a group hides its rows and shows a count; expanding drops it", async ({
+  page,
+}) => {
   await open(page, true);
   await expect(header(page)).toHaveAttribute("aria-expanded", "true");
+  await expect(group(page)).not.toContainText("2");
   await header(page).click();
   await expect(header(page)).toHaveAttribute("aria-expanded", "false");
+  await expect(group(page)).toContainText("2");
   await expect(rows(page)).toHaveCount(1);
   await expect(rows(page)).toContainText("notes");
 
@@ -146,4 +151,15 @@ test("a grouped row drops the repo name its session is prefixed with", async ({
     /^feature/,
   ]);
   await expect(rows(page).last()).toContainText("thel.notes");
+});
+
+test("a group's + button opens a new session anchored to its repo root", async ({
+  page,
+}) => {
+  await open(page, true);
+  await page.getByLabel("New session in thel").click({ force: true });
+  await expect(
+    page.getByText("Anchor a session to a folder or git worktree."),
+  ).toBeVisible();
+  await expect(page.getByPlaceholder("/path/to/folder")).toHaveValue("/work/thel/");
 });

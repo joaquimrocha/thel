@@ -16,8 +16,12 @@ export interface ConfirmRequest {
 
 interface UIState {
   newSessionOpen: boolean;
+  // Directory the dialog should default to; set when opened from a repo
+  // group's "+" button. Cleared once consumed so a later plain open falls
+  // back to the active session's cwd.
+  newSessionDir: string | null;
   setNewSessionOpen: (open: boolean) => void;
-  openNewSession: () => void;
+  openNewSession: (dir?: string) => void;
 
   settingsOpen: boolean;
   // Which settings tab to show when the dialog (re)opens.
@@ -157,8 +161,10 @@ function writeCollapsedRepos(repos: string[]): void {
 
 export const useUI = create<UIState>((set) => ({
   newSessionOpen: false,
-  setNewSessionOpen: (open) => set({ newSessionOpen: open }),
-  openNewSession: () => set({ newSessionOpen: true }),
+  newSessionDir: null,
+  setNewSessionOpen: (open) =>
+    set({ newSessionOpen: open, ...(open ? {} : { newSessionDir: null }) }),
+  openNewSession: (dir) => set({ newSessionOpen: true, newSessionDir: dir ?? null }),
 
   settingsOpen: false,
   settingsTab: "appearance",

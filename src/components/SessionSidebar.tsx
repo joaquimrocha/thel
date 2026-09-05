@@ -305,7 +305,7 @@ export function SessionSidebar() {
           <Button
             variant="ghost"
             size="icon"
-            onClick={openNewSession}
+            onClick={() => openNewSession()}
             aria-label="New session"
           >
             <Plus className="size-4" />
@@ -342,6 +342,7 @@ export function SessionSidebar() {
                 folded={collapsedRepos.includes(g.key)}
                 onToggle={() => toggleRepoCollapsed(g.key)}
                 renderRow={renderRow}
+                hoverArmed={hoverArmed}
               />
             ))}
             {grouped.groups.length > 0 && grouped.rest.length > 0 && (
@@ -503,36 +504,60 @@ function RepoGroupRows({
   folded,
   onToggle,
   renderRow,
+  hoverArmed,
 }: {
   group: RepoGroup;
   folded: boolean;
   onToggle: () => void;
   renderRow: (session: Session, groupName?: string) => React.ReactNode;
+  hoverArmed: boolean;
 }) {
+  const openNewSession = useUI((s) => s.openNewSession);
   const Chevron = folded ? ChevronRight : ChevronDown;
   // A folded group still has to show that something inside wants you.
   const attention =
     folded && group.sessions.some((s) => sessionDotState(s) === "attention");
   return (
-    <div data-repo-group={group.key} className="space-y-0.5">
-      <button
-        onClick={onToggle}
-        aria-expanded={!folded}
-        aria-label={`${group.name} repo`}
-        // Rows are drop targets; a header between them must not refuse the
-        // drag, or the cursor flips to "no drop" as it passes over.
-        onDragOver={(e) => e.preventDefault()}
-        className="flex w-full items-center gap-1 rounded-md px-1 py-1 text-xs font-medium text-muted-foreground hover:bg-secondary/50"
-      >
-        <Chevron className="size-3.5 shrink-0" />
-        <span className="truncate">{group.name}</span>
-        {attention && (
-          <span className="size-1.5 shrink-0 rounded-full bg-blue-500" />
+    <div data-repo-group={group.key} className="group/repo space-y-0.5">
+      <div className="flex items-center gap-1 rounded-md px-1 py-1 hover:bg-secondary/50">
+        <button
+          onClick={onToggle}
+          aria-expanded={!folded}
+          aria-label={`${group.name} repo`}
+          // Rows are drop targets; a header between them must not refuse the
+          // drag, or the cursor flips to "no drop" as it passes over.
+          onDragOver={(e) => e.preventDefault()}
+          className="flex min-w-0 flex-1 items-center gap-1 text-xs font-medium text-muted-foreground"
+        >
+          <Chevron className="size-3.5 shrink-0" />
+          <span className="truncate">{group.name}</span>
+          {attention && (
+            <span className="size-1.5 shrink-0 rounded-full bg-blue-500" />
+          )}
+        </button>
+        <ActionTooltip label="New session here">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              openNewSession(group.key);
+            }}
+            className={cn(
+              "shrink-0 rounded opacity-0 focus-visible:opacity-100 hover:bg-background/60",
+              hoverArmed && "group-hover/repo:opacity-100",
+            )}
+            aria-label={`New session in ${group.name}`}
+          >
+            <Plus className="size-3.5" />
+          </button>
+        </ActionTooltip>
+        {/* The count stands in for the chevron's collapsed state: once you can
+            see the sessions, counting them is pointless. */}
+        {folded && (
+          <span className="pl-1 text-xs tabular-nums text-muted-foreground/70">
+            {group.sessions.length}
+          </span>
         )}
-        <span className="ml-auto pl-1 tabular-nums text-muted-foreground/70">
-          {group.sessions.length}
-        </span>
-      </button>
+      </div>
       {!folded && (
         <div className="space-y-0.5 pl-2">
           {group.sessions.map((s) => renderRow(s, group.name))}

@@ -38,6 +38,7 @@ import { BranchInput } from "./BranchInput";
 
 export function NewSessionDialog() {
   const open_ = useUI((s) => s.newSessionOpen);
+  const newSessionDir = useUI((s) => s.newSessionDir);
   const setOpen = useUI((s) => s.setNewSessionOpen);
   const focusTerminal = useUI((s) => s.focusTerminal);
 
@@ -166,9 +167,15 @@ export function NewSessionDialog() {
     setNotFound(false);
     let cancelled = false;
     void (async () => {
-      const { sessions, activeSessionId } = useSessions.getState();
-      const prev = sessions.find((s) => s.id === activeSessionId)?.cwd;
-      const start = prev ?? (await homeDir().catch(() => null));
+      let start: string | null | undefined = newSessionDir;
+      if (newSessionDir) {
+        useUI.setState({ newSessionDir: null });
+      }
+      if (!start) {
+        const { sessions, activeSessionId } = useSessions.getState();
+        const prev = sessions.find((s) => s.id === activeSessionId)?.cwd;
+        start = prev ?? (await homeDir().catch(() => null));
+      }
       if (cancelled || !start) return;
       const wt = await worktreeInfo(start).catch(() => null);
       if (cancelled) return;
