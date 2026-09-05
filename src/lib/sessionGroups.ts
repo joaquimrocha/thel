@@ -39,16 +39,26 @@ export function groupSessionsByRepo(sessions: Session[]): {
 
 /**
  * The sessions in the order the sidebar lays them out: grouped by repo when
- * grouping is on (folded groups included, since selecting a session in one
- * unfolds it), otherwise the plain order.
+ * grouping is on, otherwise the plain order. `collapsedRepos` (group keys)
+ * hides folded groups' sessions, so keyboard navigation only visits what's
+ * on screen and a folded group doesn't spring open as you pass through it.
+ * If every session would be hidden this way (every group folded, nothing
+ * ungrouped), falls back to the full list so navigation is never a no-op.
  */
 export function sessionsInDisplayOrder(
   sessions: Session[],
   grouping: boolean,
+  collapsedRepos: string[] = [],
 ): Session[] {
   if (!grouping) return sessions;
   const { groups, rest } = groupSessionsByRepo(sessions);
-  return [...groups.flatMap((g) => g.sessions), ...rest];
+  const visible = [
+    ...groups.flatMap((g) => (collapsedRepos.includes(g.key) ? [] : g.sessions)),
+    ...rest,
+  ];
+  return visible.length > 0
+    ? visible
+    : [...groups.flatMap((g) => g.sessions), ...rest];
 }
 
 /**

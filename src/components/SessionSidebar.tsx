@@ -24,6 +24,7 @@ import { shortcutLabel, useKeybindings } from "@/store/keybindings";
 import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
 import {
   groupSessionsByRepo,
+  sessionsInDisplayOrder,
   sessionNameInGroup,
   type RepoGroup,
 } from "@/lib/sessionGroups";
@@ -61,23 +62,17 @@ export function SessionSidebar() {
   const expandRepo = useUI((s) => s.expandRepo);
   const grouped = grouping ? groupSessionsByRepo(sessions) : null;
   // Rows in display order, which the keyboard cursor walks; a folded group's
-  // sessions are off screen and skipped.
-  const visible: Session[] = grouped
-    ? [
-        ...grouped.groups.flatMap((g) =>
-          collapsedRepos.includes(g.key) ? [] : g.sessions,
-        ),
-        ...grouped.rest,
-      ]
-    : sessions;
+  // sessions are off screen and skipped (unless that would hide everything).
+  const visible: Session[] = sessionsInDisplayOrder(sessions, grouping, collapsedRepos);
   // The icon rail shows every session, folded groups included, but in grouped
   // display order so it matches the expanded list. One chunk per repo group
   // plus one for the ungrouped rest; a thin line separates chunks.
   const railChunks: Session[][] = (
     grouped ? [...grouped.groups.map((g) => g.sessions), grouped.rest] : [sessions]
   ).filter((c) => c.length > 0);
-  // Switching to a session inside a folded group (palette, shortcut) unfolds
-  // it, so the row you are now in is on screen.
+  // Switching to a session inside a folded group (palette, or cycling when
+  // every group is folded) unfolds it, so the row you are now in is on
+  // screen.
   useEffect(() => {
     if (!grouping) return;
     const s = useSessions.getState().sessions.find((x) => x.id === activeSessionId);

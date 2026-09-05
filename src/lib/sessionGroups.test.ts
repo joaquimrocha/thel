@@ -64,6 +64,20 @@ describe("sessionsInDisplayOrder", () => {
       sessionsInDisplayOrder([a1, b1, plain, a2], true).map((s) => s.id),
     ).toEqual(["a1", "a2", "b1", "plain"]);
   });
+
+  it("skips a folded group's sessions", () => {
+    expect(
+      sessionsInDisplayOrder([a1, b1, plain, a2], true, ["/work/thel"]).map(
+        (s) => s.id,
+      ),
+    ).toEqual(["b1", "plain"]);
+  });
+
+  it("falls back to the full order if folding hides every session", () => {
+    expect(
+      sessionsInDisplayOrder([a1, a2], true, ["/work/thel"]).map((s) => s.id),
+    ).toEqual(["a1", "a2"]);
+  });
 });
 
 describe("sessionNameInGroup", () => {

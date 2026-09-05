@@ -132,6 +132,51 @@ test("keyboard navigation skips the rows of a folded group", async ({ page }) =>
   await expect(page.locator("[data-row-id='s2']")).toHaveClass(/bg-secondary/);
 });
 
+test("cycling sessions skips a folded group instead of springing it open", async ({
+  page,
+}) => {
+  await open(page, true, {
+    activeSessionId: "s3",
+    sessions: [
+      session("s0", "thel", "/work/thel"),
+      session("s1", "feature", "/work/thel.feature"),
+      session("s2", "notes", "/home/u/notes"),
+      session("s3", "other", "/home/u/other"),
+    ],
+  });
+  await header(page).click();
+  await expect(header(page)).toHaveAttribute("aria-expanded", "false");
+
+  // From the last visible row, next wraps to the first visible row, not into
+  // the folded group.
+  await page.keyboard.press("Control+Alt+PageDown");
+  await expect(page.locator("[data-row-id='s2']")).toHaveClass(/bg-secondary/);
+  await expect(header(page)).toHaveAttribute("aria-expanded", "false");
+
+  // And back the other way.
+  await page.keyboard.press("Control+Alt+PageUp");
+  await expect(page.locator("[data-row-id='s3']")).toHaveClass(/bg-secondary/);
+  await expect(header(page)).toHaveAttribute("aria-expanded", "false");
+});
+
+test("cycling still works when every group is folded", async ({ page }) => {
+  await open(page, true, {
+    activeSessionId: "s0",
+    sessions: [
+      session("s0", "thel", "/work/thel"),
+      session("s1", "feature", "/work/thel.feature"),
+    ],
+  });
+  await header(page).click();
+  await expect(rows(page)).toHaveCount(0);
+
+  // Nothing is on screen to land on, so cycling falls back to the full list
+  // and unfolds the group it lands in.
+  await page.keyboard.press("Control+Alt+PageDown");
+  await expect(header(page)).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("[data-row-id='s1']")).toHaveClass(/bg-secondary/);
+});
+
 test("a grouped row drops the repo name its session is prefixed with", async ({
   page,
 }) => {
