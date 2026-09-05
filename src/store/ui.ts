@@ -83,6 +83,11 @@ interface UIState {
   setSidebarWidth: (w: number) => void;
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
+  // Repo groups folded shut in the sidebar, keyed by the repo's main worktree
+  // path (Session.repoMain). Persisted so a fold survives a restart.
+  collapsedRepos: string[];
+  toggleRepoCollapsed: (repo: string) => void;
+  expandRepo: (repo: string) => void;
 
   // The session whose settings dialog (name + icon) is open (null = closed).
   sessionSettings: string | null;
@@ -118,6 +123,7 @@ export const SIDEBAR_MAX = 480;
 
 const WIDTH_KEY = "thel.sidebarWidth";
 const COLLAPSED_KEY = "thel.sidebarCollapsed";
+const COLLAPSED_REPOS_KEY = "thel.sidebarCollapsedRepos";
 
 function readWidth(): number {
   if (typeof localStorage === "undefined") return 224;
@@ -132,6 +138,21 @@ function readCollapsed(): boolean {
     typeof localStorage !== "undefined" &&
     localStorage.getItem(COLLAPSED_KEY) === "1"
   );
+}
+
+function readCollapsedRepos(): string[] {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(COLLAPSED_REPOS_KEY) ?? "[]");
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCollapsedRepos(repos: string[]): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(COLLAPSED_REPOS_KEY, JSON.stringify(repos));
 }
 
 export const useUI = create<UIState>((set) => ({
@@ -204,6 +225,22 @@ export const useUI = create<UIState>((set) => ({
       const collapsed = !s.sidebarCollapsed;
       localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
       return { sidebarCollapsed: collapsed };
+    }),
+  collapsedRepos: readCollapsedRepos(),
+  toggleRepoCollapsed: (repo) =>
+    set((s) => {
+      const collapsedRepos = s.collapsedRepos.includes(repo)
+        ? s.collapsedRepos.filter((r) => r !== repo)
+        : [...s.collapsedRepos, repo];
+      writeCollapsedRepos(collapsedRepos);
+      return { collapsedRepos };
+    }),
+  expandRepo: (repo) =>
+    set((s) => {
+      if (!s.collapsedRepos.includes(repo)) return {};
+      const collapsedRepos = s.collapsedRepos.filter((r) => r !== repo);
+      writeCollapsedRepos(collapsedRepos);
+      return { collapsedRepos };
     }),
 
   sessionSettings: null,

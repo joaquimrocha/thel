@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   X,
   Plus,
@@ -8,6 +8,8 @@ import {
   PanelLeftOpen,
   Zap,
   Settings,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -18,6 +20,7 @@ import { useUI, SIDEBAR_MIN, SIDEBAR_MAX } from "@/store/ui";
 import { closeSessionConfirmed } from "@/lib/actions";
 import { shortcutLabel } from "@/store/keybindings";
 import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
+import { groupSessionsByRepo, type RepoGroup } from "@/lib/sessionGroups";
 import { StatusDot, sessionDotState } from "./StatusDot";
 import { ActionTooltip } from "./ActionTooltip";
 import { ProfileMenu } from "./Titlebar";
@@ -46,6 +49,35 @@ export function SessionSidebar() {
   const collapsed = useUI((s) => s.sidebarCollapsed);
   const toggleSidebar = useUI((s) => s.toggleSidebar);
   const setSidebarWidth = useUI((s) => s.setSidebarWidth);
+  const grouping = usePrefs((s) => s.groupSessionsByRepo);
+  const collapsedRepos = useUI((s) => s.collapsedRepos);
+  const toggleRepoCollapsed = useUI((s) => s.toggleRepoCollapsed);
+  const expandRepo = useUI((s) => s.expandRepo);
+  const grouped = grouping ? groupSessionsByRepo(sessions) : null;
+  // Rows in display order, which the keyboard cursor walks; a folded group's
+  // sessions are off screen and skipped.
+  const visible: Session[] = grouped
+    ? [
+        ...grouped.groups.flatMap((g) =>
+          collapsedRepos.includes(g.key) ? [] : g.sessions,
+        ),
+        ...grouped.rest,
+      ]
+    : sessions;
+  // The icon rail shows every session, folded groups included, but in grouped
+  // display order so it matches the expanded list. One chunk per repo group
+  // plus one for the ungrouped rest; a thin line separates chunks.
+  const railChunks: Session[][] = (
+    grouped ? [...grouped.groups.map((g) => g.sessions), grouped.rest] : [sessions]
+  ).filter((c) => c.length > 0);
+  // Switching to a session inside a folded group (palette, shortcut) unfolds
+  // it, so the row you are now in is on screen.
+  useEffect(() => {
+    if (!grouping) return;
+    const s = useSessions.getState().sessions.find((x) => x.id === activeSessionId);
+    const key = s?.repoMain ?? s?.repoRoot;
+    if (key) expandRepo(key);
+  }, [activeSessionId, grouping, expandRepo]);
   const [hovered, setHovered] = useState(false);
   const [suppressOverlay, setSuppressOverlay] = useState(false);
   // Closing the collapsed fly-out lags the mouse leaving by a moment, so a
@@ -173,8 +205,8 @@ export function SessionSidebar() {
   };
 
   const onListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (sessions.length === 0) return;
-    const max = sessions.length - 1;
+    if (visible.length === 0) return;
+    const max = visible.length - 1;
     const cur = Math.min(highlight, max);
     if (e.key === "ArrowDown" || e.key === "j") {
       e.preventDefault();
@@ -184,12 +216,12 @@ export function SessionSidebar() {
       setHighlight(Math.max(0, cur - 1));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      setActiveSession(sessions[cur].id);
+      setActiveSession(visible[cur].id);
       e.currentTarget.blur();
       focusTerminal();
     } else if (e.key === "x" || e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
-      void closeSessionConfirmed(sessions[cur].id);
+      void closeSessionConfirmed(visible[cur].id);
       setHighlight(Math.max(0, Math.min(cur, max - 1)));
     } else if (e.key === "Escape") {
       e.preventDefault();
@@ -197,6 +229,27 @@ export function SessionSidebar() {
       focusTerminal();
     }
   };
+
+  // Drag indices are positions in the flat session order, whichever way the
+  // list is drawn; the keyboard highlight follows the drawn order.
+  const renderRow = (session: Session) => (
+    <SessionRow
+      key={session.id}
+      session={session}
+      active={session.id === activeSessionId}
+      highlighted={
+        navFocused &&
+        visible.indexOf(session) === Math.min(highlight, visible.length - 1)
+      }
+      dragging={dragging === session.id}
+      hoverArmed={hoverArmed}
+      onSelect={() => setActiveSession(session.id)}
+      onClose={() => closeSessionConfirmed(session.id)}
+      onDragStart={(e) => startRowDrag(e, session.id)}
+      onDragOver={(e) => onRowDragOver(e, session.id, sessions.indexOf(session))}
+      onMenuOpenChange={onRowMenuOpenChange}
+    />
+  );
 
   const notificationsButton = (
     <ActionTooltip label="Notifications" shortcutId="notifications">
@@ -260,7 +313,7 @@ export function SessionSidebar() {
         onKeyDown={onListKeyDown}
         onFocus={() => {
           setNavFocused(true);
-          const i = sessions.findIndex((s) => s.id === activeSessionId);
+          const i = visible.findIndex((s) => s.id === activeSessionId);
           setHighlight(i >= 0 ? i : 0);
         }}
         onBlur={() => setNavFocused(false)}
@@ -273,21 +326,25 @@ export function SessionSidebar() {
             No sessions yet.
           </p>
         )}
-        {sessions.map((session, i) => (
-          <SessionRow
-            key={session.id}
-            session={session}
-            active={session.id === activeSessionId}
-            highlighted={navFocused && i === Math.min(highlight, sessions.length - 1)}
-            dragging={dragging === session.id}
-            hoverArmed={hoverArmed}
-            onSelect={() => setActiveSession(session.id)}
-            onClose={() => closeSessionConfirmed(session.id)}
-            onDragStart={(e) => startRowDrag(e, session.id)}
-            onDragOver={(e) => onRowDragOver(e, session.id, i)}
-            onMenuOpenChange={onRowMenuOpenChange}
-          />
-        ))}
+        {grouped ? (
+          <>
+            {grouped.groups.map((g) => (
+              <RepoGroupRows
+                key={g.key}
+                group={g}
+                folded={collapsedRepos.includes(g.key)}
+                onToggle={() => toggleRepoCollapsed(g.key)}
+                renderRow={renderRow}
+              />
+            ))}
+            {grouped.groups.length > 0 && grouped.rest.length > 0 && (
+              <div role="separator" className="!my-1.5 border-t border-border" />
+            )}
+            {grouped.rest.map(renderRow)}
+          </>
+        ) : (
+          sessions.map(renderRow)
+        )}
       </div>
 
       <div className="flex items-center justify-between border-t border-border px-2 py-1.5">
@@ -372,27 +429,40 @@ export function SessionSidebar() {
       <div className="flex h-10 w-full shrink-0 items-center justify-center">
         {notificationsButton}
       </div>
-      <div className="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1">
-        {sessions.map((s) => (
-          <ActionTooltip key={s.id} label={s.name}>
-            <button
-              onClick={() => setActiveSession(s.id)}
-              aria-label={s.name}
-              className={cn(
-                "flex size-7 items-center justify-center rounded-md",
-                s.id === activeSessionId
-                  ? "bg-secondary"
-                  : "hover:bg-secondary/50",
-              )}
-            >
-              <StatusDot
-                state={sessionDotState(s)}
-                icon={s.icon}
-                onIconError={() => revertBrokenIcon(s.id, s.icon)}
-                className="size-2"
+      <div
+        data-session-rail
+        className="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1"
+      >
+        {railChunks.map((chunk, i) => (
+          <Fragment key={chunk[0].id}>
+            {i > 0 && (
+              <div
+                role="separator"
+                className="h-px w-6 shrink-0 bg-muted-foreground/40"
               />
-            </button>
-          </ActionTooltip>
+            )}
+            {chunk.map((s) => (
+              <ActionTooltip key={s.id} label={s.name}>
+                <button
+                  onClick={() => setActiveSession(s.id)}
+                  aria-label={s.name}
+                  className={cn(
+                    "flex size-7 items-center justify-center rounded-md",
+                    s.id === activeSessionId
+                      ? "bg-secondary"
+                      : "hover:bg-secondary/50",
+                  )}
+                >
+                  <StatusDot
+                    state={sessionDotState(s)}
+                    icon={s.icon}
+                    onIconError={() => revertBrokenIcon(s.id, s.icon)}
+                    className="size-2"
+                  />
+                </button>
+              </ActionTooltip>
+            ))}
+          </Fragment>
         ))}
       </div>
       <div className="flex justify-center border-t border-border py-1.5">
@@ -417,6 +487,46 @@ export function SessionSidebar() {
           {body}
         </div>
       )}
+    </div>
+  );
+}
+
+function RepoGroupRows({
+  group,
+  folded,
+  onToggle,
+  renderRow,
+}: {
+  group: RepoGroup;
+  folded: boolean;
+  onToggle: () => void;
+  renderRow: (session: Session) => React.ReactNode;
+}) {
+  const Chevron = folded ? ChevronRight : ChevronDown;
+  // A folded group still has to show that something inside wants you.
+  const attention =
+    folded && group.sessions.some((s) => sessionDotState(s) === "attention");
+  return (
+    <div data-repo-group={group.key} className="space-y-0.5">
+      <button
+        onClick={onToggle}
+        aria-expanded={!folded}
+        aria-label={`${group.name} repo`}
+        // Rows are drop targets; a header between them must not refuse the
+        // drag, or the cursor flips to "no drop" as it passes over.
+        onDragOver={(e) => e.preventDefault()}
+        className="flex w-full items-center gap-1 rounded-md px-1 py-1 text-xs font-medium text-muted-foreground hover:bg-secondary/50"
+      >
+        <Chevron className="size-3.5 shrink-0" />
+        <span className="truncate">{group.name}</span>
+        {attention && (
+          <span className="size-1.5 shrink-0 rounded-full bg-blue-500" />
+        )}
+        <span className="ml-auto pl-1 tabular-nums text-muted-foreground/70">
+          {group.sessions.length}
+        </span>
+      </button>
+      {!folded && <div className="space-y-0.5 pl-2">{group.sessions.map(renderRow)}</div>}
     </div>
   );
 }
