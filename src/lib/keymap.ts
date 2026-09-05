@@ -336,6 +336,16 @@ export const SHORTCUTS: Shortcut[] = [
     run: () => ui().toggleSidebar(),
   },
   {
+    id: "sidebar-menu",
+    description: "Sidebar menu",
+    // Shares the sidebar's B, one modifier along, since it opens on the panel.
+    defaultCombo: def(
+      { code: "KeyB", meta: true, shift: true },
+      { code: "KeyB", ctrl: true, alt: true },
+    ),
+    run: () => ui().toggleSidebarMenu(),
+  },
+  {
     id: "notifications",
     description: "Notifications",
     defaultCombo: def(

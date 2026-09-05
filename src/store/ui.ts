@@ -63,6 +63,12 @@ interface UIState {
   setProfileMenuOpen: (open: boolean) => void;
   toggleProfileMenu: () => void;
 
+  // The sidebar's own menu (grouping, collapse). Kept here so the shortcut can
+  // reach it, as the profile menu's is.
+  sidebarMenuOpen: boolean;
+  setSidebarMenuOpen: (open: boolean) => void;
+  toggleSidebarMenu: () => void;
+
   // The "new profile" dialog, hoisted to the store so both the in-app menu (Linux)
   // and the native menu bar (macOS) can open it without owning a local copy.
   profileDialogOpen: boolean;
@@ -201,6 +207,10 @@ export const useUI = create<UIState>((set) => ({
   profileMenuOpen: false,
   setProfileMenuOpen: (open) => set({ profileMenuOpen: open }),
   toggleProfileMenu: () => set((s) => ({ profileMenuOpen: !s.profileMenuOpen })),
+
+  sidebarMenuOpen: false,
+  setSidebarMenuOpen: (open) => set({ sidebarMenuOpen: open }),
+  toggleSidebarMenu: () => set((s) => ({ sidebarMenuOpen: !s.sidebarMenuOpen })),
 
   profileDialogOpen: false,
   setProfileDialogOpen: (open) => set({ profileDialogOpen: open }),
