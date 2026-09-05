@@ -11,6 +11,7 @@ import { clampZoomOffset } from "@/lib/theme";
 import { terminalBusy } from "@/lib/pty";
 import { gitInfo, worktreeInfo, removeWorktree } from "@/lib/git";
 import { abbreviatePath } from "@/lib/paths";
+import { sessionsInDisplayOrder } from "@/lib/sessionGroups";
 import { toast } from "sonner";
 
 /** Close a terminal, confirming first if a command is running. */
@@ -227,13 +228,17 @@ export function resetActiveTerminalZoom() {
   if (id) useSessions.getState().setZoom(id, usePrefs.getState().terminalZoom);
 }
 
-/** Cycle the active session (+1 next, -1 prev). */
+/** Cycle the active session (+1 next, -1 prev), in sidebar order. */
 export function cycleSession(dir: 1 | -1) {
   const { sessions, activeSessionId, setActiveSession } = useSessions.getState();
-  if (sessions.length === 0) return;
-  const i = sessions.findIndex((x) => x.id === activeSessionId);
-  const next = (i + dir + sessions.length) % sessions.length;
-  setActiveSession(sessions[next].id);
+  const order = sessionsInDisplayOrder(
+    sessions,
+    usePrefs.getState().groupSessionsByRepo,
+  );
+  if (order.length === 0) return;
+  const i = order.findIndex((x) => x.id === activeSessionId);
+  const next = (i + dir + order.length) % order.length;
+  setActiveSession(order[next].id);
 }
 
 /** Move the active terminal within its pane one slot left (-1) or right (1). */
@@ -264,11 +269,17 @@ export function moveTerminalToPane(dir: 1 | -1) {
   moveTerminalToGroup(s.id, g.activeTerminalId, targetId, target.terminals.length);
 }
 
-/** Move the active session up (-1) or down (1) in the sidebar. */
+/** Move the active session up (-1) or down (1) in the sidebar. Swaps with its
+ * neighbour as drawn, so grouping doesn't send the row somewhere unexpected. */
 export function moveSession(dir: 1 | -1) {
   const { sessions, activeSessionId, reorderSession } = useSessions.getState();
   if (!activeSessionId) return;
-  const i = sessions.findIndex((x) => x.id === activeSessionId);
-  if (i === -1) return;
-  reorderSession(activeSessionId, i + dir);
+  const order = sessionsInDisplayOrder(
+    sessions,
+    usePrefs.getState().groupSessionsByRepo,
+  );
+  const i = order.findIndex((x) => x.id === activeSessionId);
+  const neighbour = order[i + dir];
+  if (i === -1 || !neighbour) return;
+  reorderSession(activeSessionId, sessions.findIndex((x) => x.id === neighbour.id));
 }

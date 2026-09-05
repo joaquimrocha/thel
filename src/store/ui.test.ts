@@ -40,3 +40,12 @@ describe("confirm queue", () => {
     expect(useUI.getState().confirmQueue).toHaveLength(0);
   });
 });
+
+describe("toggleRepoCollapsed", () => {
+  test("toggles folded state without throwing when localStorage is unavailable", () => {
+    expect(() => useUI.getState().toggleRepoCollapsed("/work/repo")).not.toThrow();
+    expect(useUI.getState().collapsedRepos).toContain("/work/repo");
+    useUI.getState().toggleRepoCollapsed("/work/repo");
+    expect(useUI.getState().collapsedRepos).not.toContain("/work/repo");
+  });
+});

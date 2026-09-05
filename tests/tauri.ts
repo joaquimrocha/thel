@@ -21,6 +21,7 @@ export interface MockConfig {
   // check_daemon response (default "none": nothing running to talk to).
   daemonHealth?: "ok" | "skew" | "none";
   // worktree_info response (whether the session dir is a linked worktree).
+  // Unset: derived from `git` (root = main checkout, "<root>.x" = linked).
   worktreeInfo?: { is_linked: boolean; path: string; main: string } | null;
   // A git repo to report for paths under `root`.
   git?: {
@@ -295,8 +296,16 @@ function install(config: MockConfig) {
       case "restart_daemon":
         (w.__MOCK__ as Record<string, unknown>).restartedDaemon = true;
         return null;
-      case "worktree_info":
-        return m.worktreeInfo ?? null;
+      case "worktree_info": {
+        if (m.worktreeInfo !== undefined) return m.worktreeInfo;
+        // Derive from the git config: the root is the main checkout, and a
+        // sibling "<root>.<branch>" folder is one of its linked worktrees.
+        const g = m.git;
+        const cwd = String(args.cwd || "");
+        if (g && (cwd === g.root || cwd.startsWith(g.root + "/") || cwd.startsWith(g.root + ".")))
+          return { is_linked: cwd !== g.root, path: cwd, main: g.root };
+        return null;
+      }
       case "remove_worktree": {
         const store = w.__MOCK__ as Record<string, unknown>;
         const list = (store.removed as unknown[]) || [];

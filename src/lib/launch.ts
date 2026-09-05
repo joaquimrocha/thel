@@ -1,6 +1,6 @@
 import { defaultShell, programExists, spawnDetached, terminalCwd } from "./pty";
 import { toast } from "sonner";
-import { gitInfo } from "./git";
+import { gitInfo, worktreeInfo } from "./git";
 import { abbreviatePath } from "./paths";
 import {
   useSessions,
@@ -159,13 +159,16 @@ function showLaunchError(launcher: Launcher, e: unknown) {
   });
 }
 
-/** Refresh a session's git branch/dirty state from its cwd. */
+/** Refresh a session's git branch/dirty state and repo from its cwd. */
 export async function refreshSessionGit(sessionId: string) {
   const store = useSessions.getState();
   const session = store.sessions.find((s) => s.id === sessionId);
   if (!session?.cwd) return;
-  const info = await gitInfo(session.cwd).catch(() => null);
-  store.setSessionGit(sessionId, info?.branch, info?.dirty ?? false);
+  const [info, wt] = await Promise.all([
+    gitInfo(session.cwd).catch(() => null),
+    worktreeInfo(session.cwd).catch(() => null),
+  ]);
+  store.setSessionGit(sessionId, info?.branch, info?.dirty ?? false, wt?.main);
 }
 
 /** Create a session anchored to a directory, with a first terminal. */

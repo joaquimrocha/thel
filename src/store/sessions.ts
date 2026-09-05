@@ -72,6 +72,10 @@ export interface Session {
   // terminals default to this cwd. repoRoot is set when cwd is inside a repo.
   cwd?: string;
   repoRoot?: string;
+  // The repo's main worktree, the same for every worktree of one repo, so the
+  // sidebar can group them. repoRoot is the top level of the session's own
+  // checkout, which differs per linked worktree. Refreshed from git on load.
+  repoMain?: string;
   // A Lucide icon name (kebab-case, e.g. "rocket") shown in the sidebar to tell
   // sessions apart. Replaces the status dot while idle; the dot returns (pulsing)
   // while a command runs.
@@ -90,6 +94,7 @@ export interface SessionInit {
   name?: string;
   cwd?: string;
   repoRoot?: string;
+  repoMain?: string;
 }
 
 /** All terminals in a session, flattened across its split groups. */
@@ -170,7 +175,12 @@ export interface SessionState {
   // Revert every session using this icon to the default (e.g. it was deleted
   // from the library).
   clearIcon: (svg: string) => void;
-  setSessionGit: (id: string, branch: string | undefined, dirty: boolean) => void;
+  setSessionGit: (
+    id: string,
+    branch: string | undefined,
+    dirty: boolean,
+    repoMain: string | undefined,
+  ) => void;
 
   // groupId defaults to the session's active group.
   addTerminal: (sessionId: string, term: Terminal, groupId?: string) => void;
@@ -290,6 +300,7 @@ export const useSessions = create<SessionState>((set, get) => ({
       name: init?.name ?? `Session ${get().sessions.length + 1}`,
       cwd: init?.cwd,
       repoRoot: init?.repoRoot,
+      repoMain: init?.repoMain,
       groups: [{ id: groupId, terminals: [] }],
       layout: { t: "leaf", group: groupId },
       activeGroupId: groupId,
@@ -346,10 +357,10 @@ export const useSessions = create<SessionState>((set, get) => ({
       ),
     })),
 
-  setSessionGit: (id, branch, dirty) =>
+  setSessionGit: (id, branch, dirty, repoMain) =>
     set((s) => ({
       sessions: s.sessions.map((ss) =>
-        ss.id === id ? { ...ss, branch, dirty } : ss,
+        ss.id === id ? { ...ss, branch, dirty, repoMain } : ss,
       ),
     })),
 
