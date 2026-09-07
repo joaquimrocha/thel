@@ -1,5 +1,5 @@
 import { test, expect, describe } from "vitest";
-import { dropAnchor, reorderIndex } from "./dragReorder";
+import { dropAnchor, flipStart, reorderIndex } from "./dragReorder";
 
 // Items [a,b,c,d], indices 0..3. `after` = pointer past the item's midpoint.
 describe("reorderIndex", () => {
@@ -68,5 +68,30 @@ describe("dropAnchor", () => {
 
   test("has nowhere to go when it is the only unit", () => {
     expect(dropAnchor(["a"], 0, 0, true, edge)).toBeNull();
+  });
+});
+
+describe("flipStart", () => {
+  test("is the plain layout delta when nothing is in flight", () => {
+    // Moved 100px down; start 100px up from there, so it slides back into view.
+    expect(flipStart(100, 200, 0)).toBe(-100);
+    expect(flipStart(200, 100, 0)).toBe(100);
+  });
+
+  test("continues from where an interrupted slide had got to", () => {
+    // Was sliding 100px down and is halfway (still 50px short of its layout
+    // spot) when a second reorder moves it 100px further. It has to start
+    // 150px short of the new spot, not 100.
+    expect(flipStart(100, 200, -50)).toBe(-150);
+  });
+
+  test("does not move an element the reorder left where it was", () => {
+    expect(flipStart(100, 100, 0)).toBe(0);
+  });
+
+  test("still slides one already at its layout spot but visually adrift", () => {
+    // Layout unchanged, but it is mid-slide, so it must finish the journey
+    // rather than snap.
+    expect(flipStart(100, 100, -30)).toBe(-30);
   });
 });

@@ -21,7 +21,13 @@ import { useNotifications } from "@/store/notifications";
 import { useUI, SIDEBAR_MIN, SIDEBAR_MAX } from "@/store/ui";
 import { closeSessionConfirmed } from "@/lib/actions";
 import { shortcutLabel, useKeybindings } from "@/store/keybindings";
-import { dropAnchor, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
+import {
+  dropAnchor,
+  setClonedDragImage,
+  flipCapture,
+  flipReorder,
+  flipState,
+} from "@/lib/dragReorder";
 import {
   sidebarItems,
   itemSessions,
@@ -150,12 +156,12 @@ export function SessionSidebar() {
   // re-arm on the next real pointer move.
   const [hoverArmed, setHoverArmed] = useState(true);
   const listRef = useRef<HTMLDivElement>(null);
-  const prevTops = useRef<Map<string, number>>(new Map());
+  const flip = useRef(flipState());
 
   const order = sessions.map((s) => s.id).join(",");
   useLayoutEffect(() => {
     const list = listRef.current;
-    if (list) flipReorder(list, "data-row-id", "y", prevTops.current);
+    if (list) flipReorder(list, "data-row-id", "y", flip.current);
   }, [order]);
 
   useEffect(() => {
@@ -198,6 +204,8 @@ export function SessionSidebar() {
   const dropBeside = (spot: { anchorId: string; after: boolean } | null) => {
     const d = drag.current;
     if (!d || !spot || d.ids.includes(spot.anchorId)) return;
+    const list = listRef.current;
+    if (list) flipCapture(list, "data-row-id", "y", flip.current);
     reorderSessionBlock(d.ids, spot.anchorId, spot.after);
   };
 
@@ -405,7 +413,9 @@ export function SessionSidebar() {
         onBlur={() => setNavFocused(false)}
         // Allow dropping in the gaps/padding between rows, not just on a row.
         onDragOver={(e) => e.preventDefault()}
-        className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-2 pt-1 outline-none"
+        // `relative` makes this the rows' offset parent, which is what the FLIP
+        // pass measures against (the tab strip does the same).
+        className="relative flex-1 space-y-0.5 overflow-y-auto px-2 pb-2 pt-1 outline-none"
       >
         {sessions.length === 0 && (
           <p className="px-2 py-3 text-xs text-muted-foreground">
