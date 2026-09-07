@@ -36,14 +36,32 @@ export function setClonedDragImage(
   clone.classList.add("bg-secondary", "text-secondary-foreground");
   clone.style.transform = "";
   clone.style.transition = "none";
-  clone.style.position = "fixed";
-  clone.style.top = "-9999px";
-  clone.style.left = "-9999px";
   clone.style.width = `${rect.width}px`;
-  clone.style.pointerEvents = "none";
-  document.body.appendChild(clone);
-  e.dataTransfer.setDragImage(clone, e.clientX - rect.left, e.clientY - rect.top);
-  setTimeout(() => clone.remove(), 0);
+  // The snapshot is taken in device pixels but drawn back in CSS pixels
+  // without dividing, so on a HiDPI screen the dragged copy comes out
+  // devicePixelRatio times too big. Pre-shrink it by the same factor. The
+  // wrapper carries the scale so the clone's own transform stays clear, and
+  // it is sized to the scaled result so the snapshot is not mostly padding.
+  const dpr = window.devicePixelRatio || 1;
+  const holder = document.createElement("div");
+  holder.style.position = "fixed";
+  holder.style.top = "-9999px";
+  holder.style.left = "-9999px";
+  holder.style.pointerEvents = "none";
+  holder.style.width = `${rect.width / dpr}px`;
+  holder.style.height = `${rect.height / dpr}px`;
+  if (dpr !== 1) {
+    clone.style.transform = `scale(${1 / dpr})`;
+    clone.style.transformOrigin = "top left";
+  }
+  holder.appendChild(clone);
+  document.body.appendChild(holder);
+  e.dataTransfer.setDragImage(
+    holder,
+    (e.clientX - rect.left) / dpr,
+    (e.clientY - rect.top) / dpr,
+  );
+  setTimeout(() => holder.remove(), 0);
 }
 
 // FLIP: slide each `[attr]` child in `container` from its previous position to
