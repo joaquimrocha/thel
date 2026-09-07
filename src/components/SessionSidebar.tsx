@@ -21,7 +21,7 @@ import { useNotifications } from "@/store/notifications";
 import { useUI, SIDEBAR_MIN, SIDEBAR_MAX } from "@/store/ui";
 import { closeSessionConfirmed } from "@/lib/actions";
 import { shortcutLabel, useKeybindings } from "@/store/keybindings";
-import { setClonedDragImage, flipReorder } from "@/lib/dragReorder";
+import { dropAnchor, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
 import {
   sidebarItems,
   itemSessions,
@@ -195,41 +195,71 @@ export function SessionSidebar() {
 
   // Land the block in flight beside `anchorId`, which is a session id: the
   // store moves the whole block there in one go.
-  const dropBeside = (anchorId: string | undefined, after: boolean) => {
+  const dropBeside = (spot: { anchorId: string; after: boolean } | null) => {
     const d = drag.current;
-    if (!d || !anchorId || d.ids.includes(anchorId)) return;
-    reorderSessionBlock(d.ids, anchorId, after);
+    if (!d || !spot || d.ids.includes(spot.anchorId)) return;
+    reorderSessionBlock(d.ids, spot.anchorId, spot.after);
   };
 
-  const midpoint = (e: React.DragEvent) => {
+  const pastMidpoint = (e: React.DragEvent) => {
     const rect = e.currentTarget.getBoundingClientRect();
     return e.clientY >= rect.top + rect.height / 2;
   };
 
-  const onRowDragOver = (e: React.DragEvent, overId: string) => {
+  // A row only reorders within its own group. Dragging it out would be futile
+  // anyway: a session belongs to its repo's group wherever it lands, so it
+  // would snap straight back and look like the list jumped for nothing. To
+  // move a group, drag its header. Anything else bubbles to the item handler.
+  const onRowDragOver = (e: React.DragEvent, session: Session) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     const d = drag.current;
     if (!d) return;
-    const after = midpoint(e);
-    // A group never lands inside another item, so a row under a dragged group
-    // stands in for whatever item owns it.
-    if (d.group && items) {
-      const owner = items.find((it) =>
-        itemSessions(it).some((s) => s.id === overId),
+    if (!items) {
+      // Ungrouped: every row is its own unit, in the flat order.
+      e.stopPropagation();
+      dropBeside(
+        dropAnchor(
+          sessions,
+          sessions.findIndex((s) => s.id === d.ids[0]),
+          sessions.indexOf(session),
+          pastMidpoint(e),
+          (s) => s.id,
+        ),
       );
-      if (owner) dropBeside(itemEdgeId(owner, after), after);
       return;
     }
-    dropBeside(overId, after);
+    if (d.group) return;
+    const owner = items.find((it) =>
+      itemSessions(it).some((s) => s.id === session.id),
+    );
+    if (!owner || owner.t !== "group") return;
+    const covered = owner.group.sessions;
+    const from = covered.findIndex((s) => s.id === d.ids[0]);
+    if (from === -1) return;
+    e.stopPropagation();
+    dropBeside(
+      dropAnchor(covered, from, covered.indexOf(session), pastMidpoint(e), (s) => s.id),
+    );
   };
 
-  // Dropping on a group's header moves the dragged block clear of the whole
-  // group, not just past its first row: a group is one thing at this level.
-  const onItemDragOver = (e: React.DragEvent, item: SidebarItem, after: boolean) => {
+  // The top level: groups and loose sessions move as whole units.
+  // `e.currentTarget` is the item's own box, so the midpoint that decides which
+  // side to land on is the whole group's, not whichever row happens to be under
+  // the pointer. Using a row's midpoint made a hair's movement over a group's
+  // first row fling the dragged item clear of the entire group.
+  const onItemDragOver = (e: React.DragEvent, item: SidebarItem) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-    dropBeside(itemEdgeId(item, after), after);
+    const d = drag.current;
+    if (!d || !items) return;
+    const from = items.findIndex((it) =>
+      itemSessions(it).some((s) => d.ids.includes(s.id)),
+    );
+    if (from === -1) return;
+    dropBeside(
+      dropAnchor(items, from, items.indexOf(item), pastMidpoint(e), itemEdgeId),
+    );
   };
 
   const handleToggle = () => {
@@ -302,7 +332,7 @@ export function SessionSidebar() {
       onSelect={() => setActiveSession(session.id)}
       onClose={() => closeSessionConfirmed(session.id)}
       onDragStart={(e) => startDrag(e, session.id, [session.id], false)}
-      onDragOver={(e) => onRowDragOver(e, session.id)}
+      onDragOver={(e) => onRowDragOver(e, session)}
       onMenuOpenChange={onRowMenuOpenChange}
     />
   );
@@ -392,9 +422,8 @@ export function SessionSidebar() {
                 onToggle={() => toggleRepoCollapsed(it.group.key)}
                 renderRow={renderRow}
                 hoverArmed={hoverArmed}
-                onHeaderDragOver={(e, after) => onItemDragOver(e, it, after)}
-                dragging={dragging === it.group.key}
-                onHeaderDragStart={(e) =>
+                onItemDragOver={(e) => onItemDragOver(e, it)}
+                dragging={dragging === it.group.key}                onHeaderDragStart={(e) =>
                   startDrag(
                     e,
                     it.group.key,
@@ -410,7 +439,11 @@ export function SessionSidebar() {
                 {i > 0 && items[i - 1].t === "group" && (
                   <div role="separator" className="!my-1.5 border-t border-border" />
                 )}
-                {renderRow(it.session)}
+                {/* A loose session is its own item, so it takes the
+                    item-level drop handler directly. */}
+                <div onDragOver={(e) => onItemDragOver(e, it)}>
+                  {renderRow(it.session)}
+                </div>
                 {items[i + 1]?.t === "group" && (
                   <div role="separator" className="!my-1.5 border-t border-border" />
                 )}
@@ -706,7 +739,7 @@ function RepoGroupRows({
   hoverArmed,
   dragging,
   onHeaderDragStart,
-  onHeaderDragOver,
+  onItemDragOver,
 }: {
   group: RepoGroup;
   folded: boolean;
@@ -715,30 +748,31 @@ function RepoGroupRows({
   hoverArmed: boolean;
   dragging: boolean;
   onHeaderDragStart: (e: React.DragEvent) => void;
-  onHeaderDragOver: (e: React.DragEvent, after: boolean) => void;
+  onItemDragOver: (e: React.DragEvent) => void;
 }) {
   const openNewSession = useUI((s) => s.openNewSession);
   const Chevron = folded ? ChevronRight : ChevronDown;
   // A folded group still has to show that something inside wants you.
   const attention =
     folded && group.sessions.some((s) => sessionDotState(s) === "attention");
-  // A folded group hides the rows that would otherwise be the drop targets, so
-  // its header stands in for both of its edges. An expanded one only takes the
-  // top edge; its own rows handle everything below.
-  const headerDragOver = (e: React.DragEvent) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    onHeaderDragOver(e, folded && e.clientY >= rect.top + rect.height / 2);
-  };
   return (
+    // The drop handler sits on the whole group, so the pointer is measured
+    // against the group's full height. A row inside takes the event first and
+    // stops it only when it is reordering within this group.
     <div
       data-repo-group={group.key}
+      onDragOver={onItemDragOver}
       className={cn("group/repo space-y-0.5", dragging && "opacity-0")}
     >
       <div
         draggable
         onDragStart={onHeaderDragStart}
-        className="flex items-center gap-1 rounded-md px-1 py-1 hover:bg-secondary/50"
-        onDragOver={headerDragOver}
+        className={cn(
+          "flex items-center gap-1 rounded-md px-1 py-1",
+          // Only while the pointer is really hovering: a drag freezes :hover on
+          // whatever it passes over, lighting up rows it is merely crossing.
+          hoverArmed && "hover:bg-secondary/50",
+        )}
       >
         <button
           onClick={onToggle}
@@ -827,7 +861,13 @@ function SessionRow({
         "group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm",
         active
           ? "bg-secondary text-secondary-foreground"
-          : "text-muted-foreground hover:bg-secondary/50",
+          : cn(
+              "text-muted-foreground",
+              // Only while the pointer is really hovering: a drag freezes
+              // :hover on whatever it passes over, lighting up rows it is
+              // merely crossing on the way somewhere else.
+              hoverArmed && "hover:bg-secondary/50",
+            ),
         highlighted && "ring-1 ring-ring",
         dragging && "opacity-0",
       )}

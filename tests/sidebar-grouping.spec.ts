@@ -260,6 +260,59 @@ test("dragging a group header moves the whole group", async ({ page }) => {
   await expect(rows(page)).toHaveText([/thel/, /feature/, /notes/]);
 });
 
+test("dragging over a group's first row does not fling the row past the group", async ({
+  page,
+}) => {
+  // The bug: `after` came from the hovered *row's* midpoint, so nudging one
+  // pixel down the group's first row sent the dragged session clear of the
+  // whole group. The group's own midpoint decides now.
+  await open(page, true, {
+    activeSessionId: "s2",
+    sessions: [
+      session("s0", "thel", "/work/thel"),
+      session("s1", "feature", "/work/thel.feature"),
+      session("s2", "notes", "/home/u/notes"),
+    ],
+  });
+  await expect(rows(page)).toHaveText([/thel/, /feature/, /notes/]);
+
+  const notes = page.locator("[data-row-id='s2']");
+  const first = page.locator("[data-row-id='s0']");
+  const dt = await page.evaluateHandle(() => new DataTransfer());
+  await notes.dispatchEvent("dragstart", { dataTransfer: dt });
+
+  // Just below the first row's midpoint, but still well above the group's.
+  const box = (await first.boundingBox())!;
+  await first.dispatchEvent("dragover", {
+    dataTransfer: dt,
+    clientX: box.x + box.width / 2,
+    clientY: box.y + box.height * 0.6,
+  });
+  await expect(rows(page)).toHaveText([/notes/, /thel/, /feature/]);
+  await notes.dispatchEvent("dragend", { dataTransfer: dt });
+});
+
+test("a dragged row does not light up the rows it crosses", async ({ page }) => {
+  await open(page, true);
+  const notes = page.locator("[data-row-id='s2']");
+  const other = page.locator("[data-row-id='s1']");
+
+  // Hovering with no drag in flight highlights, as usual.
+  await other.hover();
+  await expect(other).toHaveClass(/hover:bg-secondary/);
+
+  const dt = await page.evaluateHandle(() => new DataTransfer());
+  await notes.dispatchEvent("dragstart", { dataTransfer: dt });
+  // While dragging, the hover style is off, so crossing a row leaves no trail.
+  await expect(other).not.toHaveClass(/hover:bg-secondary/);
+  await notes.dispatchEvent("dragend", { dataTransfer: dt });
+
+  // A real pointer move re-arms it.
+  await page.mouse.move(5, 5);
+  await other.hover();
+  await expect(other).toHaveClass(/hover:bg-secondary/);
+});
+
 test("a row hides the branch name when it matches, but keeps the branch icon", async ({
   page,
 }) => {
