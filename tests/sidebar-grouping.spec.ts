@@ -182,6 +182,84 @@ test("cycling still works when every group is folded", async ({ page }) => {
   await expect(page.locator("[data-row-id='s1']")).toHaveClass(/bg-secondary/);
 });
 
+test("an ungrouped session sits where it is, not below every group", async ({
+  page,
+}) => {
+  await open(page, true, {
+    activeSessionId: "s2",
+    sessions: [
+      session("s2", "notes", "/home/u/notes"),
+      session("s0", "thel", "/work/thel"),
+      session("s1", "feature", "/work/thel.feature"),
+    ],
+  });
+  // It leads the sidebar because it leads the session list.
+  await expect(rows(page)).toHaveText([/notes/, /thel/, /feature/]);
+  await expect(group(page).locator("[data-row-id='s2']")).toHaveCount(0);
+});
+
+test("moving an ungrouped session hops a whole group at a time", async ({
+  page,
+}) => {
+  await open(page, true, {
+    activeSessionId: "s2",
+    sessions: [
+      session("s0", "thel", "/work/thel"),
+      session("s1", "feature", "/work/thel.feature"),
+      session("s2", "notes", "/home/u/notes"),
+    ],
+  });
+  await expect(rows(page)).toHaveText([/thel/, /feature/, /notes/]);
+
+  // One press clears the group, rather than burying the row inside it.
+  await page.keyboard.press("Control+Alt+Shift+PageUp");
+  await expect(rows(page)).toHaveText([/notes/, /thel/, /feature/]);
+  await expect(group(page).locator("[data-row-id]")).toHaveText([/thel/, /feature/]);
+
+  // Already at the top, so this is a no-op.
+  await page.keyboard.press("Control+Alt+Shift+PageUp");
+  await expect(rows(page)).toHaveText([/notes/, /thel/, /feature/]);
+
+  await page.keyboard.press("Control+Alt+Shift+PageDown");
+  await expect(rows(page)).toHaveText([/thel/, /feature/, /notes/]);
+});
+
+test("dragging a group header moves the whole group", async ({ page }) => {
+  await open(page, true, {
+    activeSessionId: "s2",
+    sessions: [
+      session("s0", "thel", "/work/thel"),
+      session("s1", "feature", "/work/thel.feature"),
+      session("s2", "notes", "/home/u/notes"),
+    ],
+  });
+  await expect(rows(page)).toHaveText([/thel/, /feature/, /notes/]);
+
+  // The header row is the group's drag handle. Cross the loose row's midpoint
+  // rather than using dragTo, which drops at the centre.
+  const head = page.locator("[data-repo-group='/work/thel'] > div").first();
+  const notes = page.locator("[data-row-id='s2']");
+  const drag = async (frac: number) => {
+    const dt = await page.evaluateHandle(() => new DataTransfer());
+    await head.dispatchEvent("dragstart", { dataTransfer: dt });
+    const box = (await notes.boundingBox())!;
+    await notes.dispatchEvent("dragover", {
+      dataTransfer: dt,
+      clientX: box.x + box.width / 2,
+      clientY: box.y + box.height * frac,
+    });
+    await head.dispatchEvent("dragend", { dataTransfer: dt });
+  };
+
+  await drag(0.85);
+  await expect(rows(page)).toHaveText([/notes/, /thel/, /feature/]);
+  // Both sessions travelled together, so the group is still whole.
+  await expect(group(page).locator("[data-row-id]")).toHaveText([/thel/, /feature/]);
+
+  await drag(0.15);
+  await expect(rows(page)).toHaveText([/thel/, /feature/, /notes/]);
+});
+
 test("a row hides the branch name when it matches, but keeps the branch icon", async ({
   page,
 }) => {

@@ -7,34 +7,54 @@ export interface RepoGroup {
   sessions: Session[];
 }
 
+/** A row at the sidebar's top level: a repo group, or a session in no repo. */
+export type SidebarItem =
+  | { t: "group"; group: RepoGroup }
+  | { t: "session"; session: Session };
+
 /**
- * Split the sidebar's sessions into one group per repo plus the sessions in no
- * repo. Groups appear in the order their first session does, so reordering
- * sessions also reorders groups. A session whose repo is still being resolved
- * groups by its own checkout until then.
+ * The sidebar's top level, in the order it is drawn: one item per repo group,
+ * one per session outside any repo. Both kinds sit where they first appear in
+ * the session order, so a group moves when its first session does and a loose
+ * session can sit anywhere among the groups rather than being pinned below
+ * them. A session whose repo is still being resolved groups by its own
+ * checkout until then.
  */
-export function groupSessionsByRepo(sessions: Session[]): {
-  groups: RepoGroup[];
-  rest: Session[];
-} {
-  const groups: RepoGroup[] = [];
+export function sidebarItems(sessions: Session[]): SidebarItem[] {
+  const items: SidebarItem[] = [];
   const byKey = new Map<string, RepoGroup>();
-  const rest: Session[] = [];
   for (const s of sessions) {
     const key = s.repoMain ?? s.repoRoot;
     if (!key) {
-      rest.push(s);
+      items.push({ t: "session", session: s });
       continue;
     }
-    let g = byKey.get(key);
-    if (!g) {
-      g = { key, name: lastSegment(key), sessions: [] };
-      byKey.set(key, g);
-      groups.push(g);
+    const g = byKey.get(key);
+    if (g) {
+      g.sessions.push(s);
+      continue;
     }
-    g.sessions.push(s);
+    const created: RepoGroup = { key, name: lastSegment(key), sessions: [s] };
+    byKey.set(key, created);
+    items.push({ t: "group", group: created });
   }
-  return { groups, rest };
+  return items;
+}
+
+/** The sessions an item covers, in order. */
+export function itemSessions(item: SidebarItem): Session[] {
+  return item.t === "group" ? item.group.sessions : [item.session];
+}
+
+/**
+ * The id of the session at an item's top (`after` false) or bottom (`after`
+ * true) edge, which is what a reorder anchors to when something lands beside
+ * the whole item. A group covers a run of sessions, so its edges are its first
+ * and last, not just the row it starts at.
+ */
+export function itemEdgeId(item: SidebarItem, after: boolean): string {
+  const covered = itemSessions(item);
+  return (after ? covered[covered.length - 1] : covered[0]).id;
 }
 
 /**
@@ -51,14 +71,13 @@ export function sessionsInDisplayOrder(
   collapsedRepos: string[] = [],
 ): Session[] {
   if (!grouping) return sessions;
-  const { groups, rest } = groupSessionsByRepo(sessions);
-  const visible = [
-    ...groups.flatMap((g) => (collapsedRepos.includes(g.key) ? [] : g.sessions)),
-    ...rest,
-  ];
-  return visible.length > 0
-    ? visible
-    : [...groups.flatMap((g) => g.sessions), ...rest];
+  const items = sidebarItems(sessions);
+  const visible = items.flatMap((it) =>
+    it.t === "group" && collapsedRepos.includes(it.group.key)
+      ? []
+      : itemSessions(it),
+  );
+  return visible.length > 0 ? visible : items.flatMap(itemSessions);
 }
 
 /**

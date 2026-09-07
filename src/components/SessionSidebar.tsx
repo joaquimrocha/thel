@@ -21,12 +21,15 @@ import { useNotifications } from "@/store/notifications";
 import { useUI, SIDEBAR_MIN, SIDEBAR_MAX } from "@/store/ui";
 import { closeSessionConfirmed } from "@/lib/actions";
 import { shortcutLabel, useKeybindings } from "@/store/keybindings";
-import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
+import { setClonedDragImage, flipReorder } from "@/lib/dragReorder";
 import {
-  groupSessionsByRepo,
+  sidebarItems,
+  itemSessions,
+  itemEdgeId,
   sessionsInDisplayOrder,
   sessionNameInGroup,
   type RepoGroup,
+  type SidebarItem,
 } from "@/lib/sessionGroups";
 import { StatusDot, sessionDotState } from "./StatusDot";
 import { ActionTooltip } from "./ActionTooltip";
@@ -38,6 +41,26 @@ import {
   ContextMenuItem,
   ContextMenuShortcut,
 } from "@/components/ui/context-menu";
+
+// Rail chunks: a group is one run of icons, and so is each stretch of loose
+// sessions between groups, so the separators line up with the list's own.
+function chunkItems(items: SidebarItem[]): Session[][] {
+  const chunks: Session[][] = [];
+  let looseRun: Session[] | null = null;
+  for (const it of items) {
+    if (it.t === "group") {
+      looseRun = null;
+      chunks.push(it.group.sessions);
+      continue;
+    }
+    if (!looseRun) {
+      looseRun = [];
+      chunks.push(looseRun);
+    }
+    looseRun.push(it.session);
+  }
+  return chunks;
+}
 
 export function SessionSidebar() {
   const sessions = useSessions((s) => s.sessions);
@@ -60,15 +83,15 @@ export function SessionSidebar() {
   const collapsedRepos = useUI((s) => s.collapsedRepos);
   const toggleRepoCollapsed = useUI((s) => s.toggleRepoCollapsed);
   const expandRepo = useUI((s) => s.expandRepo);
-  const grouped = grouping ? groupSessionsByRepo(sessions) : null;
+  const items = grouping ? sidebarItems(sessions) : null;
   // Rows in display order, which the keyboard cursor walks; a folded group's
   // sessions are off screen and skipped (unless that would hide everything).
   const visible: Session[] = sessionsInDisplayOrder(sessions, grouping, collapsedRepos);
   // The icon rail shows every session, folded groups included, but in grouped
-  // display order so it matches the expanded list. One chunk per repo group
-  // plus one for the ungrouped rest; a thin line separates chunks.
+  // display order so it matches the expanded list. One chunk per group, and
+  // one per run of loose sessions between groups; a thin line separates them.
   const railChunks: Session[][] = (
-    grouped ? [...grouped.groups.map((g) => g.sessions), grouped.rest] : [sessions]
+    items ? chunkItems(items) : [sessions]
   ).filter((c) => c.length > 0);
   // Switching to a session inside a folded group (palette, or cycling when
   // every group is folded) unfolds it, so the row you are now in is on
@@ -117,9 +140,10 @@ export function SessionSidebar() {
   // Drag-to-reorder, mirroring the terminal tab strip: the dragged row is
   // hidden (opacity-0) so its slot reads as the empty landing space, the list
   // reorders live as the pointer crosses a neighbour's middle, and a FLIP pass
-  // slides the rows that move.
-  const reorderSession = useSessions((s) => s.reorderSession);
-  const draggingId = useRef<string | null>(null);
+  // slides the rows that move. A group header drags its whole group the same
+  // way, so `drag` holds the block of sessions in flight rather than one id.
+  const reorderSessionBlock = useSessions((s) => s.reorderSessionBlock);
+  const drag = useRef<{ ids: string[]; key: string; group: boolean } | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   // A drag suppresses mouse events, so :hover sticks on the row the pointer
   // ended over, leaving its action buttons visible. Disarm on any drag and
@@ -136,7 +160,7 @@ export function SessionSidebar() {
 
   useEffect(() => {
     const clear = () => {
-      draggingId.current = null;
+      drag.current = null;
       setDragging(null);
     };
     const disarm = () => setHoverArmed(false);
@@ -151,33 +175,61 @@ export function SessionSidebar() {
     };
   }, []);
 
-  const startRowDrag = (e: React.DragEvent, id: string) => {
-    draggingId.current = id;
+  const startDrag = (
+    e: React.DragEvent,
+    key: string,
+    ids: string[],
+    group: boolean,
+  ) => {
+    drag.current = { ids, key, group };
     setClonedDragImage(e, (clone) => {
       clone.removeAttribute("data-row-id");
       // Drop the keyboard-nav highlight ring so the dragged copy doesn't carry
       // a stray white border.
       clone.classList.remove("ring-1", "ring-ring");
     });
-    setDragging(id);
-    e.dataTransfer.setData("text/plain", id);
+    setDragging(key);
+    e.dataTransfer.setData("text/plain", key);
     e.dataTransfer.effectAllowed = "move";
   };
 
-  const onRowDragOver = (
-    e: React.DragEvent,
-    overId: string,
-    overIndex: number,
-  ) => {
+  // Land the block in flight beside `anchorId`, which is a session id: the
+  // store moves the whole block there in one go.
+  const dropBeside = (anchorId: string | undefined, after: boolean) => {
+    const d = drag.current;
+    if (!d || !anchorId || d.ids.includes(anchorId)) return;
+    reorderSessionBlock(d.ids, anchorId, after);
+  };
+
+  const midpoint = (e: React.DragEvent) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return e.clientY >= rect.top + rect.height / 2;
+  };
+
+  const onRowDragOver = (e: React.DragEvent, overId: string) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-    const id = draggingId.current;
-    if (!id || id === overId) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const after = e.clientY >= rect.top + rect.height / 2;
-    const from = sessions.findIndex((s) => s.id === id);
-    const to = reorderIndex(from, overIndex, after);
-    if (from !== -1 && to !== from) reorderSession(id, to);
+    const d = drag.current;
+    if (!d) return;
+    const after = midpoint(e);
+    // A group never lands inside another item, so a row under a dragged group
+    // stands in for whatever item owns it.
+    if (d.group && items) {
+      const owner = items.find((it) =>
+        itemSessions(it).some((s) => s.id === overId),
+      );
+      if (owner) dropBeside(itemEdgeId(owner, after), after);
+      return;
+    }
+    dropBeside(overId, after);
+  };
+
+  // Dropping on a group's header moves the dragged block clear of the whole
+  // group, not just past its first row: a group is one thing at this level.
+  const onItemDragOver = (e: React.DragEvent, item: SidebarItem, after: boolean) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    dropBeside(itemEdgeId(item, after), after);
   };
 
   const handleToggle = () => {
@@ -249,8 +301,8 @@ export function SessionSidebar() {
       hoverArmed={hoverArmed}
       onSelect={() => setActiveSession(session.id)}
       onClose={() => closeSessionConfirmed(session.id)}
-      onDragStart={(e) => startRowDrag(e, session.id)}
-      onDragOver={(e) => onRowDragOver(e, session.id, sessions.indexOf(session))}
+      onDragStart={(e) => startDrag(e, session.id, [session.id], false)}
+      onDragOver={(e) => onRowDragOver(e, session.id)}
       onMenuOpenChange={onRowMenuOpenChange}
     />
   );
@@ -330,23 +382,41 @@ export function SessionSidebar() {
             No sessions yet.
           </p>
         )}
-        {grouped ? (
-          <>
-            {grouped.groups.map((g) => (
+        {items ? (
+          items.map((it, i) =>
+            it.t === "group" ? (
               <RepoGroupRows
-                key={g.key}
-                group={g}
-                folded={collapsedRepos.includes(g.key)}
-                onToggle={() => toggleRepoCollapsed(g.key)}
+                key={it.group.key}
+                group={it.group}
+                folded={collapsedRepos.includes(it.group.key)}
+                onToggle={() => toggleRepoCollapsed(it.group.key)}
                 renderRow={renderRow}
                 hoverArmed={hoverArmed}
+                onHeaderDragOver={(e, after) => onItemDragOver(e, it, after)}
+                dragging={dragging === it.group.key}
+                onHeaderDragStart={(e) =>
+                  startDrag(
+                    e,
+                    it.group.key,
+                    it.group.sessions.map((s) => s.id),
+                    true,
+                  )
+                }
               />
-            ))}
-            {grouped.groups.length > 0 && grouped.rest.length > 0 && (
-              <div role="separator" className="!my-1.5 border-t border-border" />
-            )}
-            {grouped.rest.map((s) => renderRow(s))}
-          </>
+            ) : (
+              <Fragment key={it.session.id}>
+                {/* A loose session sits at the same level as the groups, so it
+                    reads as a peer of them rather than part of a neighbour. */}
+                {i > 0 && items[i - 1].t === "group" && (
+                  <div role="separator" className="!my-1.5 border-t border-border" />
+                )}
+                {renderRow(it.session)}
+                {items[i + 1]?.t === "group" && (
+                  <div role="separator" className="!my-1.5 border-t border-border" />
+                )}
+              </Fragment>
+            ),
+          )
         ) : (
           sessions.map((s) => renderRow(s))
         )}
@@ -634,28 +704,46 @@ function RepoGroupRows({
   onToggle,
   renderRow,
   hoverArmed,
+  dragging,
+  onHeaderDragStart,
+  onHeaderDragOver,
 }: {
   group: RepoGroup;
   folded: boolean;
   onToggle: () => void;
   renderRow: (session: Session, groupName?: string) => React.ReactNode;
   hoverArmed: boolean;
+  dragging: boolean;
+  onHeaderDragStart: (e: React.DragEvent) => void;
+  onHeaderDragOver: (e: React.DragEvent, after: boolean) => void;
 }) {
   const openNewSession = useUI((s) => s.openNewSession);
   const Chevron = folded ? ChevronRight : ChevronDown;
   // A folded group still has to show that something inside wants you.
   const attention =
     folded && group.sessions.some((s) => sessionDotState(s) === "attention");
+  // A folded group hides the rows that would otherwise be the drop targets, so
+  // its header stands in for both of its edges. An expanded one only takes the
+  // top edge; its own rows handle everything below.
+  const headerDragOver = (e: React.DragEvent) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    onHeaderDragOver(e, folded && e.clientY >= rect.top + rect.height / 2);
+  };
   return (
-    <div data-repo-group={group.key} className="group/repo space-y-0.5">
-      <div className="flex items-center gap-1 rounded-md px-1 py-1 hover:bg-secondary/50">
+    <div
+      data-repo-group={group.key}
+      className={cn("group/repo space-y-0.5", dragging && "opacity-0")}
+    >
+      <div
+        draggable
+        onDragStart={onHeaderDragStart}
+        className="flex items-center gap-1 rounded-md px-1 py-1 hover:bg-secondary/50"
+        onDragOver={headerDragOver}
+      >
         <button
           onClick={onToggle}
           aria-expanded={!folded}
           aria-label={`${group.name} repo`}
-          // Rows are drop targets; a header between them must not refuse the
-          // drag, or the cursor flips to "no drop" as it passes over.
-          onDragOver={(e) => e.preventDefault()}
           className="flex min-w-0 flex-1 items-center gap-1 text-xs font-medium text-muted-foreground"
         >
           <Chevron className="size-3.5 shrink-0" />

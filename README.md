@@ -59,8 +59,10 @@ See [docs/install.md](docs/install.md) for that step and for direct downloads.
 - **Session icons.** Assign custom icons to your sessions to quickly identify
   them at a glance in the sidebar.
 - **Repo grouping.** Optionally group the sidebar by git repo: every worktree of
-  a repo sits under a header named after its folder, which folds away. Toggle it
-  from the sidebar menu at the foot of the panel.
+  a repo sits under a header named after its folder, which folds away. Groups
+  and sessions outside any repo are peers, so both can be dragged (or moved with
+  the shortcut) anywhere in the list. Toggle it from the sidebar menu at the
+  foot of the panel.
 - **Session notes.** A markdown scratchpad docked beside each session, with
   tickable checklists. Notes live with the session and go when it does.
 - **Launchers.** Save the commands you start often (e.g. an AI agent) and pick a
