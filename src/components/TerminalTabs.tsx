@@ -273,7 +273,13 @@ export function TerminalTabs({
               "group relative flex h-8 max-w-52 shrink-0 cursor-pointer items-center gap-2 rounded-md px-3 text-sm",
               t.id === group.activeTerminalId
                 ? "bg-secondary text-secondary-foreground"
-                : "text-muted-foreground hover:bg-secondary/50",
+                : cn(
+                    "text-muted-foreground",
+                    // Only while the pointer is really hovering: a drag freezes
+                    // :hover on the tabs it passes over, so they stay lit as
+                    // the dragged tab crosses them.
+                    hoverArmed && "hover:bg-secondary/50",
+                  ),
               dragging === t.id && "opacity-0",
             )}
           >

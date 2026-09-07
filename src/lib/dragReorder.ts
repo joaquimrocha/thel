@@ -19,6 +19,28 @@ export function reorderIndex(
   return to;
 }
 
+// Where a dragged unit lands, expressed as "beside this other unit" rather than
+// as an index. `reorderSessionBlock` moves a set of sessions next to an anchor,
+// which an index cannot address once a unit spans several sessions (a repo
+// group) or the units are not contiguous. `edge` yields a unit's first or last
+// session id. Returns null when the unit should stay put, which is what keeps a
+// drag from oscillating: the pointer sitting still recomputes the same slot.
+export function dropAnchor<T>(
+  units: T[],
+  fromIndex: number,
+  overIndex: number,
+  after: boolean,
+  edge: (unit: T, after: boolean) => string,
+): { anchorId: string; after: boolean } | null {
+  const to = reorderIndex(fromIndex, overIndex, after);
+  if (to === fromIndex) return null;
+  const rest = units.filter((_, i) => i !== fromIndex);
+  if (rest.length === 0) return null;
+  return to < rest.length
+    ? { anchorId: edge(rest[to], false), after: false }
+    : { anchorId: edge(rest[rest.length - 1], true), after: true };
+}
+
 // Set a solid, visible clone as the drag image. The live element is hidden
 // (opacity-0) while dragging and an inactive row/tab has a transparent
 // background, so the browser's default drag image would be see-through. The
