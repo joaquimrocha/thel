@@ -11,7 +11,7 @@ import { clampZoomOffset } from "@/lib/theme";
 import { terminalBusy } from "@/lib/pty";
 import { gitInfo, worktreeInfo, removeWorktree } from "@/lib/git";
 import { abbreviatePath } from "@/lib/paths";
-import { sessionsInDisplayOrder } from "@/lib/sessionGroups";
+import { sessionsInDisplayOrder, sidebarItems, itemSessions } from "@/lib/sessionGroups";
 import { toast } from "sonner";
 
 /** Close a terminal, confirming first if a command is running. */
@@ -294,16 +294,41 @@ export function moveTerminalToPane(dir: 1 | -1) {
   moveTerminalToGroup(s.id, g.activeTerminalId, targetId, target.terminals.length);
 }
 
-/** Move the active session up (-1) or down (1) in the sidebar. Swaps with its
- * neighbour as drawn, so grouping doesn't send the row somewhere unexpected. */
+/** Move the active session up (-1) or down (1) in the sidebar. Inside a repo
+ * group it swaps with its neighbour there. Once it is at the group's edge on
+ * the side it is moving towards, and for a session in no repo, it moves at the
+ * level of the groups instead: the whole group travels, and it clears the
+ * whole item it passes. Without grouping it is a plain neighbour swap. */
 export function moveSession(dir: 1 | -1) {
-  const { sessions, activeSessionId, reorderSession } = useSessions.getState();
+  const { sessions, activeSessionId, reorderSession, reorderSessionBlock } =
+    useSessions.getState();
   if (!activeSessionId) return;
-  const order = sessionsInDisplayOrder(
-    sessions,
-    usePrefs.getState().groupSessionsByRepo,
-    useUI.getState().collapsedRepos,
-  );
+  const grouping = usePrefs.getState().groupSessionsByRepo;
+  const from = sessions.findIndex((x) => x.id === activeSessionId);
+  if (from === -1) return;
+
+  if (grouping) {
+    const items = sidebarItems(sessions);
+    const at = items.findIndex((it) =>
+      itemSessions(it).some((s) => s.id === activeSessionId),
+    );
+    if (at === -1) return;
+    const covered = itemSessions(items[at]);
+    const within = covered.findIndex((s) => s.id === activeSessionId);
+    const inside = covered[within + dir];
+    if (inside) {
+      reorderSessionBlock([activeSessionId], inside.id, dir === 1);
+      return;
+    }
+    const target = items[at + dir];
+    if (!target) return;
+    const beside = itemSessions(target);
+    const anchor = dir === 1 ? beside[beside.length - 1] : beside[0];
+    reorderSessionBlock(covered.map((s) => s.id), anchor.id, dir === 1);
+    return;
+  }
+
+  const order = sessionsInDisplayOrder(sessions, grouping);
   const i = order.findIndex((x) => x.id === activeSessionId);
   const neighbour = order[i + dir];
   if (i === -1 || !neighbour) return;
