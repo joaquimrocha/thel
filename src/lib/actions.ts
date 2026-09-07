@@ -11,7 +11,12 @@ import { clampZoomOffset } from "@/lib/theme";
 import { terminalBusy } from "@/lib/pty";
 import { gitInfo, worktreeInfo, removeWorktree } from "@/lib/git";
 import { abbreviatePath } from "@/lib/paths";
-import { sessionsInDisplayOrder, sidebarItems, itemSessions } from "@/lib/sessionGroups";
+import {
+  sessionsInDisplayOrder,
+  sidebarItems,
+  itemSessions,
+  itemEdgeId,
+} from "@/lib/sessionGroups";
 import { toast } from "sonner";
 
 /** Close a terminal, confirming first if a command is running. */
@@ -295,9 +300,9 @@ export function moveTerminalToPane(dir: 1 | -1) {
 }
 
 /** Move the active session up (-1) or down (1) in the sidebar. Inside a repo
- * group it swaps with its neighbour there. Once it is at the group's edge on
- * the side it is moving towards, and for a session in no repo, it moves at the
- * level of the groups instead: the whole group travels, and it clears the
+ * group it swaps with its neighbour there and stops at the group's edges: a
+ * session cannot leave its repo, so there is nowhere further for it to go. A
+ * session in no repo moves at the level of the groups instead, clearing the
  * whole item it passes. Without grouping it is a plain neighbour swap. */
 export function moveSession(dir: 1 | -1) {
   const { sessions, activeSessionId, reorderSession, reorderSessionBlock } =
@@ -313,18 +318,21 @@ export function moveSession(dir: 1 | -1) {
       itemSessions(it).some((s) => s.id === activeSessionId),
     );
     if (at === -1) return;
-    const covered = itemSessions(items[at]);
+    const item = items[at];
+    const covered = itemSessions(item);
     const within = covered.findIndex((s) => s.id === activeSessionId);
     const inside = covered[within + dir];
     if (inside) {
       reorderSessionBlock([activeSessionId], inside.id, dir === 1);
       return;
     }
+    // At a group's edge. Taking the group along would move rows the shortcut
+    // was never pointed at, so the move stops here; drag the header to move a
+    // whole group.
+    if (item.t === "group") return;
     const target = items[at + dir];
     if (!target) return;
-    const beside = itemSessions(target);
-    const anchor = dir === 1 ? beside[beside.length - 1] : beside[0];
-    reorderSessionBlock(covered.map((s) => s.id), anchor.id, dir === 1);
+    reorderSessionBlock([activeSessionId], itemEdgeId(target, dir === 1), dir === 1);
     return;
   }
 

@@ -217,7 +217,8 @@ export function SessionSidebar() {
   // A row only reorders within its own group. Dragging it out would be futile
   // anyway: a session belongs to its repo's group wherever it lands, so it
   // would snap straight back and look like the list jumped for nothing. To
-  // move a group, drag its header. Anything else bubbles to the item handler.
+  // move a group, drag its header. A group header or a loose session bubbles
+  // to the item handler.
   const onRowDragOver = (e: React.DragEvent, session: Session) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
@@ -265,6 +266,10 @@ export function SessionSidebar() {
       itemSessions(it).some((s) => d.ids.includes(s.id)),
     );
     if (from === -1) return;
+    // A grouped session stays in its group. Landing it beside another item
+    // would put its repo's group wherever it went: a group is drawn where its
+    // first session is, so dragging that row out drags the group with it.
+    if (!d.group && items[from].t === "group") return;
     dropBeside(
       dropAnchor(items, from, items.indexOf(item), pastMidpoint(e), itemEdgeId),
     );

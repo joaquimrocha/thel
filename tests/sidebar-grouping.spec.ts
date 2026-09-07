@@ -224,6 +224,65 @@ test("moving an ungrouped session hops a whole group at a time", async ({
   await expect(rows(page)).toHaveText([/thel/, /feature/, /notes/]);
 });
 
+test("moving a grouped session stops at the group's edge", async ({ page }) => {
+  await open(page, true, {
+    activeSessionId: "s1",
+    sessions: [
+      session("s0", "thel", "/work/thel"),
+      session("s1", "feature", "/work/thel.feature"),
+      session("s2", "notes", "/home/u/notes"),
+    ],
+  });
+  await expect(group(page).locator("[data-row-id]")).toHaveText([/thel/, /feature/]);
+
+  // Inside the group the row still swaps with its neighbour.
+  await page.keyboard.press("Control+Alt+Shift+PageUp");
+  await expect(group(page).locator("[data-row-id]")).toHaveText([/feature/, /thel/]);
+
+  // Now at the group's top, and it cannot leave the repo, so pressing again
+  // does nothing. It must not take the group with it.
+  await page.keyboard.press("Control+Alt+Shift+PageUp");
+  await expect(group(page).locator("[data-row-id]")).toHaveText([/feature/, /thel/]);
+  await expect(rows(page)).toHaveText([/feature/, /thel/, /notes/]);
+
+  // Same at the bottom edge, where the loose session sits just beyond.
+  await page.keyboard.press("Control+Alt+Shift+PageDown");
+  await expect(group(page).locator("[data-row-id]")).toHaveText([/thel/, /feature/]);
+  await page.keyboard.press("Control+Alt+Shift+PageDown");
+  await expect(rows(page)).toHaveText([/thel/, /feature/, /notes/]);
+});
+
+test("dragging a grouped session past the group leaves the group put", async ({
+  page,
+}) => {
+  await open(page, true, {
+    activeSessionId: "s0",
+    sessions: [
+      session("s0", "thel", "/work/thel"),
+      session("s1", "feature", "/work/thel.feature"),
+      session("s2", "notes", "/home/u/notes"),
+    ],
+  });
+  await expect(rows(page)).toHaveText([/thel/, /feature/, /notes/]);
+
+  // The group's first row is where the group is drawn, so letting it land
+  // beyond the loose session used to carry the whole group down with it.
+  const first = page.locator("[data-row-id='s0']");
+  const notes = page.locator("[data-row-id='s2']");
+  const dt = await page.evaluateHandle(() => new DataTransfer());
+  await first.dispatchEvent("dragstart", { dataTransfer: dt });
+  const box = (await notes.boundingBox())!;
+  await notes.dispatchEvent("dragover", {
+    dataTransfer: dt,
+    clientX: box.x + box.width / 2,
+    clientY: box.y + box.height * 0.85,
+  });
+  await first.dispatchEvent("dragend", { dataTransfer: dt });
+
+  await expect(rows(page)).toHaveText([/thel/, /feature/, /notes/]);
+  await expect(group(page).locator("[data-row-id]")).toHaveText([/thel/, /feature/]);
+});
+
 test("dragging a group header moves the whole group", async ({ page }) => {
   await open(page, true, {
     activeSessionId: "s2",
