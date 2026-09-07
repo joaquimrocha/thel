@@ -200,6 +200,11 @@ export interface SessionState {
   // Reorder a session in the sidebar / a terminal within its pane. toIndex is
   // clamped; used by drag-and-drop and the move shortcuts.
   reorderSession: (id: string, toIndex: number) => void;
+  // Move `ids` as one block, landing just before or just after `anchorId`.
+  // The sidebar reorders a whole repo group with this: a group's sessions need
+  // not be adjacent in the flat order, and moving them together makes them so.
+  // A no-op if the anchor is itself in the block, or is gone.
+  reorderSessionBlock: (ids: string[], anchorId: string, after: boolean) => void;
   reorderTerminal: (
     sessionId: string,
     groupId: string,
@@ -514,6 +519,21 @@ export const useSessions = create<SessionState>((set, get) => ({
       const [moved] = sessions.splice(from, 1);
       sessions.splice(to, 0, moved);
       return { sessions };
+    }),
+
+  reorderSessionBlock: (ids, anchorId, after) =>
+    set((s) => {
+      const inBlock = new Set(ids);
+      if (inBlock.has(anchorId)) return s;
+      const block = s.sessions.filter((x) => inBlock.has(x.id));
+      if (block.length === 0) return s;
+      const rest = s.sessions.filter((x) => !inBlock.has(x.id));
+      const at = rest.findIndex((x) => x.id === anchorId);
+      if (at === -1) return s;
+      const sessions = [...rest];
+      sessions.splice(after ? at + 1 : at, 0, ...block);
+      const same = sessions.every((x, i) => x === s.sessions[i]);
+      return same ? s : { sessions };
     }),
 
   reorderTerminal: (sessionId, groupId, terminalId, toIndex) =>
