@@ -15,7 +15,13 @@ import {
   type PaneGroup,
 } from "@/store/sessions";
 import { addTerminal, splitPane } from "@/lib/launch";
-import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
+import {
+  reorderIndex,
+  setClonedDragImage,
+  flipCapture,
+  flipReorder,
+  flipState,
+} from "@/lib/dragReorder";
 import { closeTerminalConfirmed, closeAllTerminals } from "@/lib/actions";
 import { useUI } from "@/store/ui";
 import { shortcutLabel } from "@/store/keybindings";
@@ -62,7 +68,7 @@ export function TerminalTabs({
   // way out. Only one menu is open at a time, so one ref covers every tab.
   const renaming = useRef(false);
   const stripRef = useRef<HTMLDivElement>(null);
-  const prevLefts = useRef<Map<string, number>>(new Map());
+  const flip = useRef(flipState());
 
   // Scroll the strip horizontally (only) just enough to fully show a tab. Uses
   // offset geometry rather than scrollIntoView, so it ignores the FLIP
@@ -87,7 +93,7 @@ export function TerminalTabs({
   const order = group.terminals.map((t) => t.id).join(",");
   useLayoutEffect(() => {
     const strip = stripRef.current;
-    if (strip) flipReorder(strip, "data-tab-id", "x", prevLefts.current);
+    if (strip) flipReorder(strip, "data-tab-id", "x", flip.current);
   }, [order]);
 
   // Keep the active tab in view: newly created (appended off-screen), selected,
@@ -144,7 +150,11 @@ export function TerminalTabs({
     const after = e.clientX >= rect.left + rect.width / 2;
     const from = group.terminals.findIndex((t) => t.id === id);
     const to = reorderIndex(from, overIndex, after);
-    if (from !== -1 && to !== from) reorderTerminal(sessionId, group.id, id, to);
+    if (from !== -1 && to !== from) {
+      const strip = stripRef.current;
+      if (strip) flipCapture(strip, "data-tab-id", "x", flip.current);
+      reorderTerminal(sessionId, group.id, id, to);
+    }
   };
 
   // A drop on this pane's strip. Within the pane it's already been reordered

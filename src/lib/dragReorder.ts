@@ -86,30 +86,99 @@ export function setClonedDragImage(
   setTimeout(() => holder.remove(), 0);
 }
 
+/**
+ * State a FLIP pass carries between renders: `pos` is each child's last layout
+ * position, `carry` the translate it still had in flight when the reorder was
+ * requested. Keep one per animated container, in a ref.
+ */
+export type FlipState = {
+  pos: Map<string, number>;
+  carry: Map<string, number>;
+};
+
+export function flipState(): FlipState {
+  return { pos: new Map(), carry: new Map() };
+}
+
+/**
+ * Record how far each child is currently displaced by a slide still running.
+ * Call this immediately before requesting a reorder, not after: React relocates
+ * the moved node, and moving a node cancels the CSS transition on it, so by the
+ * time the layout effect runs its offset is gone and it has already snapped to
+ * its new spot. That snap is the jump you see when reorders come in faster than
+ * the 150ms slide, which dragging does constantly.
+ */
+export function flipCapture(
+  container: HTMLElement,
+  attr: string,
+  axis: "x" | "y",
+  state: FlipState,
+): void {
+  container.querySelectorAll<HTMLElement>(`[${attr}]`).forEach((el) => {
+    const t = currentTranslate(el, axis);
+    if (t !== 0) state.carry.set(el.getAttribute(attr)!, t);
+  });
+}
+
 // FLIP: slide each `[attr]` child in `container` from its previous position to
 // its new one when the order changed, so a reorder (drag or shortcut) animates.
-// `axis` picks the translate axis; `prev` holds each child's last position and
-// is updated in place (the caller keeps it in a ref across renders).
+// `axis` picks the translate axis; `state` is updated in place.
 export function flipReorder(
   container: HTMLElement,
   attr: string,
   axis: "x" | "y",
-  prev: Map<string, number>,
+  state: FlipState,
 ): void {
+  const { pos: prev, carry } = state;
   container.querySelectorAll<HTMLElement>(`[${attr}]`).forEach((el) => {
     const id = el.getAttribute(attr)!;
-    const r = el.getBoundingClientRect();
-    const pos = axis === "y" ? r.top : r.left;
-    const was = prev.get(id);
-    if (was != null && was !== pos) {
-      el.style.transition = "none";
-      el.style.transform =
-        axis === "y" ? `translateY(${was - pos}px)` : `translateX(${was - pos}px)`;
-      requestAnimationFrame(() => {
-        el.style.transition = "transform 150ms ease";
-        el.style.transform = "";
-      });
+    // Hidden (no offset parent): position reads 0, which is not a real spot.
+    // Forget it, so reappearing does not read as a move from the origin.
+    if (!el.offsetParent) {
+      prev.delete(id);
+      return;
     }
+    // Layout position, not getBoundingClientRect: the rect includes the FLIP
+    // transform still running from the previous reorder, and shifts when the
+    // strip scrolls, both of which read as a move that never happened.
+    const pos = axis === "y" ? el.offsetTop : el.offsetLeft;
+    const was = prev.get(id);
     prev.set(id, pos);
+    if (was == null) return;
+    // The captured offset wins: a node React moved has lost its transition, so
+    // the DOM no longer remembers where it visually was.
+    const from = flipStart(was, pos, carry.get(id) ?? currentTranslate(el, axis));
+    if (from === 0) return;
+    el.style.transition = "none";
+    el.style.transform =
+      axis === "y" ? `translateY(${from}px)` : `translateX(${from}px)`;
+    requestAnimationFrame(() => {
+      el.style.transition = "transform 150ms ease";
+      el.style.transform = "";
+    });
   });
+  carry.clear();
+}
+
+/**
+ * Where a slide has to start for the element not to jump. `was` and `pos` are
+ * the layout positions before and after the reorder, `curr` the translate still
+ * in flight from an earlier one. Dragging reorders on every pointer move, so
+ * most slides interrupt a running slide: starting from the plain layout delta
+ * would snap the element to a spot it is not at yet, which is what makes a
+ * flurry of reorders look fast and erratic. Offsetting by `curr` starts it from
+ * where it actually is.
+ */
+export function flipStart(was: number, pos: number, curr: number): number {
+  return was + curr - pos;
+}
+
+// The translate the element currently carries on `axis`, in px: mid-transition
+// this is the live interpolated value, which is exactly the visual offset the
+// next slide has to continue from.
+function currentTranslate(el: HTMLElement, axis: "x" | "y"): number {
+  const t = getComputedStyle(el).transform;
+  if (!t || t === "none") return 0;
+  const m = new DOMMatrixReadOnly(t);
+  return axis === "y" ? m.m42 : m.m41;
 }
