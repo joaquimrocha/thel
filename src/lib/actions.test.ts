@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach } from "vitest";
 import { useSessions, type Session } from "@/store/sessions";
 import { usePrefs } from "@/store/prefs";
 import { useUI } from "@/store/ui";
+import { sidebarItems } from "@/lib/sessionGroups";
 import { cycleSession, moveSession } from "./actions";
 
 function session(id: string, repo: Partial<Pick<Session, "repoMain" | "repoRoot">> = {}): Session {
@@ -68,6 +69,13 @@ describe("moveSession", () => {
     });
   };
   const ids = () => useSessions.getState().sessions.map((s) => s.id);
+  // The sidebar's top level, which is what a move is judged by: the flat
+  // session order it comes from reads differently once groups gather their
+  // scattered rows under one header.
+  const drawn = () =>
+    sidebarItems(useSessions.getState().sessions).map((it) =>
+      it.t === "group" ? it.group.name : it.session.id,
+    );
 
   it("hops a loose session over a whole group, not one row at a time", () => {
     setup(["a1", "a2", "b1", "loose"], "loose");
@@ -103,35 +111,31 @@ describe("moveSession", () => {
     expect(ids()).toEqual(["a2", "a1", "b1", "loose"]);
   });
 
-  it("moves the whole group down from its last row", () => {
-    // a2 ends repoA, so there is nothing below it inside the group; the press
-    // moves repoA itself, clear of repoB.
+  it("leaves the group put at its last row", () => {
+    // a2 ends repoA, and it cannot leave the repo, so the press does nothing
+    // rather than dragging repoA past repoB.
     setup(["a1", "a2", "b1", "loose"], "a2");
     moveSession(1);
-    expect(ids()).toEqual(["b1", "a1", "a2", "loose"]);
-  });
-
-  it("moves the whole group up from its first row", () => {
-    setup(["b1", "a1", "a2", "loose"], "a1");
-    moveSession(-1);
     expect(ids()).toEqual(["a1", "a2", "b1", "loose"]);
   });
 
-  it("moves a group past a loose session too", () => {
-    setup(["loose", "a1", "a2", "b1"], "a1");
+  it("leaves the group put at its first row", () => {
+    setup(["b1", "a1", "a2", "loose"], "a1");
     moveSession(-1);
-    expect(ids()).toEqual(["a1", "a2", "loose", "b1"]);
+    expect(ids()).toEqual(["b1", "a1", "a2", "loose"]);
   });
 
-  it("gathers a group's scattered sessions when it moves", () => {
+  it("hops a loose session over a group without gathering it", () => {
     // repoA's sessions straddle the loose one, so the drawn order is
-    // [repoA, loose, repoB]. Moving repoA down makes the block contiguous.
-    setup(["a1", "loose", "b1", "a2"], "a2");
+    // [repoA, loose, repoB]. The loose row clears repoB to land last; repoA
+    // stays scattered, because nothing asked it to move.
+    setup(["a1", "loose", "b1", "a2"], "loose");
     moveSession(1);
-    expect(ids()).toEqual(["loose", "a1", "a2", "b1"]);
+    expect(ids()).toEqual(["a1", "b1", "loose", "a2"]);
+    expect(drawn()).toEqual(["repoA", "repoB", "loose"]);
   });
 
-  it("does nothing when a group is already at the end", () => {
+  it("does nothing at a group's edge with no item beyond it", () => {
     setup(["loose", "b1", "a1", "a2"], "a2");
     moveSession(1);
     expect(ids()).toEqual(["loose", "b1", "a1", "a2"]);
