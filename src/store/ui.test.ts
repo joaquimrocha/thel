@@ -40,3 +40,24 @@ describe("confirm queue", () => {
     expect(useUI.getState().confirmQueue).toHaveLength(0);
   });
 });
+
+describe("newSessionDir", () => {
+  test("clears newSessionDir when setNewSessionOpen(false) is called", () => {
+    useUI.getState().openNewSession("/work/repo");
+    expect(useUI.getState().newSessionOpen).toBe(true);
+    expect(useUI.getState().newSessionDir).toBe("/work/repo");
+
+    useUI.getState().setNewSessionOpen(false);
+    expect(useUI.getState().newSessionOpen).toBe(false);
+    expect(useUI.getState().newSessionDir).toBeNull();
+  });
+});
+
+describe("toggleRepoCollapsed", () => {
+  test("toggles folded state without throwing when localStorage is unavailable", () => {
+    expect(() => useUI.getState().toggleRepoCollapsed("/work/repo")).not.toThrow();
+    expect(useUI.getState().collapsedRepos).toContain("/work/repo");
+    useUI.getState().toggleRepoCollapsed("/work/repo");
+    expect(useUI.getState().collapsedRepos).not.toContain("/work/repo");
+  });
+});

@@ -72,6 +72,10 @@ export interface Session {
   // terminals default to this cwd. repoRoot is set when cwd is inside a repo.
   cwd?: string;
   repoRoot?: string;
+  // The repo's main worktree, the same for every worktree of one repo, so the
+  // sidebar can group them. repoRoot is the top level of the session's own
+  // checkout, which differs per linked worktree. Refreshed from git on load.
+  repoMain?: string;
   // A Lucide icon name (kebab-case, e.g. "rocket") shown in the sidebar to tell
   // sessions apart. Replaces the status dot while idle; the dot returns (pulsing)
   // while a command runs.
@@ -90,6 +94,7 @@ export interface SessionInit {
   name?: string;
   cwd?: string;
   repoRoot?: string;
+  repoMain?: string;
 }
 
 /** All terminals in a session, flattened across its split groups. */
@@ -170,7 +175,12 @@ export interface SessionState {
   // Revert every session using this icon to the default (e.g. it was deleted
   // from the library).
   clearIcon: (svg: string) => void;
-  setSessionGit: (id: string, branch: string | undefined, dirty: boolean) => void;
+  setSessionGit: (
+    id: string,
+    branch: string | undefined,
+    dirty: boolean,
+    repoMain: string | undefined,
+  ) => void;
 
   // groupId defaults to the session's active group.
   addTerminal: (sessionId: string, term: Terminal, groupId?: string) => void;
@@ -190,6 +200,11 @@ export interface SessionState {
   // Reorder a session in the sidebar / a terminal within its pane. toIndex is
   // clamped; used by drag-and-drop and the move shortcuts.
   reorderSession: (id: string, toIndex: number) => void;
+  // Move `ids` as one block, landing just before or just after `anchorId`.
+  // The sidebar reorders a whole repo group with this: a group's sessions need
+  // not be adjacent in the flat order, and moving them together makes them so.
+  // A no-op if the anchor is itself in the block, or is gone.
+  reorderSessionBlock: (ids: string[], anchorId: string, after: boolean) => void;
   reorderTerminal: (
     sessionId: string,
     groupId: string,
@@ -290,6 +305,7 @@ export const useSessions = create<SessionState>((set, get) => ({
       name: init?.name ?? `Session ${get().sessions.length + 1}`,
       cwd: init?.cwd,
       repoRoot: init?.repoRoot,
+      repoMain: init?.repoMain,
       groups: [{ id: groupId, terminals: [] }],
       layout: { t: "leaf", group: groupId },
       activeGroupId: groupId,
@@ -346,10 +362,10 @@ export const useSessions = create<SessionState>((set, get) => ({
       ),
     })),
 
-  setSessionGit: (id, branch, dirty) =>
+  setSessionGit: (id, branch, dirty, repoMain) =>
     set((s) => ({
       sessions: s.sessions.map((ss) =>
-        ss.id === id ? { ...ss, branch, dirty } : ss,
+        ss.id === id ? { ...ss, branch, dirty, repoMain } : ss,
       ),
     })),
 
@@ -503,6 +519,21 @@ export const useSessions = create<SessionState>((set, get) => ({
       const [moved] = sessions.splice(from, 1);
       sessions.splice(to, 0, moved);
       return { sessions };
+    }),
+
+  reorderSessionBlock: (ids, anchorId, after) =>
+    set((s) => {
+      const inBlock = new Set(ids);
+      if (inBlock.has(anchorId)) return s;
+      const block = s.sessions.filter((x) => inBlock.has(x.id));
+      if (block.length === 0) return s;
+      const rest = s.sessions.filter((x) => !inBlock.has(x.id));
+      const at = rest.findIndex((x) => x.id === anchorId);
+      if (at === -1) return s;
+      const sessions = [...rest];
+      sessions.splice(after ? at + 1 : at, 0, ...block);
+      const same = sessions.every((x, i) => x === s.sessions[i]);
+      return same ? s : { sessions };
     }),
 
   reorderTerminal: (sessionId, groupId, terminalId, toIndex) =>

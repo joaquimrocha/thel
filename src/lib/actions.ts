@@ -11,6 +11,12 @@ import { clampZoomOffset } from "@/lib/theme";
 import { terminalBusy } from "@/lib/pty";
 import { gitInfo, worktreeInfo, removeWorktree } from "@/lib/git";
 import { abbreviatePath } from "@/lib/paths";
+import {
+  sessionsInDisplayOrder,
+  sidebarItems,
+  itemSessions,
+  itemEdgeId,
+} from "@/lib/sessionGroups";
 import { toast } from "sonner";
 
 /** Close a terminal, confirming first if a command is running. */
@@ -227,13 +233,42 @@ export function resetActiveTerminalZoom() {
   if (id) useSessions.getState().setZoom(id, usePrefs.getState().terminalZoom);
 }
 
-/** Cycle the active session (+1 next, -1 prev). */
+/** Cycle the active session (+1 next, -1 prev), in sidebar order. Folded
+ * repo groups are skipped, so cycling doesn't spring one open; if every
+ * session is hidden that way, falls back to the full order. */
 export function cycleSession(dir: 1 | -1) {
   const { sessions, activeSessionId, setActiveSession } = useSessions.getState();
-  if (sessions.length === 0) return;
-  const i = sessions.findIndex((x) => x.id === activeSessionId);
-  const next = (i + dir + sessions.length) % sessions.length;
-  setActiveSession(sessions[next].id);
+  const grouping = usePrefs.getState().groupSessionsByRepo;
+  const collapsedRepos = useUI.getState().collapsedRepos;
+  const order = sessionsInDisplayOrder(sessions, grouping, collapsedRepos);
+  if (order.length === 0) return;
+
+  const i = order.findIndex((x) => x.id === activeSessionId);
+  if (i !== -1) {
+    const next = (i + dir + order.length) % order.length;
+    setActiveSession(order[next].id);
+    return;
+  }
+
+  // Active session is in a folded group and not present in `order`. Find the
+  // nearest visible session in direction `dir` from its slot in full order.
+  const fullOrder = sessionsInDisplayOrder(sessions, grouping, []);
+  const fullIndex = fullOrder.findIndex((x) => x.id === activeSessionId);
+  if (fullIndex === -1) {
+    setActiveSession(order[dir === 1 ? 0 : order.length - 1].id);
+    return;
+  }
+
+  const visibleIds = new Set(order.map((s) => s.id));
+  const len = fullOrder.length;
+  for (let k = 1; k < len; k++) {
+    const idx = (fullIndex + (dir * k) % len + len) % len;
+    const candidate = fullOrder[idx];
+    if (visibleIds.has(candidate.id)) {
+      setActiveSession(candidate.id);
+      return;
+    }
+  }
 }
 
 /** Move the active terminal within its pane one slot left (-1) or right (1). */
@@ -264,11 +299,46 @@ export function moveTerminalToPane(dir: 1 | -1) {
   moveTerminalToGroup(s.id, g.activeTerminalId, targetId, target.terminals.length);
 }
 
-/** Move the active session up (-1) or down (1) in the sidebar. */
+/** Move the active session up (-1) or down (1) in the sidebar. Inside a repo
+ * group it swaps with its neighbour there and stops at the group's edges: a
+ * session cannot leave its repo, so there is nowhere further for it to go. A
+ * session in no repo moves at the level of the groups instead, clearing the
+ * whole item it passes. Without grouping it is a plain neighbour swap. */
 export function moveSession(dir: 1 | -1) {
-  const { sessions, activeSessionId, reorderSession } = useSessions.getState();
+  const { sessions, activeSessionId, reorderSession, reorderSessionBlock } =
+    useSessions.getState();
   if (!activeSessionId) return;
-  const i = sessions.findIndex((x) => x.id === activeSessionId);
-  if (i === -1) return;
-  reorderSession(activeSessionId, i + dir);
+  const grouping = usePrefs.getState().groupSessionsByRepo;
+  const from = sessions.findIndex((x) => x.id === activeSessionId);
+  if (from === -1) return;
+
+  if (grouping) {
+    const items = sidebarItems(sessions);
+    const at = items.findIndex((it) =>
+      itemSessions(it).some((s) => s.id === activeSessionId),
+    );
+    if (at === -1) return;
+    const item = items[at];
+    const covered = itemSessions(item);
+    const within = covered.findIndex((s) => s.id === activeSessionId);
+    const inside = covered[within + dir];
+    if (inside) {
+      reorderSessionBlock([activeSessionId], inside.id, dir === 1);
+      return;
+    }
+    // At a group's edge. Taking the group along would move rows the shortcut
+    // was never pointed at, so the move stops here; drag the header to move a
+    // whole group.
+    if (item.t === "group") return;
+    const target = items[at + dir];
+    if (!target) return;
+    reorderSessionBlock([activeSessionId], itemEdgeId(target, dir === 1), dir === 1);
+    return;
+  }
+
+  const order = sessionsInDisplayOrder(sessions, grouping);
+  const i = order.findIndex((x) => x.id === activeSessionId);
+  const neighbour = order[i + dir];
+  if (i === -1 || !neighbour) return;
+  reorderSession(activeSessionId, sessions.findIndex((x) => x.id === neighbour.id));
 }

@@ -15,7 +15,13 @@ import {
   type PaneGroup,
 } from "@/store/sessions";
 import { addTerminal, splitPane } from "@/lib/launch";
-import { reorderIndex, setClonedDragImage, flipReorder } from "@/lib/dragReorder";
+import {
+  reorderIndex,
+  setClonedDragImage,
+  flipCapture,
+  flipReorder,
+  flipState,
+} from "@/lib/dragReorder";
 import { closeTerminalConfirmed, closeAllTerminals } from "@/lib/actions";
 import { useUI } from "@/store/ui";
 import { shortcutLabel } from "@/store/keybindings";
@@ -62,7 +68,7 @@ export function TerminalTabs({
   // way out. Only one menu is open at a time, so one ref covers every tab.
   const renaming = useRef(false);
   const stripRef = useRef<HTMLDivElement>(null);
-  const prevLefts = useRef<Map<string, number>>(new Map());
+  const flip = useRef(flipState());
 
   // Scroll the strip horizontally (only) just enough to fully show a tab. Uses
   // offset geometry rather than scrollIntoView, so it ignores the FLIP
@@ -87,7 +93,7 @@ export function TerminalTabs({
   const order = group.terminals.map((t) => t.id).join(",");
   useLayoutEffect(() => {
     const strip = stripRef.current;
-    if (strip) flipReorder(strip, "data-tab-id", "x", prevLefts.current);
+    if (strip) flipReorder(strip, "data-tab-id", "x", flip.current);
   }, [order]);
 
   // Keep the active tab in view: newly created (appended off-screen), selected,
@@ -144,7 +150,11 @@ export function TerminalTabs({
     const after = e.clientX >= rect.left + rect.width / 2;
     const from = group.terminals.findIndex((t) => t.id === id);
     const to = reorderIndex(from, overIndex, after);
-    if (from !== -1 && to !== from) reorderTerminal(sessionId, group.id, id, to);
+    if (from !== -1 && to !== from) {
+      const strip = stripRef.current;
+      if (strip) flipCapture(strip, "data-tab-id", "x", flip.current);
+      reorderTerminal(sessionId, group.id, id, to);
+    }
   };
 
   // A drop on this pane's strip. Within the pane it's already been reordered
@@ -273,7 +283,13 @@ export function TerminalTabs({
               "group relative flex h-8 max-w-52 shrink-0 cursor-pointer items-center gap-2 rounded-md px-3 text-sm",
               t.id === group.activeTerminalId
                 ? "bg-secondary text-secondary-foreground"
-                : "text-muted-foreground hover:bg-secondary/50",
+                : cn(
+                    "text-muted-foreground",
+                    // Only while the pointer is really hovering: a drag freezes
+                    // :hover on the tabs it passes over, so they stay lit as
+                    // the dragged tab crosses them.
+                    hoverArmed && "hover:bg-secondary/50",
+                  ),
               dragging === t.id && "opacity-0",
             )}
           >

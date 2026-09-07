@@ -68,6 +68,8 @@ export function SettingsDialog() {
   const customTitlebar = usePrefs((s) => s.customTitlebar);
   const setCustomTitlebar = usePrefs((s) => s.setCustomTitlebar);
   const newTerminalInSessionDir = usePrefs((s) => s.newTerminalInSessionDir);
+  const groupSessionsByRepo = usePrefs((s) => s.groupSessionsByRepo);
+  const setGroupSessionsByRepo = usePrefs((s) => s.setGroupSessionsByRepo);
   const setNewTerminalInSessionDir = usePrefs(
     (s) => s.setNewTerminalInSessionDir,
   );
@@ -235,6 +237,20 @@ export function SettingsDialog() {
                   A new terminal otherwise opens wherever the one you were last
                   in had got to, and falls back to the session's folder when the
                   shell doesn't report its directory.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-2 text-sm">
+                  <Switch
+                    checked={groupSessionsByRepo}
+                    onCheckedChange={setGroupSessionsByRepo}
+                  />
+                  Group sessions by repo
+                </label>
+                <p className="pl-9 text-xs text-muted-foreground">
+                  Sessions in the same git repo, its worktrees included, sit
+                  under a header named after the repo's folder. Click the
+                  header to fold them away.
                 </p>
               </div>
             </TabsContent>
