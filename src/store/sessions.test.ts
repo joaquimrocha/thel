@@ -102,3 +102,43 @@ describe("clearAllAttention", () => {
     expect(S()).toBe(before);
   });
 });
+
+describe("reorderSessionBlock", () => {
+  const plain = (id: string): Session => ({
+    id,
+    name: id,
+    groups: [{ id: `g-${id}`, terminals: [] }],
+    layout: { t: "leaf", group: `g-${id}` },
+    activeGroupId: `g-${id}`,
+  });
+  const ids = () => S().map((s) => s.id);
+  const seedIds = (list: string[]) =>
+    useSessions.setState({ sessions: list.map(plain) });
+
+  test("moves a block, keeping the block's own order", () => {
+    seedIds(["a", "b", "c", "d"]);
+    useSessions.getState().reorderSessionBlock(["a", "b"], "d", true);
+    expect(ids()).toEqual(["c", "d", "a", "b"]);
+  });
+
+  test("gathers a scattered block at the anchor", () => {
+    seedIds(["a", "x", "b", "y"]);
+    useSessions.getState().reorderSessionBlock(["a", "b"], "y", false);
+    expect(ids()).toEqual(["x", "a", "b", "y"]);
+  });
+
+  test("is a no-op on identity when nothing moves", () => {
+    seedIds(["a", "b", "c"]);
+    const before = S();
+    useSessions.getState().reorderSessionBlock(["a"], "b", false);
+    expect(S()).toBe(before);
+  });
+
+  test("ignores an anchor inside the block, or one that is gone", () => {
+    seedIds(["a", "b", "c"]);
+    const before = S();
+    useSessions.getState().reorderSessionBlock(["a", "b"], "a", true);
+    useSessions.getState().reorderSessionBlock(["a"], "nope", true);
+    expect(S()).toBe(before);
+  });
+});
