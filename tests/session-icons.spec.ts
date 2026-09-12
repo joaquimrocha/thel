@@ -40,11 +40,13 @@ async function open(page: Page, layout: ReturnType<typeof seedSession>) {
 }
 
 const slot = (page: Page) => page.locator("[data-status-slot]").first();
-const openSettings = (page: Page) =>
-  page
-    .getByRole("complementary")
-    .getByRole("button", { name: "Session settings" })
-    .click();
+const openSettings = async (page: Page) => {
+  await page
+    .locator("[data-session-list] [data-row-id]")
+    .first()
+    .click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+};
 const settingsDialog = (page: Page) =>
   page.getByRole("dialog", { name: "Session Settings" });
 

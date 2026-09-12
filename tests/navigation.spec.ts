@@ -27,7 +27,7 @@ test("Ctrl+Shift+E focuses the session list; x closes the highlighted one", asyn
   await createSession(page);
   await createSession(page);
   await expect(
-    page.getByRole("button", { name: "Close session" }),
+    page.locator("[data-session-list] [data-row-id]"),
   ).toHaveCount(2);
 
   await page.keyboard.press("Control+Shift+E");
@@ -37,8 +37,12 @@ test("Ctrl+Shift+E focuses the session list; x closes the highlighted one", asyn
   expect(focused).toBe(true);
 
   await page.keyboard.press("x");
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close session" })
+    .click();
   await expect(
-    page.getByRole("button", { name: "Close session" }),
+    page.locator("[data-session-list] [data-row-id]"),
   ).toHaveCount(1);
 });
 

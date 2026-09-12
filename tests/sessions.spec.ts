@@ -60,7 +60,7 @@ test("create a session: sidebar entry and terminal controls appear", async ({
   await gotoApp(page);
   await createSession(page);
   await expect(
-    page.getByRole("button", { name: "Close session" }),
+    page.locator("[data-session-list] [data-row-id]"),
   ).toHaveCount(1);
   // One terminal opened in the new session (its tab carries a close button).
   await expect(
@@ -71,7 +71,8 @@ test("create a session: sidebar entry and terminal controls appear", async ({
 test("closing a session returns to the empty state", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
-  await page.getByRole("button", { name: "Close session" }).click();
+  await page.locator("[data-session-list] [data-row-id]").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Close" }).click();
   // Closing a session always confirms now; accept in the dialog.
   await page
     .getByRole("dialog")
@@ -273,7 +274,7 @@ test("created session is restored after reload", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
   await expect(
-    page.getByRole("button", { name: "Close session" }),
+    page.locator("[data-session-list] [data-row-id]"),
   ).toHaveCount(1);
 
   // Persistence is debounced (~400ms); let it flush before reloading.
@@ -281,6 +282,6 @@ test("created session is restored after reload", async ({ page }) => {
   await page.reload();
   // The session persists across a reload, with its terminal reattached.
   await expect(
-    page.getByRole("button", { name: "Close session" }),
+    page.locator("[data-session-list] [data-row-id]"),
   ).toHaveCount(1);
 });
