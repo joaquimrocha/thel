@@ -56,7 +56,7 @@ test("creating a profile that copies sessions writes its layout", async ({
   await expect(create).toBeEnabled();
   await create.click();
   await expect(
-    page.getByRole("button", { name: "Close session" }),
+    page.locator("[data-session-list] [data-row-id]"),
   ).toHaveCount(1);
 
   await appMenuButton(page).click();

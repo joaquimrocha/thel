@@ -35,7 +35,8 @@ async function open(page: Page, config: MockConfig) {
     );
   }, layout);
   await gotoApp(page, config);
-  await page.getByRole("button", { name: "Close session" }).click();
+  await page.locator("[data-session-list] [data-row-id]").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Close" }).click();
   return page.getByRole("dialog");
 }
 

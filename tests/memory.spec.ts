@@ -103,9 +103,10 @@ test("tab churn: open/pump/close terminals returns memory", async ({ page }) => 
   expect(perCycleKB).toBeLessThan(250);
 });
 
-// Close the only session via the sidebar button, accepting the confirm dialog.
+// Close the only session via its row menu, accepting the confirm dialog.
 async function closeActiveSession(page: Page) {
-  await page.getByRole("button", { name: "Close session" }).click();
+  await page.locator("[data-session-list] [data-row-id]").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Close" }).click();
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Close session" })
