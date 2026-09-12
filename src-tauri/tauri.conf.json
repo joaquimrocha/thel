@@ -4,7 +4,7 @@
   "version": "0.1.0-beta",
   "identifier": "dev.thel.Thel",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "VITE_SINGLE_WINDOW=1 pnpm dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
