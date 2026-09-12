@@ -230,6 +230,16 @@ test("Ctrl+Shift+Comma opens the active session's settings", async ({
   ).toBeVisible();
 });
 
+test("session row 3-dot button opens the same menu", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  const row = page.locator("[data-session-list] [data-row-id]");
+  await row.hover();
+  await row.getByRole("button", { name: "Session options" }).click();
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+});
+
 test("Ctrl+Alt+Shift+W closes the active session", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
