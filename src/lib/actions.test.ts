@@ -1,9 +1,14 @@
-import { describe, expect, it, beforeEach } from "vitest";
-import { useSessions, type Session } from "@/store/sessions";
+import { describe, expect, it, test, beforeEach, vi } from "vitest";
+import { useSessions, type Session, type Terminal } from "@/store/sessions";
 import { usePrefs } from "@/store/prefs";
 import { useUI } from "@/store/ui";
 import { sidebarItems } from "@/lib/sessionGroups";
-import { cycleSession, moveSession } from "./actions";
+import { cycleSession, moveSession, goToNextFinishedOrWorkingTerminal } from "./actions";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({
+  toast: vi.fn(),
+}));
 
 function session(id: string, repo: Partial<Pick<Session, "repoMain" | "repoRoot">> = {}): Session {
   return {
@@ -139,5 +144,170 @@ describe("moveSession", () => {
     setup(["loose", "b1", "a1", "a2"], "a2");
     moveSession(1);
     expect(ids()).toEqual(["loose", "b1", "a1", "a2"]);
+  });
+});
+
+const term = (id: string, extra: Partial<Terminal> = {}): Terminal => ({
+  id,
+  title: id,
+  command: "bash",
+  args: [],
+  ...extra,
+});
+
+function seed(): Session[] {
+  return [
+    {
+      id: "s1",
+      name: "S1",
+      groups: [
+        { id: "g1", terminals: [term("t1"), term("t2")], activeTerminalId: "t1" },
+      ],
+      layout: { t: "leaf", group: "g1" },
+      activeGroupId: "g1",
+    },
+    {
+      id: "s2",
+      name: "S2",
+      groups: [{ id: "g2", terminals: [term("t3"), term("t4")], activeTerminalId: "t3" }],
+      layout: { t: "leaf", group: "g2" },
+      activeGroupId: "g2",
+    },
+  ];
+}
+
+describe("goToNextFinishedOrWorkingTerminal", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSessions.setState({ sessions: seed(), activeSessionId: "s1", hydrated: true });
+  });
+
+  test("shows toast when no terminals are finished or working", () => {
+    goToNextFinishedOrWorkingTerminal();
+    expect(toast).toHaveBeenCalledWith("No finished or working terminals");
+  });
+
+  test("prioritizes finished terminal over working terminal", () => {
+    // t2 is working, t4 is finished (attention)
+    useSessions.setState((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id === "s1") {
+          return {
+            ...ss,
+            groups: [{ ...ss.groups[0], terminals: [term("t1"), term("t2", { busy: true })] }],
+          };
+        }
+        if (ss.id === "s2") {
+          return {
+            ...ss,
+            groups: [{ ...ss.groups[0], terminals: [term("t3"), term("t4", { attention: true })] }],
+          };
+        }
+        return ss;
+      }),
+    }));
+
+    // Active is t1 in s1
+    goToNextFinishedOrWorkingTerminal();
+
+    // Should jump to s2 / t4 because t4 has attention
+    const state = useSessions.getState();
+    expect(state.activeSessionId).toBe("s2");
+    expect(state.sessions.find((s) => s.id === "s2")?.groups[0].activeTerminalId).toBe("t4");
+  });
+
+  test("falls back to working terminal when no finished terminals exist", () => {
+    // t3 is working (busy)
+    useSessions.setState((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id === "s2") {
+          return {
+            ...ss,
+            groups: [{ ...ss.groups[0], terminals: [term("t3", { busy: true }), term("t4")] }],
+          };
+        }
+        return ss;
+      }),
+    }));
+
+    // Active is t1 in s1
+    goToNextFinishedOrWorkingTerminal();
+
+    const state = useSessions.getState();
+    expect(state.activeSessionId).toBe("s2");
+    expect(state.sessions.find((s) => s.id === "s2")?.groups[0].activeTerminalId).toBe("t3");
+  });
+
+  test("walks the sidebar's grouped order, not the raw session order", () => {
+    // Raw order a1, plain, a2; grouped, a2 sits under a1's repo, ahead of plain.
+    const withTerm = (s: Session, t: Terminal): Session => ({
+      ...s,
+      groups: [{ ...s.groups[0], terminals: [t], activeTerminalId: t.id }],
+    });
+    useSessions.setState({
+      sessions: [
+        withTerm(session("a1", { repoMain: "/work/thel", repoRoot: "/work/thel" }), term("t1")),
+        withTerm(session("plain"), term("tp", { attention: true })),
+        withTerm(
+          session("a2", { repoMain: "/work/thel", repoRoot: "/work/thel.feature" }),
+          term("t2", { attention: true }),
+        ),
+      ],
+      activeSessionId: "a1",
+      hydrated: true,
+    });
+    usePrefs.setState({ groupSessionsByRepo: true });
+
+    goToNextFinishedOrWorkingTerminal();
+    expect(useSessions.getState().activeSessionId).toBe("a2");
+  });
+
+  test("cycles through multiple finished terminals", () => {
+    // t2 and t4 both have attention
+    useSessions.setState((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id === "s1") {
+          return {
+            ...ss,
+            groups: [{ ...ss.groups[0], terminals: [term("t1"), term("t2", { attention: true })] }],
+          };
+        }
+        if (ss.id === "s2") {
+          return {
+            ...ss,
+            groups: [{ ...ss.groups[0], terminals: [term("t3"), term("t4", { attention: true })] }],
+          };
+        }
+        return ss;
+      }),
+    }));
+
+    // Active is t1
+    goToNextFinishedOrWorkingTerminal();
+    expect(useSessions.getState().activeSessionId).toBe("s1");
+    expect(useSessions.getState().sessions[0].groups[0].activeTerminalId).toBe("t2");
+
+    // Active is now t2 in s1, call again -> should go to t4 in s2
+    goToNextFinishedOrWorkingTerminal();
+    expect(useSessions.getState().activeSessionId).toBe("s2");
+    expect(useSessions.getState().sessions[1].groups[0].activeTerminalId).toBe("t4");
+  });
+
+  test("handles exited processes as finished terminals", () => {
+    useSessions.setState((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id === "s2") {
+          return {
+            ...ss,
+            groups: [{ ...ss.groups[0], terminals: [term("t3", { exited: true }), term("t4")] }],
+          };
+        }
+        return ss;
+      }),
+    }));
+
+    goToNextFinishedOrWorkingTerminal();
+    expect(useSessions.getState().activeSessionId).toBe("s2");
+    expect(useSessions.getState().sessions[1].groups[0].activeTerminalId).toBe("t3");
   });
 });

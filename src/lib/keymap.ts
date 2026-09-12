@@ -16,6 +16,7 @@ import {
   toggleActiveSessionNotes,
   moveTerminalToPane,
   closeActiveSession,
+  goToNextFinishedOrWorkingTerminal,
 } from "@/lib/actions";
 
 export interface Combo {
@@ -240,6 +241,15 @@ export const SHORTCUTS: Shortcut[] = [
       { code: "PageUp", ctrl: true, alt: true },
     ),
     run: () => cycleSession(-1),
+  },
+  {
+    id: "next-finished-or-working",
+    description: "Next finished or working terminal",
+    defaultCombo: def(
+      { code: "KeyU", meta: true, alt: true },
+      { code: "KeyU", ctrl: true, alt: true },
+    ),
+    run: () => goToNextFinishedOrWorkingTerminal(),
   },
   {
     id: "next-pane",
