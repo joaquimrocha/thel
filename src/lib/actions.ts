@@ -309,8 +309,6 @@ export function moveSession(dir: 1 | -1) {
     useSessions.getState();
   if (!activeSessionId) return;
   const grouping = usePrefs.getState().groupSessionsByRepo;
-  const from = sessions.findIndex((x) => x.id === activeSessionId);
-  if (from === -1) return;
 
   if (grouping) {
     const items = sidebarItems(sessions);
@@ -341,4 +339,75 @@ export function moveSession(dir: 1 | -1) {
   const neighbour = order[i + dir];
   if (i === -1 || !neighbour) return;
   reorderSession(activeSessionId, sessions.findIndex((x) => x.id === neighbour.id));
+}
+
+/** Jump to the next terminal that is finished (attention or exited), or if none are,
+ * the next working (busy) terminal. Shows a toast if no finished or working terminal exists. */
+export function goToNextFinishedOrWorkingTerminal() {
+  const { sessions, activeSessionId, setActiveTerminal } = useSessions.getState();
+  const all: {
+    sessionId: string;
+    terminalId: string;
+    attention?: boolean;
+    exited?: boolean;
+    busy?: boolean;
+    muted?: boolean;
+  }[] = [];
+
+  // Walk the sidebar's order, folded groups included: a finished terminal in
+  // one still wants reaching, and switching to it unfolds the group.
+  const grouping = usePrefs.getState().groupSessionsByRepo;
+  for (const s of sessionsInDisplayOrder(sessions, grouping, [])) {
+    for (const t of sessionTerminals(s)) {
+      all.push({
+        sessionId: s.id,
+        terminalId: t.id,
+        attention: t.attention,
+        exited: t.exited,
+        busy: t.busy,
+        muted: t.muted,
+      });
+    }
+  }
+
+  if (all.length === 0) {
+    toast("No finished or working terminals");
+    return;
+  }
+
+  const currentSession = sessions.find((s) => s.id === activeSessionId);
+  const currentGroup = currentSession && activeGroupOf(currentSession);
+  const activeTermId = currentGroup?.activeTerminalId;
+  const currentIndex = all.findIndex(
+    (item) =>
+      item.sessionId === activeSessionId && item.terminalId === activeTermId,
+  );
+
+  const start = currentIndex >= 0 ? currentIndex : 0;
+
+  const findNext = (predicate: (item: (typeof all)[number]) => boolean) => {
+    for (let i = 1; i <= all.length; i++) {
+      const idx = (start + i) % all.length;
+      if (predicate(all[idx])) {
+        return all[idx];
+      }
+    }
+    return null;
+  };
+
+  // 1. First priority: finished (has attention flag or exited process)
+  const nextFinished = findNext((t) => Boolean(t.attention || t.exited));
+  if (nextFinished) {
+    setActiveTerminal(nextFinished.sessionId, nextFinished.terminalId);
+    return;
+  }
+
+  // 2. Second priority: working (busy foreground process, not muted)
+  const nextWorking = findNext((t) => Boolean(t.busy && !t.muted));
+  if (nextWorking) {
+    setActiveTerminal(nextWorking.sessionId, nextWorking.terminalId);
+    return;
+  }
+
+  toast("No finished or working terminals");
 }

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Command, defaultFilter } from "cmdk";
-import { TerminalSquare, ArrowRight, FolderPlus, Settings, Keyboard } from "lucide-react";
+import { TerminalSquare, ArrowRight, FolderPlus, Settings, Keyboard, Zap } from "lucide-react";
 import { addTerminal } from "@/lib/launch";
+import { goToNextFinishedOrWorkingTerminal } from "@/lib/actions";
 import { useLaunchers } from "@/store/launchers";
 import { useSessions, sessionTerminals } from "@/store/sessions";
 import { useUI } from "@/store/ui";
@@ -97,6 +98,11 @@ export function CommandPalette({ open, onOpenChange }: Props) {
               <Item onSelect={() => run(openNewSession)}>
                 <FolderPlus className="size-4" /> New session…
               </Item>
+              {sessions.length > 0 && (
+                <Item onSelect={() => run(goToNextFinishedOrWorkingTerminal)}>
+                  <Zap className="size-4" /> Next finished or working terminal
+                </Item>
+              )}
               {/* Default-launcher terminal in the current session; the
                   per-launcher variants live under Launchers. */}
               {sessions.length > 0 && (
