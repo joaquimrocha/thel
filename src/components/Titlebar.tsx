@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Minus,
@@ -15,6 +15,13 @@ import { useSessions } from "@/store/sessions";
 import { useProfiles } from "@/store/profiles";
 import { useUI } from "@/store/ui";
 import { ActionTooltip } from "@/components/ActionTooltip";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import { Logo } from "@/components/Logo";
 import { SvgIcon } from "@/components/SvgIcon";
 
@@ -97,156 +104,88 @@ export function ProfileMenu({ withName = true }: { withName?: boolean }) {
   // Open state lives in the UI store so a global shortcut can toggle it.
   const open = useUI((s) => s.profileMenuOpen);
   const setOpen = useUI((s) => s.setProfileMenuOpen);
-  const toggle = useUI((s) => s.toggleProfileMenu);
   const openSettings = useUI((s) => s.openSettings);
   const setProfileDialogOpen = useUI((s) => s.setProfileDialogOpen);
-  const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Close on Escape and hand focus back to the trigger. The window listener
-  // catches it even if focus has drifted out of the menu.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, setOpen]);
-
-  // On open, move focus into the menu (the active profile, else the first item).
-  useEffect(() => {
-    if (!open) return;
-    const menu = menuRef.current;
-    const active = menu?.querySelector<HTMLElement>('[data-active="true"]');
-    (active ?? menu?.querySelector<HTMLElement>('[role="menuitem"]'))?.focus();
-  }, [open]);
-
-  // Roving arrow-key navigation between the menu items (WAI-ARIA menu pattern).
-  const onMenuKeyDown = (e: React.KeyboardEvent) => {
-    const items = Array.from(
-      menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [],
-    );
-    if (!items.length) return;
-    const cur = items.indexOf(document.activeElement as HTMLElement);
-    const focusAt = (n: number) => {
-      e.preventDefault();
-      items[(n + items.length) % items.length]?.focus();
-    };
-    if (e.key === "ArrowDown") focusAt(cur + 1);
-    else if (e.key === "ArrowUp") focusAt(cur - 1);
-    else if (e.key === "Home") focusAt(0);
-    else if (e.key === "End") focusAt(items.length - 1);
-    else if (e.key === "Tab") setOpen(false); // menus close on Tab
-  };
-
   return (
-    <div className="relative">
+    <DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
       <ActionTooltip label="App menu" shortcutId="app-menu" side="bottom">
-        <button
-          ref={triggerRef}
-          data-testid="app-menu"
-          aria-label="App menu"
-          aria-haspopup="menu"
-          aria-expanded={open}
-          onClick={() => toggle()}
-          className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-sm hover:bg-secondary"
-        >
-          <Logo
-            className="size-[18px] text-zinc-300"
-            style={current?.color ? { color: current.color } : undefined}
-          />
-          {showName && (
-            <>
-              <span className="text-muted-foreground">/</span>
-              <span className="text-muted-foreground">{currentName}</span>
-            </>
-          )}
-        </button>
-      </ActionTooltip>
-
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            ref={menuRef}
-            role="menu"
+        <DropdownMenuTrigger asChild>
+          <button
+            data-testid="app-menu"
             aria-label="App menu"
-            aria-orientation="vertical"
-            onKeyDown={onMenuKeyDown}
-            className="absolute left-0 top-full z-50 mt-1 w-56 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+            className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-sm hover:bg-secondary"
           >
-            <div className="flex items-center justify-between py-1 pl-2 pr-1">
-              <span className="text-xs text-muted-foreground">Profiles</span>
-              <button
-                role="menuitem"
-                tabIndex={-1}
-                onClick={() => {
-                  setOpen(false);
-                  openSettings("profiles");
-                }}
-                title="Manage profiles"
-                aria-label="Manage profiles"
-                className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-              >
-                <Users className="size-3.5" />
-              </button>
-            </div>
-            {profiles.map((p) => (
-              <button
-                key={p.id}
-                role="menuitem"
-                tabIndex={-1}
-                data-active={p.id === currentId ? "true" : undefined}
-                onClick={() => {
-                  void switchProfile(p.id);
-                  setOpen(false);
-                }}
-                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-              >
-                <Check
-                  className={cn(
-                    "size-3.5 shrink-0",
-                    p.id === currentId ? "opacity-100" : "opacity-0",
-                  )}
-                />
-                <span
-                  className="size-2.5 shrink-0 rounded-full border border-border"
-                  style={p.color ? { backgroundColor: p.color } : undefined}
-                />
-                <span className="truncate">{p.name}</span>
-              </button>
-            ))}
-            <button
-              role="menuitem"
-              tabIndex={-1}
-              onClick={() => {
-                setOpen(false);
-                setProfileDialogOpen(true);
-              }}
-              className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-            >
-              <Plus className="size-3.5 shrink-0" /> New profile
-            </button>
-            <div className="my-1 h-px bg-border" />
-            <button
-              role="menuitem"
-              tabIndex={-1}
-              onClick={() => {
-                setOpen(false);
-                openSettings();
-              }}
-              className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-            >
-              <Settings className="size-3.5 shrink-0" /> Settings
-            </button>
-          </div>
-        </>
-      )}
-    </div>
+            <Logo
+              className="size-[18px] text-zinc-300"
+              style={current?.color ? { color: current.color } : undefined}
+            />
+            {showName && (
+              <>
+                <span className="text-muted-foreground">/</span>
+                <span className="text-muted-foreground">{currentName}</span>
+              </>
+            )}
+          </button>
+        </DropdownMenuTrigger>
+      </ActionTooltip>
+      <DropdownMenuContent
+        ref={menuRef}
+        align="start"
+        loop
+        className="w-56"
+        // Land on the active profile rather than the first item.
+        onOpenAutoFocus={(e) => {
+          const active = menuRef.current?.querySelector<HTMLElement>("[data-active]");
+          if (!active) return;
+          e.preventDefault();
+          active.focus();
+        }}
+      >
+        <div className="flex items-center justify-between py-1 pl-2 pr-1">
+          <span className="text-xs text-muted-foreground">Profiles</span>
+          <DropdownMenuItem
+            onSelect={() => openSettings("profiles")}
+            title="Manage profiles"
+            aria-label="Manage profiles"
+            className="p-0.5 text-muted-foreground"
+          >
+            <Users className="size-3.5" />
+          </DropdownMenuItem>
+        </div>
+        {profiles.map((p) => (
+          <DropdownMenuItem
+            key={p.id}
+            data-active={p.id === currentId ? "" : undefined}
+            onSelect={() => void switchProfile(p.id)}
+            className="justify-start"
+          >
+            <Check
+              className={cn(
+                "size-3.5 shrink-0",
+                p.id === currentId ? "opacity-100" : "opacity-0",
+              )}
+            />
+            <span
+              className="size-2.5 shrink-0 rounded-full border border-border"
+              style={p.color ? { backgroundColor: p.color } : undefined}
+            />
+            <span className="truncate">{p.name}</span>
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuItem
+          onSelect={() => setProfileDialogOpen(true)}
+          className="justify-start"
+        >
+          <Plus className="size-3.5 shrink-0" /> New profile
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => openSettings()} className="justify-start">
+          <Settings className="size-3.5 shrink-0" /> Settings
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

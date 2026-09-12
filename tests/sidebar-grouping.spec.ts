@@ -443,7 +443,9 @@ test("the sidebar menu toggles grouping and collapses the panel", async ({
   const menu = page.getByRole("menu", { name: "Sidebar menu" });
   await expect(menu).toBeVisible();
 
-  await menu.getByRole("switch", { name: "Group sessions by repo" }).click();
+  await menu
+    .getByRole("menuitemcheckbox", { name: "Group sessions by repo" })
+    .click();
   await expect(header(page)).toBeVisible();
 
   await menu.getByRole("menuitem", { name: /Collapse sidebar/ }).click();
