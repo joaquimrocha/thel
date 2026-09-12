@@ -98,8 +98,9 @@ test("use-worktree: pick a worktree and create the session", async ({
   await page.getByRole("tab", { name: "Use Worktree" }).click();
   await page.getByRole("button", { name: /feat/ }).click();
   await page.getByRole("button", { name: "Create session" }).click();
+  // Verify session was created by checking for a session row
   await expect(
-    page.getByRole("button", { name: "Close session" }),
+    page.locator("[data-row-id]"),
   ).toHaveCount(1);
 });
 
