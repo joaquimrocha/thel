@@ -12,7 +12,7 @@ async function createSession(page: Page) {
 
 async function renameActiveSession(page: Page, name: string) {
   await page
-    .locator('[data-session-list] [title="Double-click for session settings"]')
+    .locator('[data-session-list] [data-row-id]')
     .first()
     .dblclick();
   const dialog = page.getByRole("dialog");

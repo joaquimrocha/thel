@@ -15,7 +15,7 @@ test("rename a session (double-click opens settings)", async ({ page }) => {
   await createSession(page);
   // Double-clicking the row opens the Session Settings dialog; rename there.
   await page
-    .locator('[data-session-list] [title="Double-click for session settings"]')
+    .locator('[data-session-list] [data-row-id]')
     .dblclick();
   const dialog = page.getByRole("dialog");
   await dialog.locator("input").first().fill("MySession");
