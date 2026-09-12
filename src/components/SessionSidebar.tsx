@@ -1,6 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  X,
   Plus,
   Bell,
   GitBranch,
@@ -8,10 +7,10 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Zap,
-  Settings,
   ChevronDown,
   ChevronRight,
   FileText,
+  MoreVertical,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -865,6 +864,58 @@ function SessionRow({
   const openSessionNotes = useUI((s) => s.openSessionNotes);
   const noteText = useNotes((s) => s.notes[session.id]);
   const loadNote = useNotes((s) => s.loadNote);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [openUp, setOpenUp] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const toggleMenu = (open: boolean) => {
+    if (open && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      // Estimated menu height is ~140px. Position up if bottom space is tight.
+      setOpenUp(window.innerHeight - rect.bottom < 150);
+    }
+    setMenuOpen(open);
+    onMenuOpenChange(open);
+  };
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        toggleMenu(false);
+        buttonRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menuOpen]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const menu = menuRef.current;
+    menu?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [menuOpen]);
+
+  const onMenuKeyDown = (e: React.KeyboardEvent) => {
+    const items = Array.from(
+      menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [],
+    );
+    if (!items.length) return;
+    const cur = items.indexOf(document.activeElement as HTMLElement);
+    const focusAt = (n: number) => {
+      e.preventDefault();
+      items[(n + items.length) % items.length]?.focus();
+    };
+    if (e.key === "ArrowDown") focusAt(cur + 1);
+    else if (e.key === "ArrowUp") focusAt(cur - 1);
+    else if (e.key === "Home") focusAt(0);
+    else if (e.key === "End") focusAt(items.length - 1);
+    else if (e.key === "Tab") {
+      toggleMenu(false);
+    }
+  };
 
   useEffect(() => {
     void loadNote(session.id);
@@ -929,51 +980,127 @@ function SessionRow({
           </span>
         )}
       </div>
-      {hasNote && (
-        <ActionTooltip label="Session notes" shortcutId="session-notes">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onSelect();
-              openSessionNotes(session.id);
-            }}
-            className="shrink-0 rounded text-muted-foreground hover:bg-background/60 hover:text-foreground"
-            aria-label="Session notes"
-          >
-            <FileText className="size-3.5" data-testid="notes-indicator" />
-          </button>
-        </ActionTooltip>
-      )}
-      <ActionTooltip label="Session settings" shortcutId="session-settings">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            openSessionSettings(session.id);
-          }}
-          className={cn(
-            "shrink-0 rounded opacity-0 focus-visible:opacity-100 hover:bg-background/60",
-            hoverArmed && "group-hover:opacity-100",
+      <div className="flex items-center gap-0.5 shrink-0">
+        {hasNote && (
+          <ActionTooltip label="Session notes" shortcutId="session-notes">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect();
+                openSessionNotes(session.id);
+              }}
+              className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-background/60 hover:text-foreground"
+              aria-label="Session notes"
+            >
+              <FileText className="size-3.5" data-testid="notes-indicator" />
+            </button>
+          </ActionTooltip>
+        )}
+        <div className="relative flex items-center justify-center">
+          <ActionTooltip label="Session options">
+            <button
+              ref={buttonRef}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleMenu(!menuOpen);
+              }}
+              className={cn(
+                "flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-background/60 hover:text-foreground focus-visible:opacity-100",
+                menuOpen
+                  ? "bg-background/60 opacity-100 text-foreground"
+                  : "opacity-0",
+                hoverArmed && "group-hover:opacity-100",
+              )}
+              aria-label="Session options"
+              aria-expanded={menuOpen}
+            >
+              <MoreVertical className="size-3.5" />
+            </button>
+          </ActionTooltip>
+          {menuOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-40"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleMenu(false);
+                }}
+              />
+              <div
+                ref={menuRef}
+                role="menu"
+                aria-label="Session options"
+                aria-orientation="vertical"
+                onKeyDown={onMenuKeyDown}
+                className={cn(
+                  "absolute right-0 z-50 min-w-[14rem] overflow-hidden whitespace-nowrap rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md",
+                  openUp ? "bottom-full mb-1" : "top-full mt-1",
+                )}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  role="menuitem"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleMenu(false);
+                    openSessionSettings(session.id);
+                  }}
+                  className="flex w-full cursor-default select-none items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-sm text-foreground outline-none hover:bg-accent hover:text-accent-foreground"
+                >
+                  <span>Settings</span>
+                  <span className="font-mono text-xs tracking-widest text-muted-foreground">
+                    {shortcutLabel("session-settings")}
+                  </span>
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleMenu(false);
+                    onSelect();
+                    openSessionNotes(session.id);
+                  }}
+                  className="flex w-full cursor-default select-none items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-sm text-foreground outline-none hover:bg-accent hover:text-accent-foreground"
+                >
+                  <span>Notes</span>
+                  <span className="font-mono text-xs tracking-widest text-muted-foreground">
+                    {shortcutLabel("session-notes")}
+                  </span>
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleMenu(false);
+                    onSelect();
+                    openSessionUsage(session.id);
+                  }}
+                  className="flex w-full cursor-default select-none items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-sm text-foreground outline-none hover:bg-accent hover:text-accent-foreground"
+                >
+                  <span>Resource usage</span>
+                  <span className="font-mono text-xs tracking-widest text-muted-foreground">
+                    {shortcutLabel("session-usage")}
+                  </span>
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleMenu(false);
+                    onClose();
+                  }}
+                  className="flex w-full cursor-default select-none items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-sm text-foreground outline-none hover:bg-destructive hover:text-destructive-foreground"
+                >
+                  <span>Close</span>
+                  <span className="font-mono text-xs tracking-widest opacity-70">
+                    {shortcutLabel("close-session")}
+                  </span>
+                </button>
+              </div>
+            </>
           )}
-          aria-label="Session settings"
-        >
-          <Settings className="size-3.5" />
-        </button>
-      </ActionTooltip>
-      <ActionTooltip label="Close session">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onClose();
-          }}
-          className={cn(
-            "shrink-0 rounded opacity-0 focus-visible:opacity-100 hover:bg-background/60",
-            hoverArmed && "group-hover:opacity-100",
-          )}
-          aria-label="Close session"
-        >
-          <X className="size-3.5" />
-        </button>
-      </ActionTooltip>
+        </div>
+      </div>
     </div>
       </ContextMenuTrigger>
       {/* Every item here opens something that takes focus itself. The menu
@@ -1014,7 +1141,10 @@ function SessionRow({
           Resource usage
           <ContextMenuShortcut>{shortcutLabel("session-usage")}</ContextMenuShortcut>
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => setTimeout(onClose, 0)}>
+        <ContextMenuItem
+          className="focus:bg-destructive focus:text-destructive-foreground"
+          onSelect={() => setTimeout(onClose, 0)}
+        >
           Close
           <ContextMenuShortcut>{shortcutLabel("close-session")}</ContextMenuShortcut>
         </ContextMenuItem>
