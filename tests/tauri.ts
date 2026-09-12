@@ -14,6 +14,9 @@ export interface MockConfig {
   // Bytes of output each create_session emits, simulating a reattach snapshot
   // (for the startup benchmark). 0/undefined → just a prompt.
   snapshotBytes?: number;
+  // How long create_session takes to resolve and send its first output, so a
+  // test can see the terminal before the daemon has attached it.
+  createSessionDelayMs?: number;
   // Folder returned by the "Browse for folder" dialog (null = cancelled).
   pickedFolder?: string;
   // Directory completions returned by complete_dir.
@@ -164,15 +167,18 @@ function install(config: MockConfig) {
           if (oldCb !== undefined) callbacks.delete(oldCb);
           termChannels.set(termId, send);
           if (typeof ch.id === "number") termCbIds.set(termId, ch.id);
+          const delay = m.createSessionDelayMs ?? 0;
           if (m.snapshotBytes && m.snapshotBytes > 0) {
             // Simulate a reattach snapshot: a chunk xterm must parse on mount.
             const line = "restored scrollback line of terminal output\r\n";
             const data = line.repeat(Math.ceil(m.snapshotBytes / line.length));
-            setTimeout(() => send({ kind: "data", data }), 0);
+            setTimeout(() => send({ kind: "data", data }), delay);
           } else {
-            setTimeout(() => send({ kind: "data", data: "$ " }), 0);
+            setTimeout(() => send({ kind: "data", data: "$ " }), delay);
           }
         }
+        if (m.createSessionDelayMs)
+          return new Promise((r) => setTimeout(r, m.createSessionDelayMs));
         return null;
       }
       case "close_session":

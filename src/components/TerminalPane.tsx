@@ -5,7 +5,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
-import { ChevronDown, ChevronUp, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   createSession,
@@ -233,6 +233,8 @@ export function TerminalPane({
   const [copyModeOn, setCopyModeOn] = useState(false);
   // The URL currently under the pointer (from the link addon's hover).
   const [linkUrl, setLinkUrl] = useState<string | null>(null);
+  // Tracked to show a spinner until the daemon accepts the open.
+  const [attached, setAttached] = useState(false);
   // What the pointer was on when the menu opened. Opening it blanks pointer
   // events on the body, which makes xterm report the link left before the menu
   // has rendered, so reading the live value there always found nothing.
@@ -517,6 +519,7 @@ export function TerminalPane({
       },
       (msg) => {
         if (closed) return;
+        setAttached(true);
         if (msg.kind === "data") {
           const visible = hasVisibleOutput(msg.data);
           // Absorb into the bell window before the write, so a bell inside THIS
@@ -543,11 +546,16 @@ export function TerminalPane({
           handleExit();
         }
       },
-    ).catch((e) => {
-      if (closed) return;
-      term.write(`\r\n\x1b[31mfailed to start session: ${e}\x1b[0m\r\n`);
-      markExited(tab.id, null);
-    });
+    )
+      .then(() => {
+        if (!closed) setAttached(true);
+      })
+      .catch((e) => {
+        if (closed) return;
+        setAttached(true);
+        term.write(`\r\n\x1b[31mfailed to start session: ${e}\x1b[0m\r\n`);
+        markExited(tab.id, null);
+      });
 
     // Once the user types into a terminal, its bells become real "wants
     // input"/done signals (see notify's startup-bell filter). Set the flag once;
@@ -830,6 +838,14 @@ export function TerminalPane({
           style={{ visibility: visible ? "visible" : "hidden" }}
         >
           <div ref={containerRef} className="h-full w-full" />
+          {!attached && !tab.exited && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-background/80 text-muted-foreground backdrop-blur-sm">
+              <Loader2 className="size-6 animate-spin text-muted-foreground/80" />
+              <span className="text-xs font-medium text-muted-foreground/70">
+                Connecting...
+              </span>
+            </div>
+          )}
           {findOpen && (
             // z-10 clears xterm's layer canvases (the link layer sits at
             // z-index 2): they are transparent, so without it the bar is
