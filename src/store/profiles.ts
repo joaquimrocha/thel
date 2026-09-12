@@ -134,8 +134,9 @@ export async function windowStays(): Promise<boolean> {
  * windows that were open when the app last quit. Call after hydrate(), which
  * loads the registry this prunes deleted profiles against. */
 export async function restoreOpenProfiles() {
-  // Skip profile restoration in dev mode so the main window stays open.
-  if (import.meta.env.DEV) return;
+  // `tauri dev` sets this so a dev run opens the main window only. Playwright
+  // runs the same dev server without it and still exercises restoration.
+  if (import.meta.env.VITE_SINGLE_WINDOW) return;
 
   const id = currentProfileId();
   const open = await startupOpen;
