@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from "react";
-import { TerminalSquare } from "lucide-react";
+import { Loader2, TerminalSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   useSessions,
@@ -387,14 +387,13 @@ function GroupChrome({
   );
 }
 
-// Shown while the saved layout is still loading: the same expanding/fading dot
-// as a running command, but gray.
+// Shown while the saved layout is still loading: a spinner and label.
 function LoadingPulse() {
   return (
-    <div className="absolute inset-0 flex items-center justify-center">
-      <span className="relative flex size-5">
-        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-muted-foreground opacity-75" />
-        <span className="relative inline-flex h-full w-full rounded-full bg-muted-foreground" />
+    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 text-muted-foreground">
+      <Loader2 className="size-6 animate-spin text-muted-foreground/80" />
+      <span className="text-xs font-medium text-muted-foreground/70">
+        Loading layout...
       </span>
     </div>
   );
