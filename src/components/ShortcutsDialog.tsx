@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -9,8 +10,10 @@ import { useUI } from "@/store/ui";
 import { SHORTCUTS, STATIC_SHORTCUTS, comboToString } from "@/lib/keymap";
 import { isMac } from "@/lib/platform";
 import { useKeybindings, effectiveCombo } from "@/store/keybindings";
+import { Search } from "lucide-react";
 
 export function ShortcutsDialog() {
+  const [query, setQuery] = useState("");
   const open = useUI((s) => s.helpOpen);
   const setOpen = useUI((s) => s.setHelpOpen);
   const overrides = useKeybindings((s) => s.overrides);
@@ -35,6 +38,20 @@ export function ShortcutsDialog() {
     if (c) counts[comboToString(c)] = (counts[comboToString(c)] ?? 0) + 1;
   }
 
+  // Filter shortcuts by query
+  const q = query.toLowerCase();
+  const filteredShortcuts = SHORTCUTS.filter((s) => {
+    const combo = effectiveCombo(s.id);
+    const comboStr = combo ? comboToString(combo) : "";
+    return (
+      s.description.toLowerCase().includes(q) ||
+      comboStr.toLowerCase().includes(q)
+    );
+  });
+  const filteredStatic = STATIC_SHORTCUTS.filter((s) =>
+    s.description.toLowerCase().includes(q) || s.keys.toLowerCase().includes(q)
+  );
+
   return (
     <Dialog
       open={open}
@@ -54,10 +71,21 @@ export function ShortcutsDialog() {
             Click a shortcut to rebind it, then press the new keys (must include
             {isMac ? " ⌘, ⌃, or ⌥" : " Ctrl or Alt"}). Esc cancels.
           </DialogDescription>
+          <div className="mt-3 flex items-center gap-2 rounded-md border border-border bg-muted px-3 py-2">
+            <Search className="size-4 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Search shortcuts…"
+              value={query}
+              onChange={(e) => setQuery(e.currentTarget.value)}
+              className="flex-1 bg-transparent outline-none text-sm"
+              autoFocus
+            />
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-2 py-2">
-          {SHORTCUTS.map((s) => {
+          {filteredShortcuts.map((s) => {
             const combo = effectiveCombo(s.id)!;
             const str = comboToString(combo);
             const recording = recordingId === s.id;
@@ -96,20 +124,24 @@ export function ShortcutsDialog() {
             );
           })}
 
-          <p className="mt-3 border-t border-border px-2 pt-3 pb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Fixed
-          </p>
-          {STATIC_SHORTCUTS.map((s) => (
-            <div
-              key={s.description}
-              className="flex items-center justify-between gap-4 px-2 py-1 text-sm"
-            >
-              <span className="text-muted-foreground">{s.description}</span>
-              <kbd className="shrink-0 rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs">
-                {s.keys}
-              </kbd>
-            </div>
-          ))}
+          {filteredStatic.length > 0 && (
+            <>
+              <p className="mt-3 border-t border-border px-2 pt-3 pb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Fixed
+              </p>
+              {filteredStatic.map((s) => (
+                <div
+                  key={s.description}
+                  className="flex items-center justify-between gap-4 px-2 py-1 text-sm"
+                >
+                  <span className="text-muted-foreground">{s.description}</span>
+                  <kbd className="shrink-0 rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs">
+                    {s.keys}
+                  </kbd>
+                </div>
+              ))}
+            </>
+          )}
         </div>
 
         <div className="flex justify-end border-t border-border px-3 py-2">
