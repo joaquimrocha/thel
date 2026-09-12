@@ -40,16 +40,18 @@ export function QuitSessionsDialog() {
           back with their screen when you reopen thel. Choose to stop them and
           they will end with this window, along with whatever they were running.
         </p>
-        <DialogFooter>
+        <DialogFooter className="flex justify-between">
           <Button variant="ghost" size="sm" onClick={() => answer("cancel")}>
             Cancel
           </Button>
-          <Button variant="outline" size="sm" onClick={() => answer("stop")}>
-            Stop them
-          </Button>
-          <Button variant="default" size="sm" onClick={() => answer("keep")}>
-            Keep running
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => answer("stop")}>
+              Stop them
+            </Button>
+            <Button variant="default" size="sm" onClick={() => answer("keep")}>
+              Keep running
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
