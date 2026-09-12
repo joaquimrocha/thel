@@ -11,11 +11,13 @@ import {
   Settings,
   ChevronDown,
   ChevronRight,
+  FileText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useSessions, revertBrokenIcon, type Session } from "@/store/sessions";
+import { useNotes } from "@/store/notes";
 import { usePrefs } from "@/store/prefs";
 import { useNotifications } from "@/store/notifications";
 import { useUI, SIDEBAR_MIN, SIDEBAR_MAX } from "@/store/ui";
@@ -861,6 +863,15 @@ function SessionRow({
   const openSessionSettings = useUI((s) => s.openSessionSettings);
   const openSessionUsage = useUI((s) => s.openSessionUsage);
   const openSessionNotes = useUI((s) => s.openSessionNotes);
+  const noteText = useNotes((s) => s.notes[session.id]);
+  const loadNote = useNotes((s) => s.loadNote);
+
+  useEffect(() => {
+    void loadNote(session.id);
+  }, [session.id, loadNote]);
+
+  const hasNote = !!noteText?.trim();
+
   return (
     <ContextMenu onOpenChange={onMenuOpenChange}>
       <ContextMenuTrigger asChild>
@@ -918,6 +929,21 @@ function SessionRow({
           </span>
         )}
       </div>
+      {hasNote && (
+        <ActionTooltip label="Session notes" shortcutId="session-notes">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect();
+              openSessionNotes(session.id);
+            }}
+            className="shrink-0 rounded text-muted-foreground hover:bg-background/60 hover:text-foreground"
+            aria-label="Session notes"
+          >
+            <FileText className="size-3.5" data-testid="notes-indicator" />
+          </button>
+        </ActionTooltip>
+      )}
       <ActionTooltip label="Session settings" shortcutId="session-settings">
         <button
           onClick={(e) => {

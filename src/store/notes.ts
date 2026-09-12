@@ -66,6 +66,11 @@ export const useNotes = create<NotesState>((set, get) => ({
       );
     } catch (e) {
       console.error("failed to load notes", e);
+      set((s) =>
+        s.notes[sessionId] === undefined
+          ? { notes: { ...s.notes, [sessionId]: "" } }
+          : s,
+      );
     }
   },
 }));
