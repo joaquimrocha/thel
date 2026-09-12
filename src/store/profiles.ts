@@ -134,6 +134,9 @@ export async function windowStays(): Promise<boolean> {
  * windows that were open when the app last quit. Call after hydrate(), which
  * loads the registry this prunes deleted profiles against. */
 export async function restoreOpenProfiles() {
+  // Skip profile restoration in dev mode so the main window stays open.
+  if (import.meta.env.DEV) return;
+
   const id = currentProfileId();
   const open = await startupOpen;
   // A window the app opened is here because someone asked for it: it only has
