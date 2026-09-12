@@ -21,6 +21,7 @@ import { usePrefs } from "@/store/prefs";
 import { useNotifications } from "@/store/notifications";
 import { useUI, SIDEBAR_MIN, SIDEBAR_MAX } from "@/store/ui";
 import { closeSessionConfirmed } from "@/lib/actions";
+import { abbreviatePath } from "@/lib/paths";
 import { shortcutLabel, useKeybindings } from "@/store/keybindings";
 import {
   dropAnchor,
@@ -962,7 +963,7 @@ function SessionRow({
         />
       </span>
       <div className="min-w-0 flex-1">
-        <span className="block truncate" title="Double-click for session settings">
+        <span className="block truncate" title={abbreviatePath(session.cwd)}>
           {displayName}
         </span>
         {session.branch && (

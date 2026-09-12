@@ -12,7 +12,7 @@ async function createSession(page: Page) {
 async function rename(page: Page, name: string) {
   // The newest (active) session is the last row; double-click opens its settings.
   await page
-    .locator('[data-session-list] [title="Double-click for session settings"]')
+    .locator('[data-session-list] [data-row-id]')
     .last()
     .dblclick();
   const dialog = page.getByRole("dialog");
