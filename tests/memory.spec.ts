@@ -103,10 +103,10 @@ test("tab churn: open/pump/close terminals returns memory", async ({ page }) => 
   expect(perCycleKB).toBeLessThan(250);
 });
 
-// Close the only session via its row menu, accepting the confirm dialog.
+// Close the only session via the shortcut, accepting the confirm dialog. The
+// menus have their own probe; this one measures the session.
 async function closeActiveSession(page: Page) {
-  await page.locator("[data-session-list] [data-row-id]").click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Close" }).click();
+  await page.keyboard.press("Control+Alt+Shift+W");
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Close session" })
