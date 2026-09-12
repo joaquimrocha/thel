@@ -43,6 +43,14 @@ import { StatusDot, sessionDotState } from "./StatusDot";
 import { ActionTooltip } from "./ActionTooltip";
 import { ProfileMenu } from "./Titlebar";
 import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuCheckboxItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import {
   ContextMenu,
   ContextMenuTrigger,
   ContextMenuContent,
@@ -623,10 +631,9 @@ function SidebarMenu({
   const [localOpen, setLocalOpen] = useState(false);
   const open = shortcutTarget ? storeOpen : localOpen;
   const setOpen = shortcutTarget ? setStoreOpen : setLocalOpen;
-  const rootRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  // A hover-opened menu must not steal focus from the terminal; one opened by
-  // the shortcut or a click has to take it, or there is no way to walk it.
+  // A hover-opened menu must not steal focus from the terminal, on open or on
+  // close; one opened by the shortcut has to take it, or there is no way to
+  // walk it, and hands it back to the button when it closes.
   const byPointer = useRef(false);
   // Closing lags the pointer leaving by a moment so the gap between the button
   // and the menu doesn't snap it shut on the way in.
@@ -650,32 +657,9 @@ function SidebarMenu({
     return () => setStoreOpen(false);
   }, [shortcutTarget, setStoreOpen]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      setOpen(false);
-      rootRef.current?.querySelector("button")?.focus();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, setOpen]);
-
-  useEffect(() => {
-    // Arm the next open: a shortcut press has no pointer behind it.
-    if (!open) {
-      byPointer.current = false;
-      return;
-    }
-    if (byPointer.current) return;
-    menuRef.current?.querySelector<HTMLElement>("button")?.focus();
-  }, [open]);
-
   const keys = shortcutLabel("toggle-sidebar");
   return (
     <div
-      ref={rootRef}
-      className="relative"
       onMouseEnter={() => {
         cancelClose();
         byPointer.current = true;
@@ -683,53 +667,47 @@ function SidebarMenu({
       }}
       onMouseLeave={scheduleClose}
     >
-      <ActionTooltip label="Sidebar menu" shortcutId="sidebar-menu">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7"
-          onClick={() => {
-            byPointer.current = true;
-            setOpen(!open);
+      {/* Not modal: a hover-opened menu must not lock pointer events on the
+          rest of the window while the pointer is merely passing by. */}
+      <DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
+        <ActionTooltip label="Sidebar menu" shortcutId="sidebar-menu">
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              onPointerDown={() => (byPointer.current = true)}
+              aria-label="Sidebar menu"
+            >
+              <PanelLeft className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+        </ActionTooltip>
+        <DropdownMenuContent
+          side="top"
+          align="start"
+          className="w-56"
+          onMouseEnter={cancelClose}
+          onMouseLeave={scheduleClose}
+          onOpenAutoFocus={(e) => {
+            if (byPointer.current) e.preventDefault();
           }}
-          aria-label="Sidebar menu"
-          aria-haspopup="menu"
-          aria-expanded={open}
-        >
-          <PanelLeft className="size-4" />
-        </Button>
-      </ActionTooltip>
-      {open && (
-        <div
-          ref={menuRef}
-          role="menu"
-          aria-label="Sidebar menu"
-          aria-orientation="vertical"
-          onBlur={(e) => {
-            // Tabbing out of the menu closes it; focus moving between its own
-            // items does not.
-            if (!e.currentTarget.contains(e.relatedTarget as Node | null))
-              setOpen(false);
+          onCloseAutoFocus={(e) => {
+            if (byPointer.current) e.preventDefault();
+            byPointer.current = false;
           }}
-          className="absolute bottom-full left-0 z-50 mb-1 w-56 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
         >
-          <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-accent hover:text-accent-foreground">
-            <Switch
-              checked={grouping}
-              onCheckedChange={setGrouping}
-              aria-label="Group sessions by repo"
-            />
-            Group sessions by repo
-          </label>
-          <div role="separator" className="my-1 border-t border-border" />
-          <button
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onToggleCollapsed();
-            }}
-            className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+          <DropdownMenuCheckboxItem
+            checked={grouping}
+            onCheckedChange={setGrouping}
+            // Keep the menu up: toggling a setting is not done with it.
+            onSelect={(e) => e.preventDefault()}
           >
+            <Switch checked={grouping} tabIndex={-1} aria-hidden className="pointer-events-none" />
+            Group sessions by repo
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem className="justify-start" onSelect={onToggleCollapsed}>
             {collapsed ? (
               <PanelLeftOpen className="size-4 shrink-0" />
             ) : (
@@ -741,9 +719,9 @@ function SidebarMenu({
                 {keys}
               </kbd>
             )}
-          </button>
-        </div>
-      )}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }
@@ -871,15 +849,55 @@ function SessionRow({
   }, [session.id, loadNote]);
 
   const hasNote = !!noteText?.trim();
+  // Right-click and the 3-dot button open different Radix menus over the same
+  // items; the button stays lit while either is up.
   const [menuOpen, setMenuOpen] = useState(false);
+  const onOpenChange = (open: boolean) => {
+    setMenuOpen(open);
+    onMenuOpenChange(open);
+  };
+  const items = [
+    { label: "Settings", shortcut: "session-settings", run: () => openSessionSettings(session.id) },
+    {
+      label: "Notes",
+      shortcut: "session-notes",
+      run: () => {
+        onSelect();
+        openSessionNotes(session.id);
+      },
+    },
+    {
+      label: "Resource usage",
+      shortcut: "session-usage",
+      // The panel is docked beside the session it reports and closes when
+      // you navigate away, so bring that session up rather than describing
+      // one that isn't on screen.
+      run: () => {
+        onSelect();
+        openSessionUsage(session.id);
+      },
+    },
+    { label: "Close", shortcut: "close-session", run: onClose, destructive: true },
+  ] as const;
+  // Every item opens something that takes focus itself; defer past the menu's
+  // own close so its exit animation doesn't race the dialog's pointer-events
+  // lock.
+  const menuItem = (Item: typeof ContextMenuItem | typeof DropdownMenuItem) =>
+    items.map((it) => (
+      <Item
+        key={it.label}
+        className={cn(
+          "destructive" in it && "focus:bg-destructive focus:text-destructive-foreground",
+        )}
+        onSelect={() => setTimeout(it.run, 0)}
+      >
+        {it.label}
+        <ContextMenuShortcut>{shortcutLabel(it.shortcut)}</ContextMenuShortcut>
+      </Item>
+    ));
 
   return (
-    <ContextMenu
-      onOpenChange={(open) => {
-        setMenuOpen(open);
-        onMenuOpenChange(open);
-      }}
-    >
+    <ContextMenu onOpenChange={onOpenChange}>
       <ContextMenuTrigger asChild>
     <div
       data-row-id={session.id}
@@ -951,81 +969,37 @@ function SessionRow({
             </button>
           </ActionTooltip>
         )}
-        <ActionTooltip label="Session options">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              // The row's context menu is the one menu; open it from the
-              // button's corner so it lands where a click expects it.
-              const r = e.currentTarget.getBoundingClientRect();
-              e.currentTarget.closest("[data-row-id]")?.dispatchEvent(
-                new MouseEvent("contextmenu", {
-                  bubbles: true,
-                  clientX: r.right,
-                  clientY: r.bottom,
-                }),
-              );
-            }}
-            className={cn(
-              "flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-background/60 hover:text-foreground focus-visible:opacity-100",
-              menuOpen ? "bg-background/60 text-foreground" : "opacity-0",
-              hoverArmed && "group-hover:opacity-100",
-            )}
-            aria-label="Session options"
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
+        <DropdownMenu onOpenChange={onOpenChange}>
+          <ActionTooltip label="Session options">
+            <DropdownMenuTrigger asChild>
+              <button
+                onClick={(e) => e.stopPropagation()}
+                className={cn(
+                  "flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-background/60 hover:text-foreground focus-visible:opacity-100",
+                  menuOpen ? "bg-background/60 text-foreground" : "opacity-0",
+                  hoverArmed && "group-hover:opacity-100",
+                )}
+                aria-label="Session options"
+              >
+                <MoreVertical className="size-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+          </ActionTooltip>
+          {/* Both menus restore focus to the row when they finish unmounting,
+              a few hundred ms later, which would pull focus back out of
+              whatever an item just opened. */}
+          <DropdownMenuContent
+            align="end"
+            onCloseAutoFocus={(e) => e.preventDefault()}
           >
-            <MoreVertical className="size-3.5" />
-          </button>
-        </ActionTooltip>
+            {menuItem(DropdownMenuItem)}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
       </ContextMenuTrigger>
-      {/* Every item here opens something that takes focus itself. The menu
-          restores focus to this row when it finishes unmounting, which lands
-          a few hundred ms later and would pull focus back out of whatever
-          just opened. */}
       <ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
-        {/* Both items open a dialog; defer past the menu's own close so its
-            exit animation doesn't race the dialog's pointer-events lock. */}
-        <ContextMenuItem
-          onSelect={() => setTimeout(() => openSessionSettings(session.id), 0)}
-        >
-          Settings
-          <ContextMenuShortcut>{shortcutLabel("session-settings")}</ContextMenuShortcut>
-        </ContextMenuItem>
-        <ContextMenuItem
-          onSelect={() =>
-            setTimeout(() => {
-              onSelect();
-              openSessionNotes(session.id);
-            }, 0)
-          }
-        >
-          Notes
-          <ContextMenuShortcut>{shortcutLabel("session-notes")}</ContextMenuShortcut>
-        </ContextMenuItem>
-        <ContextMenuItem
-          onSelect={() =>
-            setTimeout(() => {
-              // The panel is docked beside the session it reports and closes
-              // when you navigate away, so bring that session up rather than
-              // describing one that isn't on screen.
-              onSelect();
-              openSessionUsage(session.id);
-            }, 0)
-          }
-        >
-          Resource usage
-          <ContextMenuShortcut>{shortcutLabel("session-usage")}</ContextMenuShortcut>
-        </ContextMenuItem>
-        <ContextMenuItem
-          className="focus:bg-destructive focus:text-destructive-foreground"
-          onSelect={() => setTimeout(onClose, 0)}
-        >
-          Close
-          <ContextMenuShortcut>{shortcutLabel("close-session")}</ContextMenuShortcut>
-        </ContextMenuItem>
+        {menuItem(ContextMenuItem)}
       </ContextMenuContent>
     </ContextMenu>
   );
