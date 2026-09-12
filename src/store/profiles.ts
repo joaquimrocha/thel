@@ -56,6 +56,10 @@ export function currentProfileId(): string {
 // launch and mistake itself for the stub that hands over and goes.
 const spawned = new URLSearchParams(location.search).has(SPAWNED);
 
+// `tauri dev` sets this so a dev run opens the main window only. Playwright
+// runs the same dev server without it and still exercises restoration.
+const singleWindow = !!import.meta.env.VITE_SINGLE_WINDOW;
+
 let storePromise: Promise<Store> | null = null;
 const getStore = () =>
   (storePromise ??= load(FILE, { autoSave: false, defaults: {} }));
@@ -124,7 +128,7 @@ const startupOpen = readOpen();
  * reopen the profiles that were, and then goes. Nothing that starts terminals
  * should run in it until this says it stays. */
 export async function windowStays(): Promise<boolean> {
-  if (spawned || currentProfileId() !== "default") return true;
+  if (singleWindow || spawned || currentProfileId() !== "default") return true;
   const open = await startupOpen;
   // A first run (or a wiped list) has nothing to restore, so main is the app.
   return open.length === 0 || open.includes("default");
@@ -134,9 +138,7 @@ export async function windowStays(): Promise<boolean> {
  * windows that were open when the app last quit. Call after hydrate(), which
  * loads the registry this prunes deleted profiles against. */
 export async function restoreOpenProfiles() {
-  // `tauri dev` sets this so a dev run opens the main window only. Playwright
-  // runs the same dev server without it and still exercises restoration.
-  if (import.meta.env.VITE_SINGLE_WINDOW) return;
+  if (singleWindow) return;
 
   const id = currentProfileId();
   const open = await startupOpen;
