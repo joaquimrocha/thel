@@ -16,6 +16,27 @@ async function openNotes(page: Page, row: ReturnType<typeof rows>) {
   await page.getByRole("menuitem", { name: "Notes" }).click();
 }
 
+test("a saved note marks the row, and the mark opens the panel", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  const panel = page.getByRole("dialog");
+  const mark = rows(page).first().getByTestId("notes-indicator");
+  await expect(mark).toHaveCount(0);
+
+  await openNotes(page, rows(page).first());
+  await panel.getByRole("textbox").fill("remember this");
+  await panel.getByRole("button", { name: "Save" }).click();
+  await expect(mark).toBeVisible();
+
+  await panel.getByRole("button", { name: "Close" }).click();
+  await expect(panel).toBeHidden();
+  await mark.click();
+  await expect(panel.getByText("remember this")).toBeVisible();
+
+  await page.reload();
+  await expect(rows(page).first().getByTestId("notes-indicator")).toBeVisible();
+});
+
 test("notes are written as markdown and render on save", async ({ page }) => {
   await gotoApp(page);
   await createSession(page);
