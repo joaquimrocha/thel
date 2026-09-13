@@ -241,8 +241,6 @@ export function TerminalTabs({
         </div>
       </div>
       <div
-        role="tablist"
-        aria-label="Terminals"
         // Vertical wheel scrolls the strip horizontally, since the scrollbar is
         // hidden and a plain mouse can't scroll a horizontal container otherwise.
         onWheel={(e) => {
@@ -260,9 +258,6 @@ export function TerminalTabs({
           <ContextMenu key={t.id}>
             <ContextMenuTrigger asChild>
           <div
-            role="tab"
-            aria-selected={t.id === group.activeTerminalId}
-            tabIndex={t.id === group.activeTerminalId ? 0 : -1}
             data-testid="terminal-tab"
             data-tab-id={t.id}
             draggable
@@ -284,27 +279,8 @@ export function TerminalTabs({
               // won't refocus on its own; nudge it via the focus nonce.
               useUI.getState().focusTerminal();
             }}
-            onKeyDown={(e) => {
-              if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-                e.preventDefault();
-                const nextIndex = (i + 1) % group.terminals.length;
-                const nextTerm = group.terminals[nextIndex];
-                setActiveTerminal(sessionId, nextTerm.id);
-                useUI.getState().focusTerminal();
-              } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-                e.preventDefault();
-                const prevIndex = (i - 1 + group.terminals.length) % group.terminals.length;
-                const prevTerm = group.terminals[prevIndex];
-                setActiveTerminal(sessionId, prevTerm.id);
-                useUI.getState().focusTerminal();
-              } else if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                setActiveTerminal(sessionId, t.id);
-                useUI.getState().focusTerminal();
-              }
-            }}
             className={cn(
-              "group relative flex h-8 max-w-52 shrink-0 cursor-pointer items-center gap-2 rounded-md px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "group relative flex h-8 max-w-52 shrink-0 cursor-pointer items-center gap-2 rounded-md px-3 text-sm",
               t.id === group.activeTerminalId
                 ? "bg-secondary text-secondary-foreground"
                 : cn(
