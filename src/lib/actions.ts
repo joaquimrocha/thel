@@ -383,10 +383,14 @@ export function goToNextFinishedOrWorkingTerminal() {
       item.sessionId === activeSessionId && item.terminalId === activeTermId,
   );
 
-  const start = currentIndex >= 0 ? currentIndex : 0;
-
+  // Strictly the others: landing back on the active terminal is not a move,
+  // and a finished match there would shadow a working one elsewhere. With no
+  // active terminal there is nothing to step past, so every one is a
+  // candidate.
+  const start = Math.max(currentIndex, 0);
+  const first = currentIndex >= 0 ? 1 : 0;
   const findNext = (predicate: (item: (typeof all)[number]) => boolean) => {
-    for (let i = 1; i <= all.length; i++) {
+    for (let i = first; i < all.length; i++) {
       const idx = (start + i) % all.length;
       if (predicate(all[idx])) {
         return all[idx];

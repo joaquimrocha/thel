@@ -238,6 +238,57 @@ describe("goToNextFinishedOrWorkingTerminal", () => {
     expect(state.sessions.find((s) => s.id === "s2")?.groups[0].activeTerminalId).toBe("t3");
   });
 
+  test("moves to a working terminal when the active one is the only finished one", () => {
+    useSessions.setState((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id === "s1") {
+          return {
+            ...ss,
+            groups: [{ ...ss.groups[0], terminals: [term("t1", { attention: true }), term("t2")] }],
+          };
+        }
+        if (ss.id === "s2") {
+          return {
+            ...ss,
+            groups: [{ ...ss.groups[0], terminals: [term("t3", { busy: true }), term("t4")] }],
+          };
+        }
+        return ss;
+      }),
+    }));
+
+    // Active is t1 in s1, itself finished; the only other candidate is working.
+    goToNextFinishedOrWorkingTerminal();
+
+    const state = useSessions.getState();
+    expect(state.activeSessionId).toBe("s2");
+    expect(state.sessions.find((s) => s.id === "s2")?.groups[0].activeTerminalId).toBe("t3");
+  });
+
+  test("with no active terminal, the first candidate counts", () => {
+    useSessions.setState((s) => ({
+      sessions: s.sessions.map((ss) => {
+        if (ss.id === "s1") {
+          // Still waiting for its first terminal.
+          return { ...ss, groups: [{ ...ss.groups[0], terminals: [], activeTerminalId: "" }] };
+        }
+        if (ss.id === "s2") {
+          return {
+            ...ss,
+            groups: [{ ...ss.groups[0], terminals: [term("t3", { attention: true })] }],
+          };
+        }
+        return ss;
+      }),
+    }));
+
+    goToNextFinishedOrWorkingTerminal();
+
+    const state = useSessions.getState();
+    expect(state.activeSessionId).toBe("s2");
+    expect(state.sessions.find((s) => s.id === "s2")?.groups[0].activeTerminalId).toBe("t3");
+  });
+
   test("walks the sidebar's grouped order, not the raw session order", () => {
     // Raw order a1, plain, a2; grouped, a2 sits under a1's repo, ahead of plain.
     const withTerm = (s: Session, t: Terminal): Session => ({
