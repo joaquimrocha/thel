@@ -56,8 +56,8 @@ export function currentProfileId(): string {
 // launch and mistake itself for the stub that hands over and goes.
 const spawned = new URLSearchParams(location.search).has(SPAWNED);
 
-// `tauri dev` sets this so a dev run opens the main window only. Playwright
-// runs the same dev server without it and still exercises restoration.
+// Set by vite.config.ts under `tauri dev`, so a dev run opens the main window
+// only; Playwright drives the same server without it and still restores.
 const singleWindow = !!import.meta.env.VITE_SINGLE_WINDOW;
 
 let storePromise: Promise<Store> | null = null;

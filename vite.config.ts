@@ -25,11 +25,17 @@ function gitTag(): string {
   }
 }
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react()],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __GIT_TAG__: JSON.stringify(gitTag()),
+    // `tauri dev` (which sets TAURI_ENV_*) opens the main window only.
+    // Playwright drives the dev server directly and still exercises
+    // profile-window restoration.
+    "import.meta.env.VITE_SINGLE_WINDOW": JSON.stringify(
+      command === "serve" && !!process.env.TAURI_ENV_PLATFORM,
+    ),
   },
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },
@@ -50,4 +56,4 @@ export default defineConfig({
     hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
     watch: { ignored: ["**/src-tauri/**"] },
   },
-});
+}));
