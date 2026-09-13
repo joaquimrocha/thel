@@ -871,7 +871,8 @@ function SessionRow({
       shortcut: "session-usage",
       // The panel is docked beside the session it reports and closes when
       // you navigate away, so bring that session up rather than describing
-      // one that isn't on screen.
+      // one that isn't on screen. It also takes no focus of its own.
+      leavesFocus: true,
       run: () => {
         onSelect();
         openSessionUsage(session.id);
@@ -879,7 +880,7 @@ function SessionRow({
     },
     { label: "Close", shortcut: "close-session", run: onClose, destructive: true },
   ] as const;
-  // Every item opens something that takes focus itself; defer past the menu's
+  // Most items open something that takes focus itself; defer past the menu's
   // own close so its exit animation doesn't race the dialog's pointer-events
   // lock.
   const selected = useRef(false);
@@ -891,7 +892,7 @@ function SessionRow({
           "destructive" in it && "focus:bg-destructive focus:text-destructive-foreground",
         )}
         onSelect={() => {
-          selected.current = true;
+          selected.current = !("leavesFocus" in it);
           setTimeout(it.run, 0);
         }}
       >
@@ -900,9 +901,10 @@ function SessionRow({
       </Item>
     ));
 
-  // After an item, the menu's focus restore lands a few hundred ms later and
-  // would pull focus back out of what the item opened. A plain dismissal
-  // (Escape, click-away) opened nothing, so focus goes back to the trigger.
+  // After an item that opened a focus-taking surface, the menu's focus restore
+  // lands a few hundred ms later and would pull focus back out of it. A plain
+  // dismissal (Escape, click-away) or a panel that leaves focus alone hands it
+  // back to the trigger.
   const onCloseAutoFocus = (e: Event) => {
     if (selected.current) e.preventDefault();
     selected.current = false;
