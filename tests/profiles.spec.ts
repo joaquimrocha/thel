@@ -141,6 +141,12 @@ test("the app menu's Manage profiles opens settings on the Profiles tab", async 
   await expect(
     page.getByRole("tab", { name: "Profiles", selected: true }),
   ).toBeVisible();
+  // The menu's own focus restore lands after its exit animation; it must not
+  // pull focus back out of the dialog.
+  await page.waitForTimeout(400);
+  expect(
+    await page.evaluate(() => !!document.activeElement?.closest("[role=dialog]")),
+  ).toBe(true);
 });
 
 test("the default profile can be edited and the rename persists", async ({
