@@ -299,6 +299,9 @@ test("dragging a group header moves the whole group", async ({ page }) => {
   const head = page.locator("[data-repo-group='/work/thel'] > div").first();
   const notes = page.locator("[data-row-id='s2']");
   const drag = async (frac: number) => {
+    // The previous drop's 150ms slide moves the row but not the wrapper the
+    // midpoint is measured on; a box read mid-slide lands on the wrong side.
+    await expect(notes).toHaveCSS("transform", "none");
     const dt = await page.evaluateHandle(() => new DataTransfer());
     await head.dispatchEvent("dragstart", { dataTransfer: dt });
     const box = (await notes.boundingBox())!;
