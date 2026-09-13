@@ -235,7 +235,14 @@ test("session row 3-dot button opens the same menu", async ({ page }) => {
   await createSession(page);
   const row = page.locator("[data-session-list] [data-row-id]");
   await row.hover();
-  await row.getByRole("button", { name: "Session options" }).click();
+  const button = row.getByRole("button", { name: "Session options" });
+  await button.click();
+  await expect(page.getByRole("menuitem", { name: "Settings" })).toBeVisible();
+  // Dismissing hands focus back to the button; picking an item does not.
+  await page.keyboard.press("Escape");
+  await expect(button).toBeFocused();
+
+  await button.click();
   await page.getByRole("menuitem", { name: "Settings" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
 });

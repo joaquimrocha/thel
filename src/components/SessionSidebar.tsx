@@ -882,6 +882,7 @@ function SessionRow({
   // Every item opens something that takes focus itself; defer past the menu's
   // own close so its exit animation doesn't race the dialog's pointer-events
   // lock.
+  const selected = useRef(false);
   const menuItem = (Item: typeof ContextMenuItem | typeof DropdownMenuItem) =>
     items.map((it) => (
       <Item
@@ -889,12 +890,23 @@ function SessionRow({
         className={cn(
           "destructive" in it && "focus:bg-destructive focus:text-destructive-foreground",
         )}
-        onSelect={() => setTimeout(it.run, 0)}
+        onSelect={() => {
+          selected.current = true;
+          setTimeout(it.run, 0);
+        }}
       >
         {it.label}
         <ContextMenuShortcut>{shortcutLabel(it.shortcut)}</ContextMenuShortcut>
       </Item>
     ));
+
+  // After an item, the menu's focus restore lands a few hundred ms later and
+  // would pull focus back out of what the item opened. A plain dismissal
+  // (Escape, click-away) opened nothing, so focus goes back to the trigger.
+  const onCloseAutoFocus = (e: Event) => {
+    if (selected.current) e.preventDefault();
+    selected.current = false;
+  };
 
   return (
     <ContextMenu onOpenChange={onOpenChange}>
@@ -985,20 +997,14 @@ function SessionRow({
               </button>
             </DropdownMenuTrigger>
           </ActionTooltip>
-          {/* Both menus restore focus to the row when they finish unmounting,
-              a few hundred ms later, which would pull focus back out of
-              whatever an item just opened. */}
-          <DropdownMenuContent
-            align="end"
-            onCloseAutoFocus={(e) => e.preventDefault()}
-          >
+          <DropdownMenuContent align="end" onCloseAutoFocus={onCloseAutoFocus}>
             {menuItem(DropdownMenuItem)}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
     </div>
       </ContextMenuTrigger>
-      <ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
+      <ContextMenuContent onCloseAutoFocus={onCloseAutoFocus}>
         {menuItem(ContextMenuItem)}
       </ContextMenuContent>
     </ContextMenu>
