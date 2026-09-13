@@ -65,12 +65,10 @@ export const useNotes = create<NotesState>((set, get) => ({
           : s,
       );
     } catch (e) {
+      // A missing file reads as "" on the backend, so this is a real failure.
+      // Leave the key unset so the next load retries instead of showing an
+      // empty note in place of one that exists.
       console.error("failed to load notes", e);
-      set((s) =>
-        s.notes[sessionId] === undefined
-          ? { notes: { ...s.notes, [sessionId]: "" } }
-          : s,
-      );
     }
   },
 }));

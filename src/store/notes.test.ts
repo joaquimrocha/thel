@@ -9,8 +9,9 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args: Record<string, unknown>) => {
     if (cmd === "read_note") {
       if (args.sessionId === "s-with-note") return "# My Note";
-      if (args.sessionId === "s-empty") return "";
-      throw new Error("not found");
+      // The backend reads a missing file as "", like an empty one.
+      if (args.sessionId === "s-empty" || args.sessionId === "s-missing") return "";
+      throw new Error("read failed");
     }
     return null;
   }),
@@ -43,5 +44,10 @@ describe("useNotes store", () => {
 
     await useNotes.getState().loadNote("s-missing");
     expect(useNotes.getState().notes["s-missing"]).toBe("");
+  });
+
+  test("loadNote leaves a failed read unset so it can retry", async () => {
+    await useNotes.getState().loadNote("s-error");
+    expect(useNotes.getState().notes["s-error"]).toBeUndefined();
   });
 });
