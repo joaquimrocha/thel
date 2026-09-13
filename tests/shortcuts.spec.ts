@@ -41,6 +41,32 @@ test("? opens the keyboard shortcuts panel", async ({ page }) => {
   await expect(page.getByText("Command palette")).toBeVisible();
 });
 
+test("the shortcuts panel filters by action and by key combo", async ({ page }) => {
+  await gotoApp(page);
+  await page.keyboard.press("Shift+Slash");
+  const panel = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  const search = panel.getByRole("textbox", { name: "Search shortcuts" });
+  const palette = panel.getByText("Command palette", { exact: true });
+  const settings = panel.getByText("Settings", { exact: true });
+  await expect(settings).toBeVisible();
+
+  await search.fill("palette");
+  await expect(palette).toBeVisible();
+  await expect(settings).toBeHidden();
+  // Nothing in the fixed list matches, so its heading goes too.
+  await expect(panel.getByText("Fixed")).toBeHidden();
+
+  // A rendered key combo matches as typed.
+  const combo = await palette.locator("..").getByRole("button").last().innerText();
+  await search.fill(combo);
+  await expect(palette).toBeVisible();
+  await expect(settings).toBeHidden();
+
+  await search.fill("");
+  await expect(settings).toBeVisible();
+  await expect(panel.getByText("Fixed")).toBeVisible();
+});
+
 test("app-menu button opens the menu and lists Default", async ({ page }) => {
   await gotoApp(page);
   await appMenuButton(page).click();

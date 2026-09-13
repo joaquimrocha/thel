@@ -75,6 +75,7 @@ export function ShortcutsDialog() {
             <Search className="size-4 text-muted-foreground" />
             <input
               type="text"
+              aria-label="Search shortcuts"
               placeholder="Search shortcuts…"
               value={query}
               onChange={(e) => setQuery(e.currentTarget.value)}
