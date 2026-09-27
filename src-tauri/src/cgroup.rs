@@ -100,11 +100,26 @@ pub(crate) const SCOPE_ARGS: [&str; 8] = [
 
 /// The directory of `pid`'s scope when it is a thel terminal scope. None for
 /// a shell that shares the daemon's cgroup (the fallback), since that cgroup
-/// holds the daemon and every other terminal too.
+/// holds the daemon and every other terminal too, and None when the scope
+/// can't be read from here.
 pub(crate) fn scope_of(pid: u32) -> Option<PathBuf> {
     let file = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
-    let rel = terminal_scope(&file)?;
-    Some(Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/')))
+    scope_dir(&file, Path::new("/sys/fs/cgroup"))
+}
+
+/// Where the scope named in a /proc/<pid>/cgroup `file` lives under `root`, if
+/// it is readable there. In a container with its own cgroup namespace (toolbox,
+/// rootless podman), a scope made by the host's user manager is named relative
+/// to the container's root ("/../../user.slice/…"), and `root` holds only the
+/// container's subtree. Such a scope is skipped so sampling walks the process
+/// tree instead of reading an empty scope.
+fn scope_dir(file: &str, root: &Path) -> Option<PathBuf> {
+    let rel = terminal_scope(file)?;
+    if rel.split('/').any(|c| c == "..") {
+        return None;
+    }
+    let dir = root.join(rel.trim_start_matches('/'));
+    dir.join("cgroup.procs").is_file().then_some(dir)
 }
 
 /// Picks the cgroup v2 line (`0::<path>`) out of a /proc/<pid>/cgroup file and
@@ -138,7 +153,7 @@ pub(crate) fn cpu_seconds(scope: &Path) -> f64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -203,11 +218,40 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&out.stdout), "$HOME $$ ${X}\n");
     }
 
-    /// Runs only where a user manager answers, as on a desktop session.
+    /// Whether the host's cgroups are out of view: in a container with its
+    /// own cgroup namespace, terminal scopes can't be read (see scope_dir).
+    pub(crate) fn in_container() -> bool {
+        Path::new("/run/.containerenv").exists() || Path::new("/.dockerenv").exists()
+    }
+
+    /// `pid`'s scope once systemd-run has moved it. Until then it sits in this
+    /// process's cgroup, which is itself a thel scope when the tests run in a
+    /// thel terminal.
+    pub(crate) fn new_scope_of(pid: u32) -> Option<PathBuf> {
+        scope_of(pid).filter(|s| Some(s) != scope_of(std::process::id()).as_ref())
+    }
+
+    #[test]
+    fn reads_a_scope_only_where_it_is_visible() {
+        let root = std::env::temp_dir().join(format!("thel_cg_{}", std::process::id()));
+        let rel = "user.slice/app.slice/app-thel.slice/run-p1-i2.scope";
+        std::fs::create_dir_all(root.join(rel)).unwrap();
+        let line = |p: &str| format!("0::{p}\n");
+
+        assert_eq!(scope_dir(&line(&format!("/{rel}")), &root), None, "no cgroup.procs yet");
+        std::fs::write(root.join(rel).join("cgroup.procs"), "1\n").unwrap();
+        assert_eq!(scope_dir(&line(&format!("/{rel}")), &root), Some(root.join(rel)));
+        // Seen from inside a container's cgroup namespace.
+        assert_eq!(scope_dir(&line(&format!("/../../{rel}")), &root), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Runs only where a user manager answers and its cgroups are in view, as
+    /// on a desktop session outside a container.
     #[test]
     fn a_scoped_shell_keeps_its_pid_and_is_found() {
-        let Some(bin) = systemd_run() else {
-            eprintln!("no systemd user manager; skipping");
+        let Some(bin) = systemd_run().filter(|_| !in_container()) else {
+            eprintln!("no systemd user manager in view; skipping");
             return;
         };
         let mut child = Command::new(bin)
@@ -219,7 +263,7 @@ mod tests {
         let scope = (0..50)
             .find_map(|_| {
                 std::thread::sleep(std::time::Duration::from_millis(20));
-                scope_of(pid)
+                new_scope_of(pid)
             })
             .expect("the child lands in a thel scope");
         assert_eq!(procs(&scope), vec![pid]);

@@ -7,7 +7,7 @@ import { App, until } from "./app.ts";
 
 // Terminals get a cgroup only where a systemd user manager answers, which CI
 // runners lack. In a container with its own cgroup namespace (toolbox) the
-// scope is out of view.
+// scope is out of view, so sampling falls back to the process tree.
 const scoped =
   spawnSync("systemd-run", [
     "--user", "--scope", "--quiet", "--collect", "--",

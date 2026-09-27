@@ -918,8 +918,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_scope_counts_a_process_that_left_the_tree() {
-        let Some(bin) = crate::cgroup::systemd_run() else {
-            eprintln!("no systemd user manager; skipping");
+        let Some(bin) =
+            crate::cgroup::systemd_run().filter(|_| !crate::cgroup::tests::in_container())
+        else {
+            eprintln!("no systemd user manager in view; skipping");
             return;
         };
         let mut shell = std::process::Command::new(bin)
@@ -931,7 +933,7 @@ mod tests {
         let scope = (0..100)
             .find_map(|_| {
                 std::thread::sleep(std::time::Duration::from_millis(20));
-                let scope = crate::cgroup::scope_of(root)?;
+                let scope = crate::cgroup::tests::new_scope_of(root)?;
                 (crate::cgroup::procs(&scope).len() == 2).then_some(scope)
             })
             .expect("the shell and its escaped child share a scope");
