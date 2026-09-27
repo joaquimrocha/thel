@@ -28,17 +28,40 @@ pub(crate) fn systemd_run() -> Option<&'static Path> {
         .get_or_init(|| {
             let path = std::env::var("PATH").unwrap_or_default();
             let bin = which("systemd-run", &path, Path::new("/"))?;
-            Command::new(&bin)
+            let mut child = Command::new(&bin)
                 .args(SCOPE_ARGS)
                 .arg("true")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success())
-                .then_some(bin)
+                .spawn()
+                .ok()?;
+            exited_ok_within(&mut child, PROBE_TIMEOUT).then_some(bin)
         })
         .as_deref()
+}
+
+/// How long the probe may take. It runs inside the first terminal's spawn, so a
+/// hung user bus must not hang that terminal; systemd-run's own D-Bus timeout
+/// is 25 s.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether `child` exits successfully within `limit`. Kills it otherwise.
+fn exited_ok_within(child: &mut std::process::Child, limit: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 /// Resolves `command` the way execvp would: a name with a slash is a path
@@ -117,6 +140,18 @@ pub(crate) fn cpu_seconds(scope: &Path) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hung_probe_counts_as_failed_and_is_killed() {
+        let limit = std::time::Duration::from_millis(100);
+        let mut ok = Command::new("true").spawn().unwrap();
+        assert!(exited_ok_within(&mut ok, limit));
+        let mut hung = Command::new("sleep").arg("30").spawn().unwrap();
+        let start = std::time::Instant::now();
+        assert!(!exited_ok_within(&mut hung, limit));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        assert!(hung.try_wait().unwrap().is_some());
+    }
 
     #[test]
     fn keeps_only_scopes_in_the_thel_slice() {
