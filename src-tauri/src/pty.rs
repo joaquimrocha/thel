@@ -80,6 +80,12 @@ pub(crate) fn spawn_pty(
         .map_err(|e| e.to_string())?;
 
     let mut cmd = CommandBuilder::new(command);
+    #[cfg(target_os = "linux")]
+    if let Some(bin) = scope_wrapper(command, cwd, env) {
+        cmd = CommandBuilder::new(bin);
+        cmd.args(crate::cgroup::SCOPE_ARGS);
+        cmd.arg(command);
+    }
     cmd.args(args);
     if let Some(cwd) = cwd {
         cmd.cwd(cwd);
@@ -103,6 +109,25 @@ pub(crate) fn spawn_pty(
     // Drop the slave so the master sees EOF when the child exits.
     drop(pair.slave);
     Ok((pair.master, child))
+}
+
+/// The systemd-run that puts a new terminal in its own cgroup (see cgroup.rs),
+/// or None to spawn it directly. A command that does not resolve skips the
+/// wrapper, so it fails at spawn with an error the GUI shows, rather than
+/// inside systemd-run after the tab is already up.
+#[cfg(target_os = "linux")]
+fn scope_wrapper(
+    command: &str,
+    cwd: Option<&str>,
+    env: Option<&HashMap<String, String>>,
+) -> Option<&'static std::path::Path> {
+    let bin = crate::cgroup::systemd_run()?;
+    let path = env
+        .and_then(|e| e.get("PATH").cloned())
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default();
+    let cwd = std::path::Path::new(cwd.unwrap_or("/"));
+    crate::cgroup::which(command, &path, cwd).map(|_| bin)
 }
 
 /// Open (or reattach to) a terminal, streaming its output to `on_data`. The
@@ -490,15 +515,59 @@ fn page_size() -> u64 {
     }
 }
 
-/// Each root's CPU time, resident memory and set of pids in its whole process
-/// tree. One pass over /proc serves every root, since the alternative walks it
-/// once per terminal.
+/// Each root's CPU time, resident memory and set of pids. A terminal in its
+/// own cgroup (see cgroup.rs) is read from there, which also counts processes
+/// that left the shell's tree; the rest are walked from /proc.
 ///
 /// ponytail: RSS is summed naively, so pages shared between a parent and its
 /// children are counted more than once; read PSS from /proc/<pid>/smaps_rollup
 /// instead if the number ever has to be exact.
 #[cfg(target_os = "linux")]
 fn sample_trees(roots: &[(String, u32)]) -> Vec<(String, Usage, HashSet<u32>)> {
+    let (mut sampled, mut loose) = (Vec::new(), Vec::new());
+    for (id, pid) in roots {
+        match crate::cgroup::scope_of(*pid) {
+            Some(scope) => sampled.push(scope_usage(id, &scope)),
+            None => loose.push((id.clone(), *pid)),
+        }
+    }
+    sampled.extend(walk_process_trees(&loose));
+    sampled
+}
+
+/// Resident pages of one process. From statm, not stat's field 24: that one
+/// undercounts (its own man page calls it inaccurate), and statm's matches
+/// VmRSS, which is what ps and top show. Disagreeing with those would just look
+/// wrong.
+#[cfg(target_os = "linux")]
+fn rss_pages(proc_dir: &std::path::Path) -> u64 {
+    std::fs::read_to_string(proc_dir.join("statm"))
+        .ok()
+        .and_then(|m| m.split_ascii_whitespace().nth(1)?.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "linux")]
+fn scope_usage(id: &str, scope: &std::path::Path) -> (String, Usage, HashSet<u32>) {
+    let pids: HashSet<u32> = crate::cgroup::procs(scope).into_iter().collect();
+    let rss: u64 = pids
+        .iter()
+        .map(|pid| rss_pages(std::path::Path::new(&format!("/proc/{pid}"))))
+        .sum();
+    let usage = Usage {
+        cpu_seconds: crate::cgroup::cpu_seconds(scope),
+        rss_bytes: rss * page_size(),
+    };
+    (id.to_string(), usage, pids)
+}
+
+/// Each root's whole process tree, from one pass over /proc for every root,
+/// since the alternative walks it once per terminal.
+#[cfg(target_os = "linux")]
+fn walk_process_trees(roots: &[(String, u32)]) -> Vec<(String, Usage, HashSet<u32>)> {
+    if roots.is_empty() {
+        return Vec::new();
+    }
     // pid -> (ppid, cpu ticks, rss pages)
     let mut procs: HashMap<u32, (u32, u64, u64)> = HashMap::new();
     let Ok(dir) = std::fs::read_dir("/proc") else {
@@ -521,14 +590,7 @@ fn sample_trees(roots: &[(String, u32)]) -> Vec<(String, Usage, HashSet<u32>)> {
         let f: Vec<&str> = rest.split_ascii_whitespace().collect();
         let at = |i: usize| f.get(i).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
         // 1-based ppid=4, utime=14, stime=15, all shifted down by 3.
-        // RSS comes from statm, not stat's field 24: that one undercounts (its
-        // own man page calls it inaccurate), and statm's matches VmRSS, which is
-        // what ps and top show. Disagreeing with those would just look wrong.
-        let rss = std::fs::read_to_string(entry.path().join("statm"))
-            .ok()
-            .and_then(|m| m.split_ascii_whitespace().nth(1)?.parse::<u64>().ok())
-            .unwrap_or(0);
-        procs.insert(pid, (at(1) as u32, at(11) + at(12), rss));
+        procs.insert(pid, (at(1) as u32, at(11) + at(12), rss_pages(&entry.path())));
     }
 
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -848,6 +910,40 @@ mod tests {
         assert_eq!(super::stop_tree_listener(pid, pid), Ok(()));
         use std::os::unix::process::ExitStatusExt;
         assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGTERM));
+    }
+
+    /// The point of a terminal cgroup: a process that double-forked out of the
+    /// shell's tree is gone from the /proc walk but still in the scope. Runs
+    /// only where a systemd user manager answers.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_scope_counts_a_process_that_left_the_tree() {
+        let Some(bin) = crate::cgroup::systemd_run() else {
+            eprintln!("no systemd user manager; skipping");
+            return;
+        };
+        let mut shell = std::process::Command::new(bin)
+            .args(crate::cgroup::SCOPE_ARGS)
+            .args(["sh", "-c", "(sleep 30 &); exec sleep 30"])
+            .spawn()
+            .unwrap();
+        let root = shell.id();
+        let scope = (0..100)
+            .find_map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let scope = crate::cgroup::scope_of(root)?;
+                (crate::cgroup::procs(&scope).len() == 2).then_some(scope)
+            })
+            .expect("the shell and its escaped child share a scope");
+        let walked = super::walk_process_trees(&[("t".to_string(), root)]);
+        let (_, _, scoped) = super::scope_usage("t", &scope);
+        for pid in &scoped {
+            unsafe { libc::kill(*pid as libc::pid_t, libc::SIGKILL) };
+        }
+        let _ = shell.wait();
+
+        assert_eq!(walked[0].2.len(), 1, "the walk sees only the shell");
+        assert_eq!(scoped.len(), 2, "the scope also holds the escaped child");
     }
 
     #[cfg(target_os = "linux")]

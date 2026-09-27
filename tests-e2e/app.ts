@@ -2,7 +2,7 @@
 // which speaks W3C WebDriver and proxies to WebKitWebDriver on Linux. Plain
 // fetch, no client library: the suite needs a handful of endpoints.
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -52,7 +52,9 @@ const up = (url: string) => fetch(url).then((r) => r.ok || undefined, () => unde
 // Every XDG dir points into a fresh temp dir, so the run gets its own daemon
 // socket (daemon.rs runtime_dir), config and WebKit storage, and never touches
 // the developer's thel-dev state. Moving XDG_RUNTIME_DIR would also hide the
-// Wayland socket, so WAYLAND_DISPLAY is pinned to its absolute path.
+// Wayland socket, so WAYLAND_DISPLAY is pinned to its absolute path, and the
+// systemd user manager's sockets, which systemd-run needs to give each terminal
+// its cgroup, so their dir is linked in.
 //
 // SHELL (what new terminals run) is a bash that skips the developer's rc files,
 // with a "$ " prompt and no history file, so output and prompts are the same on
@@ -63,6 +65,7 @@ function isolatedEnv(dir: string): NodeJS.ProcessEnv {
   if (wl && !wl.startsWith("/") && env.XDG_RUNTIME_DIR) {
     env.WAYLAND_DISPLAY = join(env.XDG_RUNTIME_DIR, wl);
   }
+  const realRuntime = env.XDG_RUNTIME_DIR;
   for (const [k, sub] of [
     ["XDG_RUNTIME_DIR", "run"],
     ["XDG_CONFIG_HOME", "config"],
@@ -71,6 +74,9 @@ function isolatedEnv(dir: string): NodeJS.ProcessEnv {
   ]) {
     env[k] = join(dir, sub);
     mkdirSync(env[k]!, { mode: 0o700 });
+  }
+  if (realRuntime && existsSync(join(realRuntime, "systemd"))) {
+    symlinkSync(join(realRuntime, "systemd"), join(env.XDG_RUNTIME_DIR!, "systemd"));
   }
   const rc = join(dir, "bashrc");
   writeFileSync(rc, "PS1='$ '\nunset HISTFILE\n");

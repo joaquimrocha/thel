@@ -9,6 +9,14 @@ The same single compiled binary serves both as the GUI and the daemon.
 - **Setsid & SIGHUP**: On launch, the daemon detaches from the controlling terminal via `setsid()` and ignores `SIGHUP` so it can run independently.
 - **Auto-Termination**: The daemon implements an idle-shutdown check. If there are no active GUI clients *and* no running terminal tabs left (i.e., all tabs are explicitly closed or exited), a 45-second grace window begins. If any terminal tabs are still running, the daemon stays alive indefinitely in the background (even if the GUI is closed), allowing you to reattach to them upon restarting the app. If no new connection or running tab remains during this window, the daemon clean-exits to conserve resources.
 
+## Terminal cgroups (Linux)
+
+With a systemd user manager, the daemon starts each shell through `systemd-run --user --scope`, so every terminal gets its own transient scope under `app-thel.slice` (see `systemd-cgls --user-unit app-thel.slice`). The shell keeps its pid, session, environment and working directory. The scope holds everything the terminal starts, including processes that `setsid` or double-fork away from the shell, so the resource dialog counts their CPU, memory and listening ports too. CPU comes from the scope's own counter; memory is still RSS summed over its processes, to match `ps` and `top`.
+
+The scope is only read. Closing a terminal still kills just the shell's session, so a `nohup` job outlives the tab as in any terminal, and the scope goes away once its last process exits.
+
+The daemon probes once, when it spawns its first terminal, by starting a throwaway scope. Without systemd 254 or newer, or without a reachable user manager (containers, CI), terminals spawn directly and the resource dialog walks the shell's process tree instead. macOS always does the latter.
+
 ## Security Controls
 
 The daemon enforces strict local-security bounds:
