@@ -15,6 +15,15 @@ use tauri::Manager;
 #[cfg(target_os = "linux")]
 use tauri::Emitter;
 
+/// Runs `f` on the blocking thread pool. Commands that wait on a process, the
+/// filesystem or the daemon use it so they hold neither the main thread nor
+/// one of the few async runtime threads. Panics if `f` panicked.
+pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .expect("blocking command panicked")
+}
+
 /// Bring a window to the foreground (e.g. when a notification is clicked). Must
 /// run on the GTK main thread. On Wayland a background process can't raise
 /// itself; `token` is the XDG activation token the compositor granted for the
