@@ -56,28 +56,28 @@ struct NotifTarget {
 }
 
 #[tauri::command]
-fn create_session(opts: CreateOpts, on_data: Channel<TermMsg>) -> Result<(), String> {
-    pty::create(opts, on_data)
+async fn create_session(opts: CreateOpts, on_data: Channel<TermMsg>) -> Result<(), String> {
+    blocking(move || pty::create(opts, on_data)).await
 }
 
 #[tauri::command]
-fn write_session(id: String, data: String) -> Result<(), String> {
-    pty::write(&id, &data)
+async fn write_session(id: String, data: String) -> Result<(), String> {
+    blocking(move || pty::write(&id, &data)).await
 }
 
 #[tauri::command]
-fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
-    pty::resize(&id, cols, rows)
+async fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
+    blocking(move || pty::resize(&id, cols, rows)).await
 }
 
 #[tauri::command]
-fn close_session(id: String) -> Result<(), String> {
-    pty::close(&id)
+async fn close_session(id: String) -> Result<(), String> {
+    blocking(move || pty::close(&id)).await
 }
 
 #[tauri::command]
-fn terminal_status(id: String) -> TermStatus {
-    pty::status(&id)
+async fn terminal_status(id: String) -> TermStatus {
+    blocking(move || pty::status(&id)).await
 }
 
 /// CPU time and memory of each terminal's process tree. Sampled only while the
@@ -97,8 +97,8 @@ fn stop_port_process(terminal: String, pid: u32) -> Result<(), String> {
 
 /// Permanently destroy a terminal (the user closed the tab, or its window).
 #[tauri::command]
-fn kill_terminal_window(id: String) {
-    pty::kill_window(&id);
+async fn kill_terminal_window(id: String) {
+    blocking(move || pty::kill_window(&id)).await
 }
 
 /// Where a terminal's shell currently is, so a new terminal can open there.

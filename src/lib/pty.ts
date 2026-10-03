@@ -18,21 +18,38 @@ export interface CreateOpts {
   rows: number;
 }
 
+// The terminal commands run off the main thread, so two calls for one
+// terminal can finish in either order. Input typed before the daemon knows the
+// terminal would be lost, and a detach racing a remount's reattach would cut
+// its output. Each terminal's calls therefore run one after another.
+const queues = new Map<string, Promise<unknown>>();
+
+/** Runs `call` once every earlier call queued for terminal `id` settled. */
+function inOrder<T>(id: string, call: () => Promise<T>): Promise<T> {
+  const run = (queues.get(id) ?? Promise.resolve()).then(call);
+  const tail = run.catch(() => {});
+  queues.set(id, tail);
+  void tail.then(() => {
+    if (queues.get(id) === tail) queues.delete(id);
+  });
+  return run;
+}
+
 /** Spawn a PTY-backed session. `onMsg` receives streamed output and the exit. */
 export function createSession(opts: CreateOpts, onMsg: (m: TermMsg) => void) {
   const onData = new Channel<TermMsg>();
   onData.onmessage = onMsg;
-  return invoke<void>("create_session", { opts, onData });
+  return inOrder(opts.id, () => invoke<void>("create_session", { opts, onData }));
 }
 
 export const writeSession = (id: string, data: string) =>
-  invoke<void>("write_session", { id, data });
+  inOrder(id, () => invoke<void>("write_session", { id, data }));
 
 export const resizeSession = (id: string, cols: number, rows: number) =>
-  invoke<void>("resize_session", { id, cols, rows });
+  inOrder(id, () => invoke<void>("resize_session", { id, cols, rows }));
 
 export const closeSession = (id: string) =>
-  invoke<void>("close_session", { id });
+  inOrder(id, () => invoke<void>("close_session", { id }));
 
 export interface TerminalStatus {
   // A foreground command is running (vs an idle shell).
@@ -97,7 +114,7 @@ export const stopPortProcess = (terminalId: string, pid: number) =>
 
 /** Permanently destroy a terminal (kills its process; the user closed the tab). */
 export const killTerminalWindow = (id: string) =>
-  invoke<void>("kill_terminal_window", { id });
+  inOrder(id, () => invoke<void>("kill_terminal_window", { id }));
 
 /** Launch a command detached in its own session, fire-and-forget -- for
  * no-shell "app" launchers, which aren't terminals and must outlive any tab. */
