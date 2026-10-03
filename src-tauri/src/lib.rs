@@ -123,29 +123,35 @@ fn update_app_menu(app: tauri::AppHandle, profiles: Vec<menu::ProfileItem>, curr
 /// Probe the running session daemon at startup: "ok", "skew" (an incompatible
 /// version is still running), or "none".
 #[tauri::command]
-fn check_daemon() -> &'static str {
-    #[cfg(unix)]
-    {
-        daemon::check()
-    }
-    #[cfg(not(unix))]
-    {
-        "none"
-    }
+async fn check_daemon() -> &'static str {
+    blocking(|| {
+        #[cfg(unix)]
+        {
+            daemon::check()
+        }
+        #[cfg(not(unix))]
+        {
+            "none"
+        }
+    })
+    .await
 }
 
 /// Kill an incompatible daemon so the current build can start a fresh one. Ends
 /// any sessions the old daemon was hosting (the GUI warns first).
 #[tauri::command]
-fn restart_daemon() -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        daemon::restart()
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(())
-    }
+async fn restart_daemon() -> Result<(), String> {
+    blocking(|| {
+        #[cfg(unix)]
+        {
+            daemon::restart()
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(())
+        }
+    })
+    .await
 }
 
 #[tauri::command]
@@ -175,27 +181,30 @@ fn home_dir() -> Option<String> {
 /// PATHEXT resolution is skipped (Linux-first); a bare name there may probe
 /// the literal file only.
 #[tauri::command]
-fn program_exists(name: String) -> bool {
-    use std::path::Path;
-    #[cfg(unix)]
-    fn is_exec(p: &Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        p.is_file()
-            && p.metadata()
-                .map(|m| m.permissions().mode() & 0o111 != 0)
-                .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    fn is_exec(p: &Path) -> bool {
-        p.is_file()
-    }
-    if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
-        return is_exec(Path::new(&name));
-    }
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&paths).any(|dir| is_exec(&dir.join(&name)))
+async fn program_exists(name: String) -> bool {
+    blocking(move || {
+        use std::path::Path;
+        #[cfg(unix)]
+        fn is_exec(p: &Path) -> bool {
+            use std::os::unix::fs::PermissionsExt;
+            p.is_file()
+                && p.metadata()
+                    .map(|m| m.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+        }
+        #[cfg(not(unix))]
+        fn is_exec(p: &Path) -> bool {
+            p.is_file()
+        }
+        if name.contains('/') || (cfg!(windows) && name.contains('\\')) {
+            return is_exec(Path::new(&name));
+        }
+        let Some(paths) = std::env::var_os("PATH") else {
+            return false;
+        };
+        std::env::split_paths(&paths).any(|dir| is_exec(&dir.join(&name)))
+    })
+    .await
 }
 
 /// Launch a command detached in its own session, fire-and-forget. Used for
@@ -271,29 +280,32 @@ fn dir_exists(path: String) -> bool {
 /// the parent whose name starts with the trailing segment. Directories only;
 /// hidden entries are shown only when the segment itself begins with '.'.
 #[tauri::command]
-fn complete_dir(input: String) -> Vec<String> {
-    let Some(i) = input.rfind(|c| c == '/' || c == '\\') else {
-        return Vec::new();
-    };
-    let dir = &input[..=i]; // keeps the trailing separator
-    let prefix = &input[i + 1..];
-    let base = if dir.is_empty() { "/" } else { dir };
-    let Ok(entries) = std::fs::read_dir(base) else {
-        return Vec::new();
-    };
-    let want_hidden = prefix.starts_with('.');
-    let mut out: Vec<String> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|name| name.starts_with(prefix) && (want_hidden || !name.starts_with('.')))
-        .map(|name| format!("{dir}{name}"))
-        .collect();
-    out.sort();
-    // Cap the list; a completion menu only needs the first handful and some dirs
-    // are huge.
-    out.truncate(50);
-    out
+async fn complete_dir(input: String) -> Vec<String> {
+    blocking(move || {
+        let Some(i) = input.rfind(|c| c == '/' || c == '\\') else {
+            return Vec::new();
+        };
+        let dir = &input[..=i]; // keeps the trailing separator
+        let prefix = &input[i + 1..];
+        let base = if dir.is_empty() { "/" } else { dir };
+        let Ok(entries) = std::fs::read_dir(base) else {
+            return Vec::new();
+        };
+        let want_hidden = prefix.starts_with('.');
+        let mut out: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|name| name.starts_with(prefix) && (want_hidden || !name.starts_with('.')))
+            .map(|name| format!("{dir}{name}"))
+            .collect();
+        out.sort();
+        // Cap the list; a completion menu only needs the first handful and some dirs
+        // are huge.
+        out.truncate(50);
+        out
+    })
+    .await
 }
 
 #[derive(serde::Serialize)]
@@ -307,34 +319,37 @@ struct FontConfig {
 /// of the system terminal. Linux/GNOME only; returns None elsewhere or on any
 /// failure (e.g. gsettings absent), and the frontend falls back to a stack.
 #[tauri::command]
-fn monospace_font() -> Option<FontConfig> {
-    #[cfg(target_os = "linux")]
-    {
-        let out = std::process::Command::new("gsettings")
-            .args(["get", "org.gnome.desktop.interface", "monospace-font-name"])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let raw = String::from_utf8(out.stdout).ok()?;
-        // e.g. 'Adwaita Mono 11' -> family "Adwaita Mono", size 11.
-        let s = raw.trim().trim_matches(|c| c == '\'' || c == '"').trim();
-        if s.is_empty() {
-            return None;
-        }
-        let (family, size_pt) = match s.rsplit_once(' ') {
-            Some((fam, num)) if !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()) => {
-                (fam.trim().to_string(), num.parse::<u16>().ok())
+async fn monospace_font() -> Option<FontConfig> {
+    blocking(|| {
+        #[cfg(target_os = "linux")]
+        {
+            let out = std::process::Command::new("gsettings")
+                .args(["get", "org.gnome.desktop.interface", "monospace-font-name"])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
             }
-            _ => (s.to_string(), None),
-        };
-        Some(FontConfig { family, size_pt })
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
-    }
+            let raw = String::from_utf8(out.stdout).ok()?;
+            // e.g. 'Adwaita Mono 11' -> family "Adwaita Mono", size 11.
+            let s = raw.trim().trim_matches(|c| c == '\'' || c == '"').trim();
+            if s.is_empty() {
+                return None;
+            }
+            let (family, size_pt) = match s.rsplit_once(' ') {
+                Some((fam, num)) if !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()) => {
+                    (fam.trim().to_string(), num.parse::<u16>().ok())
+                }
+                _ => (s.to_string(), None),
+            };
+            Some(FontConfig { family, size_pt })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    })
+    .await
 }
 
 /// Show a desktop notification, sent from Rust rather than the webview's Web
