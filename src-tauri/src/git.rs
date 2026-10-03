@@ -179,7 +179,7 @@ pub async fn branches(cwd: String) -> Branches {
 /// `--prune`: deleting remote-tracking refs is not what a button offering to
 /// find new branches should do behind the user's back.
 ///
-/// Async so the fetch runs off the main thread and the window stays responsive.
+/// Runs on the blocking pool so the window stays responsive during the fetch.
 /// `GIT_TERMINAL_PROMPT=0` keeps git from waiting on a password prompt that a
 /// windowed app has no terminal to show. A credential helper still runs, so an
 /// https remote works when the helper is on the app's PATH; when it isn't, the
@@ -188,22 +188,25 @@ pub async fn branches(cwd: String) -> Branches {
 /// that wait turns out to be long enough to matter.
 #[tauri::command]
 pub async fn fetch_remote(cwd: String) -> Result<(), String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(&cwd)
-        .arg("fetch")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        return Ok(());
-    }
-    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    Err(if err.is_empty() {
-        "git fetch failed.".into()
-    } else {
-        err
+    crate::blocking(move || {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&cwd)
+            .arg("fetch")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if err.is_empty() {
+            "git fetch failed.".into()
+        } else {
+            err
+        })
     })
+    .await
 }
 
 fn detect_default_branch(cwd: &str, branches: &[String]) -> Option<String> {

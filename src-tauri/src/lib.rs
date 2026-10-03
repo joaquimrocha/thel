@@ -81,18 +81,18 @@ async fn terminal_status(id: String) -> TermStatus {
 }
 
 /// CPU time and memory of each terminal's process tree. Sampled only while the
-/// session usage dialog is open; `async` keeps the /proc walk off the main
-/// thread, where it would compete with terminal input.
-#[tauri::command(async)]
-fn session_usage(ids: Vec<String>) -> std::collections::HashMap<String, pty::Usage> {
-    pty::usage(&ids)
+/// session usage dialog is open; the /proc walk runs off the main thread, where
+/// it would compete with terminal input.
+#[tauri::command]
+async fn session_usage(ids: Vec<String>) -> std::collections::HashMap<String, pty::Usage> {
+    blocking(move || pty::usage(&ids)).await
 }
 
 /// Stops (SIGTERM) a process listening on a port in `terminal`'s tree, from the
 /// session usage dialog. Errors when the pid no longer listens there.
-#[tauri::command(async)]
-fn stop_port_process(terminal: String, pid: u32) -> Result<(), String> {
-    pty::stop_listener(&terminal, pid)
+#[tauri::command]
+async fn stop_port_process(terminal: String, pid: u32) -> Result<(), String> {
+    blocking(move || pty::stop_listener(&terminal, pid)).await
 }
 
 /// Permanently destroy a terminal (the user closed the tab, or its window).
@@ -102,10 +102,10 @@ async fn kill_terminal_window(id: String) {
 }
 
 /// Where a terminal's shell currently is, so a new terminal can open there.
-/// `async` because it means a round trip to the daemon over the socket.
-#[tauri::command(async)]
-fn terminal_cwd(id: String) -> Option<String> {
-    pty::cwd(&id)
+/// Means a round trip to the daemon over the socket.
+#[tauri::command]
+async fn terminal_cwd(id: String) -> Option<String> {
+    blocking(move || pty::cwd(&id)).await
 }
 
 /// (Re)build the native macOS menu bar from the frontend's current profile list.
