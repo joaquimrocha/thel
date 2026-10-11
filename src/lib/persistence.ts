@@ -1,9 +1,12 @@
 import { type Store } from "@tauri-apps/plugin-store";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { emitTo } from "@tauri-apps/api/event";
+import { handOffTerminal, reclaimTerminal } from "@/lib/pty";
 import { debouncedWriter } from "@/lib/persistDebounce";
 import { load } from "@/lib/storeFile";
 import {
   useSessions,
+  sessionTerminals,
   type SessionState,
   type LayoutNode,
   type Session,
@@ -33,6 +36,10 @@ let hydrationFailed = false;
 // StrictMode double-invokes the effect in dev) so it can't restore twice or
 // raise the corrupt-layout prompt twice.
 let hydrationStarted = false;
+
+// Settles once hydrateSessions has loaded (or failed to load) the saved layout.
+let markHydrated = () => {};
+const hydrated = new Promise<void>((resolve) => (markHydrated = resolve));
 
 // Only structural fields are persisted; runtime state (exited/busy/output) is
 // intentionally dropped, since a restored terminal's state comes from the daemon
@@ -92,6 +99,77 @@ interface PersistedLayout {
   activeSessionId?: string;
 }
 
+function restoreTerminal(t: PersistedTerminal): Terminal {
+  return {
+    id: t.id,
+    title: t.title,
+    defaultTitle: t.defaultTitle ?? t.title,
+    renamed: t.renamed,
+    command: t.command,
+    args: t.args,
+    cwd: t.cwd,
+    zoom: t.zoom,
+    muted: t.muted,
+  };
+}
+
+function restoreSession(s: PersistedSession): Session {
+  // Migrate legacy flat layouts into a single split group.
+  const groups = (
+    s.groups ?? [
+      {
+        id: crypto.randomUUID(),
+        terminals: s.terminals ?? [],
+        activeTerminalId: s.activeTerminalId,
+      },
+    ]
+  ).map((g) => ({
+    id: g.id,
+    activeTerminalId: g.activeTerminalId,
+    terminals: g.terminals.map(restoreTerminal),
+  }));
+  // Use the saved split tree, or build a left-to-right row from the panes for
+  // layouts saved before splits existed.
+  const layout: LayoutNode =
+    s.layout ??
+    (groups.length === 1
+      ? { t: "leaf", group: groups[0].id }
+      : {
+          t: "split",
+          dir: "row",
+          children: groups.map((g) => ({ t: "leaf", group: g.id })),
+        });
+  return {
+    id: s.id,
+    name: s.name,
+    cwd: s.cwd,
+    repoRoot: s.repoRoot,
+    repoMain: s.repoMain,
+    icon: s.icon,
+    groups,
+    layout,
+    activeGroupId: s.activeGroupId ?? groups[0].id,
+  };
+}
+
+function persistSession(s: Session): PersistedSession {
+  return {
+    id: s.id,
+    name: s.name,
+    cwd: s.cwd,
+    repoRoot: s.repoRoot,
+    repoMain: s.repoMain,
+    icon: s.icon,
+    layout: s.layout,
+    activeGroupId: s.activeGroupId,
+    groups: s.groups.map((g) => ({
+      id: g.id,
+      activeTerminalId: g.activeTerminalId,
+      terminals: g.terminals.map(toPersistedTerminal),
+    })),
+  };
+}
+
 let storePromise: Promise<Store> | null = null;
 function getStore(): Promise<Store> {
   return (storePromise ??= load(layoutFile(), { autoSave: false, defaults: {} }));
@@ -111,58 +189,9 @@ export async function hydrateSessions(): Promise<void> {
     const store = await getStore();
     raw = await store.get<PersistedLayout>(KEY);
     if (!raw?.sessions?.length) return;
-    const layout = raw;
-    const restoreTerminal = (t: PersistedTerminal) => ({
-      id: t.id,
-      title: t.title,
-      defaultTitle: t.defaultTitle ?? t.title,
-      renamed: t.renamed,
-      command: t.command,
-      args: t.args,
-      cwd: t.cwd,
-      zoom: t.zoom,
-      muted: t.muted,
-    });
     useSessions.setState({
-      activeSessionId: layout.activeSessionId,
-      sessions: layout.sessions.map((s) => {
-        // Migrate legacy flat layouts into a single split group.
-        const groups = (
-          s.groups ?? [
-            {
-              id: crypto.randomUUID(),
-              terminals: s.terminals ?? [],
-              activeTerminalId: s.activeTerminalId,
-            },
-          ]
-        ).map((g) => ({
-          id: g.id,
-          activeTerminalId: g.activeTerminalId,
-          terminals: g.terminals.map(restoreTerminal),
-        }));
-        // Use the saved split tree, or build a left-to-right row from the panes
-        // for layouts saved before splits existed.
-        const layout: LayoutNode =
-          s.layout ??
-          (groups.length === 1
-            ? { t: "leaf", group: groups[0].id }
-            : {
-                t: "split",
-                dir: "row",
-                children: groups.map((g) => ({ t: "leaf", group: g.id })),
-              });
-        return {
-          id: s.id,
-          name: s.name,
-          cwd: s.cwd,
-          repoRoot: s.repoRoot,
-          repoMain: s.repoMain,
-          icon: s.icon,
-          groups,
-          layout,
-          activeGroupId: s.activeGroupId ?? groups[0].id,
-        };
-      }),
+      activeSessionId: raw.activeSessionId,
+      sessions: raw.sessions.map(restoreSession),
     });
   } catch (e) {
     console.error("failed to restore layout", e);
@@ -181,6 +210,7 @@ export async function hydrateSessions(): Promise<void> {
     // Mark hydration done (even when there was nothing to restore) so the
     // "No sessions" empty state can show without flashing during load.
     useSessions.setState({ hydrated: true });
+    markHydrated();
   }
 }
 
@@ -277,24 +307,70 @@ export async function copyLayoutToProfile(profileId: string): Promise<void> {
   }
 }
 
+const MOVE_EVENT = "thel-session-move";
+
+/**
+ * Move a session, live terminals and all, to another profile. It goes into
+ * that profile's layout file, and to its window too when one is open, since an
+ * open window would otherwise overwrite the file with its own sessions.
+ * Rejects when the session is not in this window, or, with the session
+ * still here, when the file can't be written.
+ */
+export async function moveSessionToProfile(
+  sessionId: string,
+  profileId: string,
+): Promise<void> {
+  const session = useSessions.getState().sessions.find((s) => s.id === sessionId);
+  if (!session) throw new Error("the session is gone");
+  const moved = persistSession(session);
+  // Written before the session leaves this window, so a failed write or a
+  // quit mid-move can't leave it in neither profile.
+  const store = await load(layoutFileFor(profileId), {
+    autoSave: false,
+    defaults: {},
+  });
+  const prev = (await store.get<PersistedLayout>(KEY)) ?? { sessions: [] };
+  await store.set(KEY, {
+    sessions: [...prev.sessions.filter((s) => s.id !== moved.id), moved],
+    activeSessionId: prev.activeSessionId ?? moved.id,
+  });
+  await store.save();
+  useSessions.getState().dropSession(sessionId);
+  // Detached before the other window attaches, or this window's detach could
+  // land after its attach and cut it off.
+  await Promise.all(
+    sessionTerminals(session).map((t) =>
+      handOffTerminal(t.id).catch((e) => console.error("failed to detach", t.id, e)),
+    ),
+  );
+  const label = profileId === "default" ? "main" : `profile-${profileId}`;
+  // A closed window reads the session from the file when it opens.
+  await emitTo(label, MOVE_EVENT, moved).catch((e) =>
+    console.error("failed to hand the session to", label, e),
+  );
+}
+
+/**
+ * Take in sessions other profiles' windows move here. Await it before
+ * hydrateSessions: a move sent before the listener is up was written to the
+ * layout file before that read, and one sent after waits for the read to
+ * finish, so hydration can't replace it. Resolves to an unlisten function.
+ */
+export async function startSessionMoves(): Promise<() => void> {
+  const off = await getCurrentWindow().listen<PersistedSession>(MOVE_EVENT, (e) => {
+    const session = restoreSession(e.payload);
+    void hydrated.then(() => {
+      for (const t of sessionTerminals(session)) reclaimTerminal(t.id);
+      useSessions.getState().receiveSession(session);
+    });
+  });
+  return off;
+}
+
 function serialize(state: SessionState): PersistedLayout {
   return {
     activeSessionId: state.activeSessionId,
-    sessions: state.sessions.map((s) => ({
-      id: s.id,
-      name: s.name,
-      cwd: s.cwd,
-      repoRoot: s.repoRoot,
-      repoMain: s.repoMain,
-      icon: s.icon,
-      layout: s.layout,
-      activeGroupId: s.activeGroupId,
-      groups: s.groups.map((g) => ({
-        id: g.id,
-        activeTerminalId: g.activeTerminalId,
-        terminals: g.terminals.map(toPersistedTerminal),
-      })),
-    })),
+    sessions: state.sessions.map(persistSession),
   };
 }
 

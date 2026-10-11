@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Ban, Plus, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { SvgIcon } from "./SvgIcon";
 import { ActionTooltip } from "./ActionTooltip";
@@ -15,7 +16,9 @@ import {
 import { useUI } from "@/store/ui";
 import { useSessions } from "@/store/sessions";
 import { useIconLibrary, DEFAULT_ICONS } from "@/store/icons";
+import { useProfiles } from "@/store/profiles";
 import { sessionNameForDir } from "@/lib/launch";
+import { moveSessionToProfile } from "@/lib/persistence";
 
 export function SessionSettingsDialog() {
   const sessionId = useUI((s) => s.sessionSettings);
@@ -29,6 +32,9 @@ export function SessionSettingsDialog() {
   );
   const icons = useIconLibrary((s) => s.icons);
   const removeIcon = useIconLibrary((s) => s.removeIcon);
+  const profiles = useProfiles((s) => s.profiles);
+  const currentProfileId = useProfiles((s) => s.currentId);
+  const otherProfiles = profiles.filter((p) => p.id !== currentProfileId);
 
   const [name, setName] = useState("");
 
@@ -64,7 +70,7 @@ export function SessionSettingsDialog() {
         <DialogHeader>
           <DialogTitle>Session Settings</DialogTitle>
           <DialogDescription>
-            Rename the session and give it a sidebar icon.
+            Rename the session, give it a sidebar icon, or move it to another profile.
           </DialogDescription>
         </DialogHeader>
 
@@ -132,6 +138,43 @@ export function SessionSettingsDialog() {
             <Plus className="size-4" />
           </button>
         </div>
+
+        {otherProfiles.length > 0 && (
+          <>
+            <label className="mt-1 text-xs font-medium text-muted-foreground">
+              Move to profile
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              {otherProfiles.map((p) => (
+                <Button
+                  key={p.id}
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    if (!sessionId) return;
+                    commitName();
+                    close();
+                    const moving = useSessions
+                      .getState()
+                      .sessions.find((x) => x.id === sessionId)?.name;
+                    moveSessionToProfile(sessionId, p.id).then(
+                      () => toast(`Moved ${moving} to ${p.name}`),
+                      (e) => toast.error(`Could not move the session to ${p.name}: ${e}`),
+                    );
+                  }}
+                >
+                  {p.color && (
+                    <span
+                      className="size-2 rounded-full"
+                      style={{ backgroundColor: p.color }}
+                    />
+                  )}
+                  {p.name}
+                </Button>
+              ))}
+            </div>
+          </>
+        )}
 
         <DialogFooter>
           <Button size="sm" onClick={done}>

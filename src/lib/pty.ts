@@ -48,8 +48,27 @@ export const writeSession = (id: string, data: string) =>
 export const resizeSession = (id: string, cols: number, rows: number) =>
   inOrder(id, () => invoke<void>("resize_session", { id, cols, rows }));
 
+// Terminals this window handed to another window. Attachments are keyed by
+// terminal id across all windows of the app, so a detach from this window's
+// late unmount would cut off the new owner.
+const handedOff = new Set<string>();
+
 export const closeSession = (id: string) =>
-  inOrder(id, () => invoke<void>("close_session", { id }));
+  handedOff.has(id)
+    ? Promise.resolve()
+    : inOrder(id, () => invoke<void>("close_session", { id }));
+
+/** Detach a terminal for good from this window, so another window can attach
+ * it. Later closeSession calls for it from this window do nothing, until
+ * reclaimTerminal. */
+export function handOffTerminal(id: string): Promise<void> {
+  const done = closeSession(id);
+  handedOff.add(id);
+  return done;
+}
+
+/** Undo handOffTerminal: the terminal came back to this window. */
+export const reclaimTerminal = (id: string) => handedOff.delete(id);
 
 export interface TerminalStatus {
   // A foreground command is running (vs an idle shell).

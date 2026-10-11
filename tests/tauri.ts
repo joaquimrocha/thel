@@ -20,6 +20,8 @@ export interface MockConfig {
   // How long create_session takes to resolve and send its first output, so a
   // test can see the terminal before the daemon has attached it.
   createSessionDelayMs?: number;
+  // Store files whose save fails, as when the disk is full.
+  failStoreSave?: string[];
   // Folder returned by the "Browse for folder" dialog (null = cancelled).
   pickedFolder?: string;
   // Directory completions returned by complete_dir.
@@ -64,6 +66,9 @@ function install(config: MockConfig) {
   let closeReqHandlerId: number | null = null;
   // Labels of the windows the app asked to open (see __createdWindows).
   const created: string[] = [];
+  // Each listened-for event's callback ids, so a test can deliver one (see
+  // __emitEvent).
+  const eventHandlers = new Map<string, number[]>();
   // Each started terminal's channel callback, keyed by terminal id so a remount
   // (e.g. React StrictMode) replaces the dead one. A test pushes output (e.g. a
   // bell) into a terminal by creation order (see __emitTerminal).
@@ -137,6 +142,9 @@ function install(config: MockConfig) {
         return Object.entries(data);
       case "length":
         return Object.keys(data).length;
+      case "save":
+        if (cfg.failStoreSave?.includes(path)) throw new Error(`cannot save ${path}`);
+        return null;
       default:
         return null;
     }
@@ -362,7 +370,21 @@ function install(config: MockConfig) {
       // unregisterListener on unlisten(). Returning null here would make every
       // unlisten a no-op, leaking each handler (and whatever its closure holds,
       // e.g. an xterm) in `callbacks`.
-      if (cmd === "plugin:event|listen") return Promise.resolve(a.handler);
+      if (cmd === "plugin:event|listen") {
+        const ids = eventHandlers.get(a.event as string) ?? [];
+        eventHandlers.set(a.event as string, [...ids, a.handler as number]);
+        return Promise.resolve(a.handler);
+      }
+      // Record events sent to a window, e.g. a session moved to a profile.
+      if (cmd === "plugin:event|emit_to") {
+        const store = w.__MOCK__ as Record<string, unknown>;
+        const target = a.target as { label: string };
+        store.emitted = [
+          ...((store.emitted as unknown[]) ?? []),
+          { target: target.label, event: a.event, payload: a.payload },
+        ];
+        return Promise.resolve(null);
+      }
       // Record the window destroy the API issues after the close handler runs.
       if (cmd === "plugin:window|destroy")
         (w.__MOCK__ as Record<string, unknown>).destroyed = true;
@@ -413,6 +435,11 @@ function install(config: MockConfig) {
     __closeRequestedReady: () => closeReqHandlerId !== null,
     // Labels of the profile windows the app opened, in order.
     __createdWindows: () => [...created],
+    // Deliver an event to this window's listeners, as another window's emitTo
+    // does.
+    __emitEvent: (event: string, payload: unknown) => {
+      for (const id of eventHandlers.get(event) ?? []) callbacks.get(id)?.({ event, id, payload });
+    },
     // Push output into the index-th started terminal (creation order), e.g. a
     // bell ("\x07") to exercise the attention indicator.
     __emitTerminal: (index: number, data: string) =>

@@ -150,3 +150,19 @@ describe("markExited", () => {
     expect(findTerm(S(), "t1")?.ports).toBeUndefined();
   });
 });
+
+describe("moving a session between profiles", () => {
+  test("dropSession keeps the terminals alive, receiveSession adds once", async () => {
+    const pty = await import("@/lib/pty");
+    const kill = vi.spyOn(pty, "killTerminalWindow").mockResolvedValue();
+    const s1 = S()[0];
+    useSessions.getState().dropSession("s1");
+    expect(S().map((s) => s.id)).toEqual(["s2"]);
+    expect(useSessions.getState().activeSessionId).toBe("s2");
+    expect(kill).not.toHaveBeenCalled();
+    useSessions.getState().receiveSession(s1);
+    useSessions.getState().receiveSession(s1);
+    expect(S().map((s) => s.id)).toEqual(["s2", "s1"]);
+    kill.mockRestore();
+  });
+});

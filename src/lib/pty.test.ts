@@ -13,8 +13,15 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-const { createSession, writeSession, resizeSession, closeSession, killTerminalWindow } =
-  await import("./pty");
+const {
+  createSession,
+  writeSession,
+  resizeSession,
+  closeSession,
+  killTerminalWindow,
+  handOffTerminal,
+  reclaimTerminal,
+} = await import("./pty");
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 const issued = () => calls.map((c) => c.cmd);
@@ -76,5 +83,21 @@ describe("terminal calls", () => {
     void writeSession("e", "x");
     await flush();
     expect(issued()).toEqual(["create_session", "write_session"]);
+  });
+});
+
+describe("a terminal handed to another window", () => {
+  it("is detached once, then left alone until it comes back", async () => {
+    void handOffTerminal("f");
+    void closeSession("f");
+    await flush();
+    calls[0].settle(true);
+    await flush();
+    expect(issued()).toEqual(["close_session"]);
+
+    reclaimTerminal("f");
+    void closeSession("f");
+    await flush();
+    expect(issued()).toEqual(["close_session", "close_session"]);
   });
 });

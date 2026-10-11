@@ -22,7 +22,12 @@ import { SessionUsageDialog } from "@/components/SessionUsageDialog";
 import { SessionNotesPanel } from "@/components/SessionNotesPanel";
 import { AddIconDialog } from "@/components/AddIconDialog";
 import { Toaster } from "@/components/ui/sonner";
-import { hydrateSessions, startPersistence, flushSessions } from "@/lib/persistence";
+import {
+  hydrateSessions,
+  startPersistence,
+  flushSessions,
+  startSessionMoves,
+} from "@/lib/persistence";
 import { checkDaemon, killTerminalWindow } from "@/lib/pty";
 import { hydrateLaunchers, startLauncherPersistence, flushLaunchers } from "@/store/launchers";
 import { hydrateKeybindings, startKeybindingPersistence, flushKeybindings } from "@/store/keybindings";
@@ -170,8 +175,13 @@ export default function App() {
         useUI.getState().setDaemonSkew(true);
         return;
       }
+      const stopMoves = await startSessionMoves();
       await hydrateSessions();
-      unsubscribe = startPersistence();
+      const stopPersistence = startPersistence();
+      unsubscribe = () => {
+        stopPersistence();
+        stopMoves();
+      };
       for (const s of useSessions.getState().sessions) void refreshSessionGit(s.id);
     })();
     return () => unsubscribe();

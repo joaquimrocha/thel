@@ -172,6 +172,11 @@ export interface SessionState {
 
   addSession: (init?: SessionInit) => Session;
   removeSession: (id: string) => void;
+  // Drop a session from this window and leave its terminals and notes alone:
+  // another profile's window takes it over.
+  dropSession: (id: string) => void;
+  // Add a session another profile's window handed over. No-op if already here.
+  receiveSession: (session: Session) => void;
   setActiveSession: (id: string) => void;
   renameSession: (id: string, name: string) => void;
   setSessionIcon: (id: string, icon: string | undefined) => void;
@@ -332,6 +337,10 @@ export const useSessions = create<SessionState>((set, get) => ({
     }
     // The session is gone, so its notes have nothing left to describe.
     useNotes.getState().removeNote(id);
+    get().dropSession(id);
+  },
+
+  dropSession: (id) =>
     set((s) => {
       const idx = s.sessions.findIndex((x) => x.id === id);
       const sessions = s.sessions.filter((x) => x.id !== id);
@@ -340,8 +349,17 @@ export const useSessions = create<SessionState>((set, get) => ({
           ? neighborId(sessions, idx)
           : s.activeSessionId;
       return { sessions, activeSessionId };
-    });
-  },
+    }),
+
+  receiveSession: (session) =>
+    set((s) =>
+      s.sessions.some((x) => x.id === session.id)
+        ? s
+        : {
+            sessions: [...s.sessions, session],
+            activeSessionId: s.activeSessionId ?? session.id,
+          },
+    ),
 
   setActiveSession: (id) => set({ activeSessionId: id }),
 
