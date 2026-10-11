@@ -10,7 +10,10 @@ export const TERMINAL_THEME: ITheme = {
   foreground: "#ffffff",
   cursor: "#ffffff",
   cursorAccent: TERMINAL_BG,
-  selectionBackground: "rgba(53, 132, 228, 0.30)",
+  // Opaque, with its own text colour: copy mode's cursor is a one-cell selection.
+  selectionBackground: "#1c71d8",
+  selectionForeground: "#ffffff",
+  selectionInactiveBackground: "#1c71d880",
 
   black: "#241f31",
   red: "#c01c28",
