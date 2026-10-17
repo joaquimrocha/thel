@@ -1,4 +1,16 @@
+import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { defineConfig, devices } from "@playwright/test";
+
+// Each checkout gets its own Vite port, derived from its path. On the shared
+// 1420, reuseExistingServer picked up whatever served it, often another
+// worktree's `tauri dev`, and tested that worktree's code. THEL_TEST_PORT
+// overrides it.
+const port = Number(
+  process.env.THEL_TEST_PORT ??
+    20000 + (createHash("sha1").update(fileURLToPath(new URL(".", import.meta.url))).digest().readUInt16BE(0) % 10000),
+);
+const url = `http://localhost:${port}`;
 
 // The app is a Tauri webview, but the React frontend runs in a plain browser
 // with the Tauri IPC layer mocked (see tests/tauri.ts). These tests exercise the
@@ -13,12 +25,12 @@ export default defineConfig({
   globalSetup: "./tests/coverage-setup.ts",
   globalTeardown: "./tests/coverage-teardown.ts",
   use: {
-    baseURL: "http://localhost:1420",
+    baseURL: url,
     trace: "on-first-retry",
   },
   webServer: {
-    command: "pnpm dev",
-    url: "http://localhost:1420",
+    command: `pnpm dev --port ${port}`,
+    url,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
   },
