@@ -115,6 +115,49 @@ test("opens a listening port in the browser", async ({ page }) => {
     .toBe("http://localhost:5173");
 });
 
+test("a session with a listening port gets a button to its ports", async ({ page }) => {
+  await gotoApp(page, {
+    ports: [
+      { port: 5173, pid: 4242, name: "node" },
+      { port: 8000, pid: 777, name: "python3" },
+    ],
+  });
+  await createSession(page);
+  const button = rows(page).first().getByRole("button", { name: "Listening ports" });
+
+  await expect(button).toBeVisible();
+  // An icon only: the numbers are in the dialog it opens.
+  await expect(button).toHaveText("");
+  await button.click();
+  await expect(page.getByRole("dialog").getByTestId("listen-port")).toHaveCount(2);
+});
+
+test("the ports button sits beside the notes mark, not in its place", async ({ page }) => {
+  await gotoApp(page, { ports: [{ port: 5173, pid: 4242, name: "node" }] });
+  await createSession(page);
+  const row = rows(page).first();
+  await row.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Notes" }).click();
+  const panel = page.getByRole("dialog");
+  await panel.getByRole("textbox").fill("todo");
+  await panel.getByRole("button", { name: "Save" }).click();
+  await panel.getByRole("button", { name: "Close" }).click();
+
+  const badge = row.getByTestId("ports-indicator");
+  const notes = row.getByTestId("notes-indicator");
+  await expect(badge).toBeVisible();
+  await expect(notes).toBeVisible();
+  const [b, n] = [await badge.boundingBox(), await notes.boundingBox()];
+  expect(b!.x + b!.width).toBeLessThanOrEqual(n!.x);
+});
+
+test("a session with no listening port has no ports button", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await expect(rows(page).first()).toBeVisible();
+  await expect(page.getByTestId("ports-indicator")).toHaveCount(0);
+});
+
 test("a listening port's row shows the terminal running it", async ({ page }) => {
   await page.addInitScript(() => {
     const term = (id: string, title: string) => ({ id, title, command: "bash", args: [] });

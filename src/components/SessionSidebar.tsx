@@ -11,6 +11,7 @@ import {
   ChevronRight,
   FileText,
   MoreVertical,
+  Network,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -813,6 +814,35 @@ function RepoGroupRows({
   );
 }
 
+/** An icon on a session row that marks some state of the session and opens
+ * the panel about it. */
+function IndicatorButton({
+  label,
+  shortcutId,
+  onOpen,
+  children,
+}: {
+  label: string;
+  shortcutId: string;
+  onOpen: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <ActionTooltip label={label} shortcutId={shortcutId}>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpen();
+        }}
+        className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-background/60 hover:text-foreground"
+        aria-label={label}
+      >
+        {children}
+      </button>
+    </ActionTooltip>
+  );
+}
+
 function SessionRow({
   session,
   displayName,
@@ -849,6 +879,7 @@ function SessionRow({
   }, [session.id, loadNote]);
 
   const hasNote = !!noteText?.trim();
+  const listening = session.groups.some((g) => g.terminals.some((t) => t.ports?.length));
   // Right-click and the 3-dot button open different Radix menus over the same
   // items; the button stays lit while either is up.
   const [menuOpen, setMenuOpen] = useState(false);
@@ -949,9 +980,59 @@ function SessionRow({
         />
       </span>
       <div className="min-w-0 flex-1">
-        <span className="block truncate" title={abbreviatePath(session.cwd)}>
-          {displayName}
-        </span>
+        {/* Indicators share the name's line so the branch line below keeps the
+            row's full width. */}
+        <div className="flex items-center gap-1">
+          <span className="min-w-0 flex-1 truncate" title={abbreviatePath(session.cwd)}>
+            {displayName}
+          </span>
+          <div className="-my-0.5 flex shrink-0 items-center gap-0.5">
+            {listening && (
+              <IndicatorButton
+                label="Listening ports"
+                shortcutId="session-usage"
+                onOpen={() => {
+                  onSelect();
+                  openSessionUsage(session.id);
+                }}
+              >
+                <Network className="size-3.5" data-testid="ports-indicator" />
+              </IndicatorButton>
+            )}
+            {hasNote && (
+              <IndicatorButton
+                label="Session notes"
+                shortcutId="session-notes"
+                onOpen={() => {
+                  onSelect();
+                  openSessionNotes(session.id);
+                }}
+              >
+                <FileText className="size-3.5" data-testid="notes-indicator" />
+              </IndicatorButton>
+            )}
+            <DropdownMenu onOpenChange={onOpenChange}>
+              <ActionTooltip label="Session options">
+                <DropdownMenuTrigger asChild>
+                  <button
+                    onClick={(e) => e.stopPropagation()}
+                    className={cn(
+                      "flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-background/60 hover:text-foreground focus-visible:opacity-100",
+                      menuOpen ? "bg-background/60 text-foreground" : "opacity-0",
+                      hoverArmed && "group-hover:opacity-100",
+                    )}
+                    aria-label="Session options"
+                  >
+                    <MoreVertical className="size-3.5" />
+                  </button>
+                </DropdownMenuTrigger>
+              </ActionTooltip>
+              <DropdownMenuContent align="end" onCloseAutoFocus={onCloseAutoFocus}>
+                {menuItem(DropdownMenuItem)}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
         {session.branch && (
           <span className="flex items-center gap-1 text-xs text-muted-foreground/80">
             <GitBranch data-branch-icon className="size-3 shrink-0" />
@@ -966,43 +1047,6 @@ function SessionRow({
             {session.dirty && <span className="text-amber-500">✱</span>}
           </span>
         )}
-      </div>
-      <div className="flex items-center gap-0.5 shrink-0">
-        {hasNote && (
-          <ActionTooltip label="Session notes" shortcutId="session-notes">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelect();
-                openSessionNotes(session.id);
-              }}
-              className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-background/60 hover:text-foreground"
-              aria-label="Session notes"
-            >
-              <FileText className="size-3.5" data-testid="notes-indicator" />
-            </button>
-          </ActionTooltip>
-        )}
-        <DropdownMenu onOpenChange={onOpenChange}>
-          <ActionTooltip label="Session options">
-            <DropdownMenuTrigger asChild>
-              <button
-                onClick={(e) => e.stopPropagation()}
-                className={cn(
-                  "flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-background/60 hover:text-foreground focus-visible:opacity-100",
-                  menuOpen ? "bg-background/60 text-foreground" : "opacity-0",
-                  hoverArmed && "group-hover:opacity-100",
-                )}
-                aria-label="Session options"
-              >
-                <MoreVertical className="size-3.5" />
-              </button>
-            </DropdownMenuTrigger>
-          </ActionTooltip>
-          <DropdownMenuContent align="end" onCloseAutoFocus={onCloseAutoFocus}>
-            {menuItem(DropdownMenuItem)}
-          </DropdownMenuContent>
-        </DropdownMenu>
       </div>
     </div>
       </ContextMenuTrigger>
