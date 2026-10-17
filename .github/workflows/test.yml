@@ -37,6 +37,69 @@ jobs:
           path: playwright-report/
           retention-days: 7
 
+  e2e-app:
+    # The real app over WebDriver (tests-e2e/). Linux only: tauri-driver has no
+    # macOS support.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
+
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10
+
+      # 24: the suite's .ts files run on Node's built-in type stripping.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The dev binary loads its UI from Vite, so it depends only on the Rust
+      # side: a pull request that changes only the frontend reuses it and
+      # compiles nothing.
+      - id: bin
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: src-tauri/target/debug/thel
+          key: e2e-thel-${{ runner.os }}-${{ hashFiles('src-tauri/src/**', 'src-tauri/Cargo.*', 'src-tauri/build.rs', 'src-tauri/tauri.conf.json', 'src-tauri/capabilities/**', 'src-tauri/icons/**') }}
+
+      - env:
+          BIN_CACHED: ${{ steps.bin.outputs.cache-hit }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y webkit2gtk-driver xvfb
+          if [ "$BIN_CACHED" != true ]; then
+            sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+              libayatana-appindicator3-dev librsvg2-dev
+          fi
+
+      - if: steps.bin.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - if: steps.bin.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: src-tauri
+
+      - if: steps.bin.outputs.cache-hit != 'true'
+        run: cargo build --manifest-path src-tauri/Cargo.toml
+
+      - id: driver
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/tauri-driver
+          key: tauri-driver-2.0.6-${{ runner.os }}
+
+      - if: steps.driver.outputs.cache-hit != 'true'
+        run: cargo install tauri-driver --version 2.0.6 --locked
+
+      # WebKitGTK needs a display; a failed output check prints what the
+      # terminals showed to the log.
+      - run: xvfb-run -a pnpm test:e2e
+
   rust:
     # Run the Rust tests on both platforms: much of the daemon (libproc process
     # scanning, session reaping, peer creds, session usage) and the native menu

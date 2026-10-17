@@ -50,6 +50,9 @@ pnpm test:e2e
 - Files run one at a time (`--test-concurrency=1`): each opens a window, and
   parallel windows would fight over focus.
 - A failed output check prints what the terminals showed.
+- CI runs it in the `e2e-app` job under `xvfb-run`. That job caches the
+  dev binary by a hash of the Rust sources, so frontend-only changes skip
+  the Rust build.
 
 `pnpm screenshots` uses the same harness to regenerate the README and website
 screenshots (`docs/screenshots/`, `website/public/`). It runs isolated from
