@@ -96,6 +96,12 @@ test("switching to a session in a folded group unfolds it", async ({ page }) => 
   await page
     .getByPlaceholder("Type a command or search sessions...")
     .fill("feature");
+  // The palette picks the match a render after the input changes; Enter
+  // before that activates nothing.
+  await expect(page.getByRole("option", { name: /feature/ })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await page.keyboard.press("Enter");
 
   await expect(header(page)).toHaveAttribute("aria-expanded", "true");
