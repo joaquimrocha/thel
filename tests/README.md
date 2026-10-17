@@ -43,8 +43,13 @@ pnpm test:e2e
 - WebKitWebDriver rejects all input commands, so `tests-e2e/app.ts` dispatches
   clicks and keys as DOM events. Terminal text is read through the dev-only
   `window.__AUTOMATION__` hook (`src/lib/automation.ts`).
-- Keep it to flows the mock cannot cover. Everything else belongs in the
-  Playwright suite above.
+- Keep it to flows the mock cannot cover: real shells, the daemon, git.
+  Everything else belongs in the Playwright suite above.
+- Terminals run a plain bash with a `$ ` prompt (the harness sets `SHELL`),
+  so tests can match output without caring about the developer's rc files.
+- Files run one at a time (`--test-concurrency=1`): each opens a window, and
+  parallel windows would fight over focus.
+- A failed output check prints what the terminals showed.
 
 `pnpm screenshots` uses the same harness to regenerate the README and website
 screenshots (`docs/screenshots/`, `website/public/`). It runs isolated from

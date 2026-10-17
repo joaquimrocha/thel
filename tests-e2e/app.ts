@@ -29,7 +29,8 @@ function freePort(): Promise<number> {
   });
 }
 
-async function until<T>(what: string, fn: () => Promise<T | undefined>, ms = 15_000): Promise<T> {
+/** Polls `fn` every 100ms until it returns something other than undefined or false. */
+export async function until<T>(what: string, fn: () => Promise<T | undefined>, ms = 15_000): Promise<T> {
   const end = Date.now() + ms;
   let last: unknown;
   while (Date.now() < end) {
@@ -44,12 +45,18 @@ async function until<T>(what: string, fn: () => Promise<T | undefined>, ms = 15_
   throw new Error(`timed out waiting for ${what}${last ? `: ${last}` : ""}`);
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 const up = (url: string) => fetch(url).then((r) => r.ok || undefined, () => undefined);
 
 // Every XDG dir points into a fresh temp dir, so the run gets its own daemon
 // socket (daemon.rs runtime_dir), config and WebKit storage, and never touches
 // the developer's thel-dev state. Moving XDG_RUNTIME_DIR would also hide the
 // Wayland socket, so WAYLAND_DISPLAY is pinned to its absolute path.
+//
+// SHELL (what new terminals run) is a bash that skips the developer's rc files,
+// with a "$ " prompt and no history file, so output and prompts are the same on
+// every machine.
 function isolatedEnv(dir: string): NodeJS.ProcessEnv {
   const env = { ...process.env };
   const wl = env.WAYLAND_DISPLAY;
@@ -65,6 +72,10 @@ function isolatedEnv(dir: string): NodeJS.ProcessEnv {
     env[k] = join(dir, sub);
     mkdirSync(env[k]!, { mode: 0o700 });
   }
+  const rc = join(dir, "bashrc");
+  writeFileSync(rc, "PS1='$ '\nunset HISTFILE\n");
+  env.SHELL = join(dir, "bash");
+  writeFileSync(env.SHELL, `#!/bin/sh\nexec /bin/bash --noprofile --rcfile '${rc}' "$@"\n`, { mode: 0o755 });
   return env;
 }
 
@@ -82,15 +93,34 @@ function processesWithEnv(entry: string): number[] {
     .map(Number);
 }
 
+async function newSession(driverUrl: string): Promise<string> {
+  const res = await fetch(`${driverUrl}/session`, {
+    method: "POST",
+    body: JSON.stringify({
+      capabilities: { alwaysMatch: { "tauri:options": { application: APP } } },
+    }),
+  }).then((r) => r.json());
+  if (!res.value?.sessionId) throw new Error(`session failed: ${JSON.stringify(res)}`);
+  return `${driverUrl}/session/${res.value.sessionId}`;
+}
+
 /** A running thel window under WebDriver control. */
 export class App {
   private base: string;
+  private driverUrl: string;
   private driver: ChildProcess;
   private vite: ChildProcess | undefined;
   private dir: string;
 
-  private constructor(base: string, driver: ChildProcess, vite: ChildProcess | undefined, dir: string) {
+  private constructor(
+    base: string,
+    driverUrl: string,
+    driver: ChildProcess,
+    vite: ChildProcess | undefined,
+    dir: string,
+  ) {
     this.base = base;
+    this.driverUrl = driverUrl;
     this.driver = driver;
     this.vite = vite;
     this.dir = dir;
@@ -123,20 +153,23 @@ export class App {
       env,
       stdio: ["ignore", "ignore", "inherit"],
     });
-    const base = `http://127.0.0.1:${port}`;
-    await until("tauri-driver", () => up(`${base}/status`));
+    const driverUrl = `http://127.0.0.1:${port}`;
+    await until("tauri-driver", () => up(`${driverUrl}/status`));
 
-    const res = await fetch(`${base}/session`, {
-      method: "POST",
-      body: JSON.stringify({
-        capabilities: { alwaysMatch: { "tauri:options": { application: APP } } },
-      }),
-    }).then((r) => r.json());
-    if (!res.value?.sessionId) throw new Error(`session failed: ${JSON.stringify(res)}`);
-
-    const app = new App(`${base}/session/${res.value.sessionId}`, driver, vite, dir);
+    const app = new App(await newSession(driverUrl), driverUrl, driver, vite, dir);
     await app.find("[data-testid=app-menu]");
     return app;
+  }
+
+  /**
+   * Kills the app and starts it again on the same config and daemon, the way a
+   * user quits and reopens thel. Terminals live in the daemon, so they survive.
+   */
+  async restart() {
+    await sleep(1000); // The layout is saved 400ms after a change.
+    await this.cmd("DELETE", "");
+    this.base = await newSession(this.driverUrl);
+    await this.find("[data-testid=app-menu]");
   }
 
   private async cmd(method: string, path: string, body?: unknown) {
@@ -201,11 +234,11 @@ export class App {
    * Presses one key on the focused element, e.g. `press("n", { ctrl: true, shift: true })`.
    * `code` is derived for letters and digits; pass it for others (`","` is "Comma").
    */
-  async press(key: string, mods: { ctrl?: boolean; shift?: boolean; code?: string } = {}) {
+  async press(key: string, mods: { ctrl?: boolean; shift?: boolean; alt?: boolean; code?: string } = {}) {
     await this.exec(
       `const [key, m] = arguments;
        const code = m.code ?? (/^[a-z]$/i.test(key) ? "Key" + key.toUpperCase() : /^\\d$/.test(key) ? "Digit" + key : key);
-       const init = { key, code, bubbles: true, cancelable: true, ctrlKey: !!m.ctrl, shiftKey: !!m.shift,
+       const init = { key, code, bubbles: true, cancelable: true, ctrlKey: !!m.ctrl, shiftKey: !!m.shift, altKey: !!m.alt,
          keyCode: key === "Enter" ? 13 : /^[a-z0-9 ]$/i.test(key) ? key.toUpperCase().charCodeAt(0) : 0 };
        const el = document.activeElement ?? document.body;
        if (el.dispatchEvent(new KeyboardEvent("keydown", init)))
@@ -221,12 +254,61 @@ export class App {
     for (const ch of text) await this.press(ch);
   }
 
+  /**
+   * Waits until the focused element matches `selector`. Unlike `:focus`, this
+   * holds while the window lacks OS focus (another window was clicked).
+   */
+  focused(selector: string): Promise<true> {
+    return until(`focus on ${selector}`, () =>
+      this.exec("return document.activeElement?.matches(arguments[0]) || undefined", selector),
+    );
+  }
+
+  /** How many elements match a CSS selector right now. */
+  count(selector: string): Promise<number> {
+    return this.exec("return document.querySelectorAll(arguments[0]).length", selector);
+  }
+
+  /**
+   * Opens a session on a folder outside any git repo through the New Session
+   * dialog, and waits for its shell prompt.
+   */
+  async openSession(dir: string) {
+    await this.press("N", { ctrl: true, shift: true });
+    const path = await this.find('input[placeholder="/path/to/folder"]');
+    // The dialog resolves a typed path in the background, and until it does,
+    // Create would use the previous one. A missing folder disables Create, so
+    // Create coming back enabled means `dir` itself has resolved.
+    await this.fill(path, join(dir, "missing"));
+    await this.find("//*[contains(text(), 'Folder not found')]", "xpath");
+    await this.fill(path, dir);
+    await this.click(await this.button("Create session"));
+    await this.focused(".xterm-helper-textarea");
+    await this.terminalMatching(/^\$ $/m);
+  }
+
+  /** Terminal buffers by terminal id. */
+  terminals(): Promise<Record<string, string>> {
+    return this.exec("return window.__AUTOMATION__.terminals()");
+  }
+
+  /** Types `command` and Enter into the focused terminal, then waits for its output to match `re`. */
+  async run(command: string, re: RegExp, ms?: number): Promise<string> {
+    await this.type(command);
+    await this.press("Enter");
+    return this.terminalMatching(re, ms);
+  }
+
   /** Waits until some terminal's buffer matches `re`, and returns that buffer. */
-  terminalMatching(re: RegExp, ms?: number): Promise<string> {
-    return until(`terminal output ${re}`, async () => {
-      const all: Record<string, string> = await this.exec("return window.__AUTOMATION__.terminals()");
-      return Object.values(all).find((t) => re.test(t));
-    }, ms);
+  async terminalMatching(re: RegExp, ms?: number): Promise<string> {
+    try {
+      return await until(`terminal output ${re}`, async () => {
+        return Object.values(await this.terminals()).find((t) => re.test(t));
+      }, ms);
+    } catch (e) {
+      const shown = Object.values(await this.terminals()).map((t) => t.trimEnd());
+      throw new Error(`${(e as Error).message}\nterminals:\n${shown.join("\n---\n")}`);
+    }
   }
 
   async screenshot(path: string) {
