@@ -20,6 +20,11 @@ const DOCS = join(ROOT, "docs/screenshots");
 const SITE = join(ROOT, "website/public");
 const WORK = process.env.THEL_SHOTS_WORK ?? join(homedir(), "work");
 const AGENT = process.env.THEL_SHOTS_AGENT ?? "claude";
+const headlamp = join(WORK, "headlamp");
+const thel = join(WORK, "thel");
+// Looked up before anything is created, so a missing repo leaves nothing behind.
+const [hl1, hl2] = worktrees(headlamp, 2);
+const [th1, th2] = worktrees(thel, 2);
 const BASH = "/bin/bash";
 const RC_DIR = mkdtempSync(join(tmpdir(), "thel-shots-"));
 const RC = join(RC_DIR, "bashrc");
@@ -75,8 +80,6 @@ function worktrees(repo: string, n: number): string[] {
   return linked;
 }
 
-const headlamp = join(WORK, "headlamp");
-const thel = join(WORK, "thel");
 const [claudePane, rightTop, rightBottom] = ["g1", "g2", "g3"];
 
 const common = {
@@ -136,8 +139,6 @@ const seed = {
 };
 
 // Two projects with a couple of worktrees each, for the grouped sidebar.
-const [hl1, hl2] = worktrees(headlamp, 2);
-const [th1, th2] = worktrees(thel, 2);
 const base = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 const groupedSeed = {
   ...common,
