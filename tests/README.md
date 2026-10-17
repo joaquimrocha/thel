@@ -46,6 +46,11 @@ pnpm test:e2e
 - Keep it to flows the mock cannot cover. Everything else belongs in the
   Playwright suite above.
 
+`pnpm screenshots` uses the same harness to regenerate the README and website
+screenshots (`docs/screenshots/`, `website/public/`). It runs isolated from
+your own thel setup, with shells on a plain prompt. The scenes and their
+seeded profiles, launchers and layout are in `scripts/screenshots.ts`.
+
 ## Coverage
 
 `pnpm test` collects V8 coverage and maps it back to `src/*` via source maps

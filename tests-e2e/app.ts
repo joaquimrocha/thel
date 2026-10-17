@@ -96,11 +96,21 @@ export class App {
     this.dir = dir;
   }
 
-  /** Starts Vite (unless one already serves :1420), tauri-driver, and the app. */
-  static async launch(): Promise<App> {
+  /**
+   * Starts Vite (unless one already serves :1420), tauri-driver, and the app.
+   * `seed` maps store file names (e.g. "thel-layout.json") to their contents,
+   * written to the app's config dir before it starts.
+   */
+  static async launch(opts: { seed?: Record<string, unknown> } = {}): Promise<App> {
     if (!existsSync(APP)) throw new Error(`no app binary at ${APP}; build it or set THEL_APP`);
     const dir = mkdtempSync(join(tmpdir(), "thel-e2e-"));
     const env = isolatedEnv(dir);
+    // storeFile.ts: dev builds prefix every store file with "dev-".
+    const config = join(env.XDG_CONFIG_HOME!, "dev.thel.Thel");
+    mkdirSync(config, { recursive: true });
+    for (const [name, data] of Object.entries(opts.seed ?? {})) {
+      writeFileSync(join(config, `dev-${name}`), JSON.stringify(data));
+    }
 
     let vite: ChildProcess | undefined;
     if (!(await up(DEV_URL))) {
@@ -138,34 +148,63 @@ export class App {
     return r.value;
   }
 
-  /** Waits for the first element matching a CSS selector. */
-  find(css: string): Promise<El> {
-    return until(css, () => this.cmd("POST", "/element", { using: "css selector", value: css }));
+  /** Waits for the first element matching a CSS (or, with `using`, XPath) selector. */
+  find(selector: string, using: "css selector" | "xpath" = "css selector"): Promise<El> {
+    return until(selector, () => this.cmd("POST", "/element", { using, value: selector }));
+  }
+
+  /** Resizes the window, in logical pixels. */
+  async setWindowSize(size: { width: number; height: number }) {
+    await this.cmd("POST", "/window/rect", size);
   }
 
   /** Waits for an enabled button whose visible text is exactly `text`. */
   button(text: string): Promise<El> {
-    const value = `//button[normalize-space()=${JSON.stringify(text)} and not(@disabled)]`;
-    return until(`button "${text}"`, () => this.cmd("POST", "/element", { using: "xpath", value }));
+    return this.find(`//button[normalize-space()=${JSON.stringify(text)} and not(@disabled)]`, "xpath");
   }
 
   // WebKitWebDriver refuses every input command (click, element send keys,
   // actions) with "unsupported operation" (tauri-apps/tauri#6541), so input is
   // dispatched as DOM events from inside the page. The Rust side still runs
   // for real; only the OS input layer is skipped.
-  private exec(script: string, ...args: unknown[]) {
+  /** Runs `script` in the page with `arguments` bound to `args`, returning its result. */
+  exec(script: string, ...args: unknown[]) {
     return this.cmd("POST", "/execute/sync", { script, args });
   }
 
+  // The full sequence, since Radix tabs and menus act on pointer/mouse down.
   async click(el: El) {
-    await this.exec("arguments[0].click()", el);
+    await this.exec(
+      `const el = arguments[0], o = { bubbles: true, cancelable: true, button: 0 };
+       el.dispatchEvent(new PointerEvent("pointerdown", o));
+       el.dispatchEvent(new MouseEvent("mousedown", o));
+       el.dispatchEvent(new PointerEvent("pointerup", o));
+       el.dispatchEvent(new MouseEvent("mouseup", o));
+       el.click();`,
+      el,
+    );
   }
 
-  /** Presses one key on the focused element, e.g. `press("n", { ctrl: true, shift: true })`. */
-  async press(key: string, mods: { ctrl?: boolean; shift?: boolean } = {}) {
+  /** Sets an input's value the way typing would, so React sees the change. */
+  async fill(el: El, value: string) {
+    await this.exec(
+      `const [el, v] = arguments;
+       el.focus();
+       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, v);
+       el.dispatchEvent(new Event("input", { bubbles: true }));`,
+      el,
+      value,
+    );
+  }
+
+  /**
+   * Presses one key on the focused element, e.g. `press("n", { ctrl: true, shift: true })`.
+   * `code` is derived for letters and digits; pass it for others (`","` is "Comma").
+   */
+  async press(key: string, mods: { ctrl?: boolean; shift?: boolean; code?: string } = {}) {
     await this.exec(
       `const [key, m] = arguments;
-       const code = /^[a-z]$/i.test(key) ? "Key" + key.toUpperCase() : /^\\d$/.test(key) ? "Digit" + key : key;
+       const code = m.code ?? (/^[a-z]$/i.test(key) ? "Key" + key.toUpperCase() : /^\\d$/.test(key) ? "Digit" + key : key);
        const init = { key, code, bubbles: true, cancelable: true, ctrlKey: !!m.ctrl, shiftKey: !!m.shift,
          keyCode: key === "Enter" ? 13 : /^[a-z0-9 ]$/i.test(key) ? key.toUpperCase().charCodeAt(0) : 0 };
        const el = document.activeElement ?? document.body;

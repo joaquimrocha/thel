@@ -16,6 +16,7 @@
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:e2e": "node --test 'tests-e2e/*.test.ts'",
+    "screenshots": "node scripts/screenshots.ts",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "build:container": "bin=docker; docker info >/dev/null 2>&1 || bin=podman; $bin build -t thel-build . && id=$($bin create thel-build) && $bin cp \"$id:/app/src-tauri/target/release/bundle\" ./bundle && $bin rm \"$id\""
   },
