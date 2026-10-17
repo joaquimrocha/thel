@@ -13,6 +13,7 @@ import { useSessions, terminalDisplayTitle } from "@/store/sessions";
 import { activateNotification } from "@/store/notifications";
 import {
   stopPortProcess,
+  openUrl,
   sessionUsage,
   type ListenPort,
   type TerminalUsage,
@@ -41,16 +42,18 @@ interface Row {
   rss: number;
 }
 
-/** One listener: its address, the process holding it, and actions to stop the
- * process or show its terminal. */
+/** One listener: its address, which opens it in a browser, the process holding
+ * it, and actions to stop the process or show its terminal. */
 function PortRow({
   p,
   terminal,
+  onBrowse,
   onStop,
   onShow,
 }: {
   p: ListenPort;
   terminal: string;
+  onBrowse: (p: ListenPort) => void;
   onStop: (p: ListenPort) => void;
   onShow: () => void;
 }) {
@@ -58,9 +61,13 @@ function PortRow({
     <div data-testid="listen-port" className="flex items-center gap-2 py-1 text-sm">
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-baseline gap-1.5">
-          <span className="shrink-0 font-mono text-xs tabular-nums text-foreground">
+          <button
+            onClick={() => onBrowse(p)}
+            title={`Open http://localhost:${p.port}`}
+            className="shrink-0 font-mono text-xs tabular-nums text-foreground underline-offset-2 hover:underline"
+          >
             localhost:{p.port}
-          </span>
+          </button>
           <span className="truncate text-xs text-muted-foreground">{terminal}</span>
         </div>
         <div
@@ -184,6 +191,11 @@ export function SessionUsageDialog() {
     if (sessionId) activateNotification(sessionId, terminalId);
   };
 
+  const browse = (p: ListenPort) =>
+    void openUrl(`http://localhost:${p.port}`).catch((e) =>
+      toast.error(`Could not open port ${p.port}: ${e}`),
+    );
+
   const stop = (terminalId: string, p: ListenPort) =>
     void stopPortProcess(terminalId, p.pid).then(
       () => toast(`Asked ${p.name} (pid ${p.pid}) to stop`),
@@ -259,6 +271,7 @@ export function SessionUsageDialog() {
                   key={`${t.id}:${p.port}:${p.pid}`}
                   p={p}
                   terminal={terminalDisplayTitle(t)}
+                  onBrowse={browse}
                   onStop={(p) => stop(t.id, p)}
                   onShow={() => show(t.id)}
                 />

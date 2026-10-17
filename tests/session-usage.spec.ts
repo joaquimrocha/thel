@@ -104,6 +104,17 @@ test("lists a terminal's listening ports and stops one", async ({ page }) => {
   expect(stopped).toEqual([{ terminal: expect.any(String), pid: 4242 }]);
 });
 
+test("opens a listening port in the browser", async ({ page }) => {
+  await gotoApp(page, { ports: [{ port: 5173, pid: 4242, name: "node" }] });
+  await createSession(page);
+  await page.keyboard.press("Control+Shift+R");
+
+  await page.getByRole("button", { name: "localhost:5173" }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as never as { __MOCK__: { lastOpenedUrl?: string } }).__MOCK__.lastOpenedUrl))
+    .toBe("http://localhost:5173");
+});
+
 test("a listening port's row shows the terminal running it", async ({ page }) => {
   await page.addInitScript(() => {
     const term = (id: string, title: string) => ({ id, title, command: "bash", args: [] });
