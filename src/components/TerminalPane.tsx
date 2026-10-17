@@ -7,6 +7,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
 import { ChevronDown, ChevronUp, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { registerTerminal, unregisterTerminal } from "@/lib/automation";
 import {
   createSession,
   seedBusy,
@@ -297,6 +298,7 @@ export function TerminalPane({
     termRef.current = term;
     fitRef.current = fit;
     searchRef.current = search;
+    registerTerminal(tab.id, term);
 
     // Clipboard, handled here (not the global shortcut handler) because it needs
     // the focused terminal's selection. The combos are the rebindable terminal-*
@@ -697,6 +699,7 @@ export function TerminalPane({
       // the option off first makes the renderer clear it.
       term.options.cursorBlink = false;
       term.dispose();
+      unregisterTerminal(tab.id);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

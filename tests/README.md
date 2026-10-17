@@ -26,6 +26,26 @@ The config (`playwright.config.ts`) starts the Vite dev server on :1420
 automatically (`reuseExistingServer` is on, so an already-running `pnpm dev` is
 reused). First run needs the browser: `npx playwright install chromium`.
 
+## Real app (`tests-e2e/`)
+
+A small suite drives the real dev build (Rust backend, daemon, shells) over
+WebDriver through `tauri-driver`. Linux only. That build loads its UI from Vite,
+which the suite starts unless one already serves :1420.
+
+```sh
+cargo install tauri-driver --locked   # once; also needs WebKitWebDriver (webkitgtk)
+cargo build --manifest-path src-tauri/Cargo.toml --no-default-features  # what `pnpm tauri dev` builds
+pnpm test:e2e
+```
+
+- Each run gets its own `XDG_*` dirs in a temp dir, so its own daemon and
+  config, and kills every process it started on exit.
+- WebKitWebDriver rejects all input commands, so `tests-e2e/app.ts` dispatches
+  clicks and keys as DOM events. Terminal text is read through the dev-only
+  `window.__AUTOMATION__` hook (`src/lib/automation.ts`).
+- Keep it to flows the mock cannot cover. Everything else belongs in the
+  Playwright suite above.
+
 ## Coverage
 
 `pnpm test` collects V8 coverage and maps it back to `src/*` via source maps
