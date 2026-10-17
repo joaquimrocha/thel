@@ -78,6 +78,11 @@ const SHOTS = [
     desc: "Anchor a session to a new worktree.",
   },
   {
+    src: "/shots/grouped-sessions.png",
+    title: "Grouped by repo",
+    desc: "Each project's worktrees under one heading.",
+  },
+  {
     src: "/shots/launchers.png",
     title: "Launchers",
     desc: "Saved commands with session variables.",

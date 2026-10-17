@@ -9,7 +9,8 @@
 //
 // THEL_SHOTS_WORK  folder holding the projects shown (default ~/work)
 // THEL_SHOTS_AGENT command for the agent pane (default "claude")
-import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { App } from "../tests-e2e/app.ts";
@@ -63,11 +64,22 @@ const session = (id: string, cwd: string, term: Term = shell(cwd), icon?: string
   groups: [group(`${id}-g`, term)],
 });
 
+// The first `n` linked worktrees of `repo` that sit beside it as
+// "<repo>.<branch>" (where thel creates them). Looked up at run time so the
+// shots follow whatever branches exist instead of naming ones that come and go.
+function worktrees(repo: string, n: number): string[] {
+  const out = execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+  const paths = out.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9));
+  const linked = paths.filter((p) => p.startsWith(`${repo}.`) && existsSync(p)).slice(0, n);
+  if (linked.length < n) throw new Error(`${repo} needs ${n} linked worktrees, has ${linked.length}`);
+  return linked;
+}
+
 const headlamp = join(WORK, "headlamp");
 const thel = join(WORK, "thel");
 const [claudePane, rightTop, rightBottom] = ["g1", "g2", "g3"];
 
-const seed = {
+const common = {
   "thel-profiles.json": {
     profiles: [
       { id: "work", name: "Work", color: "#3b82f6" },
@@ -81,6 +93,10 @@ const seed = {
       { id: "emacs", name: "emacs", command: "emacs __SESSION_DIR__", shell: true },
     ],
   },
+};
+
+const seed = {
+  ...common,
   "thel-layout.json": {
     layout: {
       activeSessionId: "headlamp",
@@ -119,6 +135,27 @@ const seed = {
   },
 };
 
+// Two projects with a couple of worktrees each, for the grouped sidebar.
+const [hl1, hl2] = worktrees(headlamp, 2);
+const [th1, th2] = worktrees(thel, 2);
+const base = (p: string) => p.slice(p.lastIndexOf("/") + 1);
+const groupedSeed = {
+  ...common,
+  "thel-layout.json": {
+    layout: {
+      activeSessionId: base(hl1),
+      sessions: [
+        session("headlamp", headlamp, shell(headlamp), "rocket"),
+        session(base(hl1), hl1, agent(hl1)),
+        session(base(hl2), hl2),
+        session("thel", thel, shell(thel), "terminal"),
+        session(base(th1), th1),
+        session(base(th2), th2),
+        { ...session("home", homedir()), name: "~" },
+      ],
+    },
+  },
+};
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -219,6 +256,16 @@ try {
     await sleep(300);
     await focus(app);
     await shot(app, "notifications");
+  });
+
+  await withApp(groupedSeed, async (app) => {
+    const menu = await app.find('button[aria-label="Sidebar menu"]');
+    await app.click(menu);
+    await app.click(await app.find('[aria-label="Group sessions by repo"]'));
+    await app.click(menu);
+    await app.find("[data-repo-group]");
+    await focus(app);
+    await shot(app, "grouped-sessions");
   });
 } finally {
   rmSync(RC_DIR, { recursive: true, force: true });
