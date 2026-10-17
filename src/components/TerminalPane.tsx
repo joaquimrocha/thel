@@ -544,6 +544,8 @@ export function TerminalPane({
           // It's a live, explicit request, so it skips the replay gate; suppress
           // only while watched, matching the OSC message path.
           if (!watched()) notify(tab.id, "message", msg.message);
+        } else if (msg.kind === "ports") {
+          useSessions.getState().setPorts(tab.id, msg.ports);
         } else {
           handleExit();
         }

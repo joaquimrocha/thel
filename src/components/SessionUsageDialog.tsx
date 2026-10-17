@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Square } from "lucide-react";
+import { toast } from "sonner";
 import {
   Dialog,
   DialogPanel,
@@ -10,7 +11,12 @@ import { ActionTooltip } from "./ActionTooltip";
 import { useUI } from "@/store/ui";
 import { useSessions, terminalDisplayTitle } from "@/store/sessions";
 import { activateNotification } from "@/store/notifications";
-import { sessionUsage, type TerminalUsage } from "@/lib/pty";
+import {
+  stopPortProcess,
+  sessionUsage,
+  type ListenPort,
+  type TerminalUsage,
+} from "@/lib/pty";
 
 const POLL_MS = 1000;
 
@@ -33,6 +39,57 @@ interface Row {
   // null until a second sample gives something to compare against.
   cpu: number | null;
   rss: number;
+}
+
+/** One listener: its address, the process holding it, and actions to stop the
+ * process or show its terminal. */
+function PortRow({
+  p,
+  terminal,
+  onStop,
+  onShow,
+}: {
+  p: ListenPort;
+  terminal: string;
+  onStop: (p: ListenPort) => void;
+  onShow: () => void;
+}) {
+  return (
+    <div data-testid="listen-port" className="flex items-center gap-2 py-1 text-sm">
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-baseline gap-1.5">
+          <span className="shrink-0 font-mono text-xs tabular-nums text-foreground">
+            localhost:{p.port}
+          </span>
+          <span className="truncate text-xs text-muted-foreground">{terminal}</span>
+        </div>
+        <div
+          className="truncate text-xs text-muted-foreground"
+          title={`${p.name}, pid ${p.pid}`}
+        >
+          {p.name} <span className="tabular-nums opacity-70">pid {p.pid}</span>
+        </div>
+      </div>
+      <ActionTooltip label="Stop process">
+        <button
+          aria-label={`Stop ${p.name} (pid ${p.pid})`}
+          onClick={() => onStop(p)}
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-destructive focus:outline-none focus:ring-1 focus:ring-ring"
+        >
+          <Square className="size-3 fill-current" />
+        </button>
+      </ActionTooltip>
+      <ActionTooltip label="Show terminal">
+        <button
+          aria-label={`Show the terminal running port ${p.port}`}
+          onClick={onShow}
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+        >
+          <ArrowRight className="size-4" />
+        </button>
+      </ActionTooltip>
+    </div>
+  );
 }
 
 export function SessionUsageDialog() {
@@ -118,6 +175,7 @@ export function SessionUsageDialog() {
     });
   }, [sessionId, close]);
 
+  const listeners = terminals.flatMap((t) => (t.ports ?? []).map((p) => ({ t, p })));
   const measured = rows.filter((r) => r.cpu !== null);
   const totalCpu = measured.reduce((a, r) => a + (r.cpu ?? 0), 0);
   const totalRss = rows.reduce((a, r) => a + r.rss, 0);
@@ -125,6 +183,12 @@ export function SessionUsageDialog() {
   const show = (terminalId: string) => {
     if (sessionId) activateNotification(sessionId, terminalId);
   };
+
+  const stop = (terminalId: string, p: ListenPort) =>
+    void stopPortProcess(terminalId, p.pid).then(
+      () => toast(`Asked ${p.name} (pid ${p.pid}) to stop`),
+      (e) => toast.error(`Could not stop ${p.name} (pid ${p.pid}): ${e}`),
+    );
 
   return (
     <Dialog
@@ -141,7 +205,8 @@ export function SessionUsageDialog() {
         <div className="border-b border-border px-4 py-3 pr-10">
           <DialogTitle>{session?.name ?? "Resource usage"}</DialogTitle>
           <DialogDescription>
-            CPU and memory of each terminal, including everything it started.
+            CPU, memory and listening ports of each terminal, including
+            everything it started.
           </DialogDescription>
         </div>
 
@@ -183,6 +248,22 @@ export function SessionUsageDialog() {
                 </ActionTooltip>
               </div>
             ))
+          )}
+          {listeners.length > 0 && (
+            <section aria-label="Listening ports" className="mt-3 border-t border-border pt-2">
+              <h3 className="pb-1 text-xs font-medium text-muted-foreground">
+                Listening ports
+              </h3>
+              {listeners.map(({ t, p }) => (
+                <PortRow
+                  key={`${t.id}:${p.port}:${p.pid}`}
+                  p={p}
+                  terminal={terminalDisplayTitle(t)}
+                  onStop={(p) => stop(t.id, p)}
+                  onShow={() => show(t.id)}
+                />
+              ))}
+            </section>
           )}
         </div>
 

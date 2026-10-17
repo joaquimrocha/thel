@@ -4,6 +4,8 @@ export type TermMsg =
   | { kind: "data"; data: string }
   | { kind: "busy"; busy: boolean }
   | { kind: "notify"; message: string }
+  // The TCP listeners in the terminal's process tree, pushed when they change.
+  | { kind: "ports"; ports: ListenPort[] }
   | { kind: "exit"; code: number | null };
 
 export interface CreateOpts {
@@ -74,10 +76,24 @@ export interface TerminalUsage {
   rssBytes: number;
 }
 
+/** A TCP port in the LISTEN state in a terminal's process tree, and the
+ * process holding it. */
+export interface ListenPort {
+  port: number;
+  pid: number;
+  // Process name, e.g. "node".
+  name: string;
+}
+
 /** Resource use per terminal, sampled on demand. Ids whose process is gone are
  * absent from the result. */
 export const sessionUsage = (ids: string[]) =>
   invoke<Record<string, TerminalUsage>>("session_usage", { ids });
+
+/** SIGTERM to `pid`, which must still listen on a port in `terminalId`'s tree;
+ * rejects with a message otherwise. */
+export const stopPortProcess = (terminalId: string, pid: number) =>
+  invoke<void>("stop_port_process", { terminal: terminalId, pid });
 
 /** Permanently destroy a terminal (kills its process; the user closed the tab). */
 export const killTerminalWindow = (id: string) =>

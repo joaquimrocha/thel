@@ -230,6 +230,7 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
   const setBusy = useSessions((s) => s.setBusy);
   const setProcTitle = useSessions((s) => s.setProcTitle);
   const setProgress = useSessions((s) => s.setProgress);
+  const setPorts = useSessions((s) => s.setPorts);
   const closeTerminal = useSessions((s) => s.closeTerminal);
 
   useEffect(() => {
@@ -313,6 +314,8 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
           // `thel notify` via the daemon: a background tab is never watched, so
           // deliver it straight through (skips the replay gate -- it's live).
           notify(terminal.id, "message", msg.message);
+        } else if (msg.kind === "ports") {
+          setPorts(terminal.id, msg.ports);
         } else {
           closeTerminal(terminal.id);
         }
@@ -329,6 +332,7 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
   }, [
     closeTerminal,
     setBusy,
+    setPorts,
     setProcTitle,
     setProgress,
     terminal.args,

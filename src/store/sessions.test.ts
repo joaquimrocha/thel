@@ -142,3 +142,11 @@ describe("reorderSessionBlock", () => {
     expect(S()).toBe(before);
   });
 });
+
+describe("markExited", () => {
+  test("drops the exited terminal's listening ports", () => {
+    useSessions.getState().setPorts("t1", [{ port: 5173, pid: 42, name: "node" }]);
+    useSessions.getState().markExited("t1", 0);
+    expect(findTerm(S(), "t1")?.ports).toBeUndefined();
+  });
+});

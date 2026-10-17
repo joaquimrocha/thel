@@ -31,13 +31,24 @@ use tauri::ipc::Channel;
 
 use crate::pty::{decode_utf8_stream, CreateOpts, TermMsg};
 
-const PROTOCOL_VERSION: u32 = 2;
+const PROTOCOL_VERSION: u32 = 3;
 const EMPTY_GRACE: Duration = Duration::from_secs(45);
 // How often the daemon samples each tab's foreground state to push busy
 // transitions. Foreground-pgroup changes have no kernel event, so this is a
 // poll, but it lives here (in-process, no IPC) and the GUI only ever sees the
 // resulting events.
 const BUSY_POLL: Duration = Duration::from_millis(600);
+// How often the daemon looks for listening ports to push. listen(2) has no
+// event either. Linux has a cheap unchanged check, so it can look often;
+// macOS runs lsof for every look.
+const PORTS_POLL: Duration = if cfg!(target_os = "linux") {
+    Duration::from_secs(2)
+} else {
+    Duration::from_secs(5)
+};
+// Looks in a row that may skip the process walk. The cheap check misses a
+// socket handed to a forked child, so a full walk still runs this often.
+const PORTS_RESCAN: u32 = 15;
 const DAEMON_ARG: &str = "__daemon";
 /// Scrollback the VTE keeps (lines), used for the alt-screen snapshot path.
 const SCROLLBACK: usize = 1000;
@@ -197,6 +208,12 @@ enum Command {
     Cwd {
         id: String,
     },
+    /// SIGTERM to `pid` if it listens on a port in the tab's process tree, as
+    /// a fresh sample shows. The reply is a StopReply.
+    StopListener {
+        id: String,
+        pid: u32,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -209,6 +226,9 @@ enum Event {
     // An out-of-band notification for a tab (from `thel notify`), delivered to the
     // GUI regardless of the caller's tty.
     TabNotify { id: String, message: String },
+    // The TCP listeners in a tab's process tree changed. Also sent on attach
+    // when the tab has any.
+    TabPorts { id: String, ports: Vec<crate::pty::ListenPort> },
     Error { id: String, message: String },
 }
 
@@ -228,6 +248,12 @@ struct UsageReply {
 #[derive(Serialize, Deserialize)]
 struct CwdReply {
     cwd: Option<String>,
+}
+
+/// Reply to Command::StopListener: why the process was not signalled, if not.
+#[derive(Serialize, Deserialize)]
+struct StopReply {
+    error: Option<String>,
 }
 
 fn frame_bytes(ty: u8, payload: &[u8]) -> Vec<u8> {
@@ -366,6 +392,8 @@ struct TabShared {
     // and the VTE snapshot covers it).
     scrollback: VecDeque<u8>,
     subscribers: Vec<Subscriber>,
+    // Listeners as last pushed by ports_monitor, for a client that attaches.
+    ports: Vec<crate::pty::ListenPort>,
 }
 
 /// What to send a (re)attaching client: the raw scrollback, which is the normal
@@ -528,6 +556,10 @@ pub fn run() {
         let daemon = daemon.clone();
         move || busy_monitor(daemon)
     });
+    std::thread::spawn({
+        let daemon = daemon.clone();
+        move || ports_monitor(daemon)
+    });
 
     for stream in listener.incoming().flatten() {
         let daemon = daemon.clone();
@@ -580,6 +612,53 @@ fn busy_monitor(daemon: Arc<Daemon>) {
         }
         // Drop ids for tabs that went away, so `last` can't grow unbounded.
         last = next;
+    }
+}
+
+/// Push each attached tab's listening ports to its subscribers when they change.
+/// A look skips the process walk while the set of listening sockets and of
+/// attached tabs is unchanged, up to PORTS_RESCAN looks in a row.
+fn ports_monitor(daemon: Arc<Daemon>) {
+    let (mut last_sockets, mut last_roots) = (None, Vec::new());
+    let mut skipped = 0;
+    loop {
+        std::thread::sleep(PORTS_POLL);
+        let attached: Vec<(String, u32, Arc<Mutex<TabShared>>)> = {
+            let tabs = daemon.tabs.lock();
+            tabs.iter()
+                .filter(|(_, t)| !t.shared.lock().subscribers.is_empty())
+                .filter_map(|(id, t)| Some((id.clone(), t.child.lock().process_id()?, t.shared.clone())))
+                .collect()
+        };
+        if attached.is_empty() {
+            last_roots.clear();
+            continue;
+        }
+        let mut roots: Vec<(String, u32)> = attached.iter().map(|(id, pid, _)| (id.clone(), *pid)).collect();
+        roots.sort_unstable();
+        let sockets = crate::pty::listen_fingerprint();
+        if sockets.is_some() && sockets == last_sockets && roots == last_roots && skipped < PORTS_RESCAN {
+            skipped += 1;
+            continue;
+        }
+        skipped = 0;
+        let mut ports = crate::pty::process_tree_ports(&roots);
+        (last_sockets, last_roots) = (sockets, roots);
+        for (id, _, shared) in attached {
+            let now = ports.remove(&id).unwrap_or_default();
+            let subs: Vec<Arc<Client>> = {
+                let mut sh = shared.lock();
+                if sh.ports == now {
+                    continue;
+                }
+                sh.ports = now.clone();
+                sh.subscribers.iter().map(|s| s.client.clone()).collect()
+            };
+            let ev = Arc::new(control_json(&Event::TabPorts { id, ports: now }));
+            for c in &subs {
+                c.enqueue(ev.clone());
+            }
+        }
     }
 }
 
@@ -720,6 +799,31 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>) {
             let cwd = daemon.cwd(&id);
             client.enqueue(Arc::new(control_json(&CwdReply { cwd })));
         }
+        Command::StopListener { id, pid } => {
+            let error = daemon.stop_listener(&id, pid).err();
+            client.enqueue(Arc::new(control_json(&StopReply { error })));
+        }
+    }
+}
+
+/// Subscribe `client` to an existing tab. The snapshot and the tab's ports are
+/// queued before the subscriber is added, all under the caller's lock on `sh`,
+/// so they precede any live output (tab_reader clones the subscriber list
+/// under the same lock).
+fn reattach(sh: &mut TabShared, id: &str, client: &Arc<Client>) {
+    let snap = snapshot(sh);
+    client.enqueue(Arc::new(frame_bytes(OUTPUT, &id_payload(id, &snap))));
+    if !sh.ports.is_empty() {
+        let ports = sh.ports.clone();
+        client.enqueue(Arc::new(control_json(&Event::TabPorts { id: id.to_string(), ports })));
+    }
+    if let Some(sub) = sh.subscribers.iter_mut().find(|s| Arc::ptr_eq(&s.client, client)) {
+        sub.count += 1;
+    } else {
+        sh.subscribers.push(Subscriber {
+            client: client.clone(),
+            count: 1,
+        });
     }
 }
 
@@ -750,21 +854,7 @@ impl Daemon {
         let existing = self.tabs.lock().get(id).map(|t| t.shared.clone());
         if let Some(shared) = existing {
             eprintln!("[thel-daemon] reattach tab {id}");
-            let mut sh = shared.lock();
-            let snap = snapshot(&sh);
-            // Queue the snapshot before adding the subscriber, both under this
-            // lock, so it precedes any live output (tab_reader clones the
-            // subscriber list under the same lock).
-            client.enqueue(Arc::new(frame_bytes(OUTPUT, &id_payload(id, &snap))));
-            if let Some(sub) = sh.subscribers.iter_mut().find(|s| Arc::ptr_eq(&s.client, client)) {
-                sub.count += 1;
-            } else {
-                sh.subscribers.push(Subscriber {
-                    client: client.clone(),
-                    count: 1,
-                });
-            }
-            drop(sh);
+            reattach(&mut shared.lock(), id, client);
             return Ok(());
         }
 
@@ -787,6 +877,7 @@ impl Daemon {
             parser: vt100::Parser::new(rows, cols, SCROLLBACK),
             scrollback: VecDeque::new(),
             subscribers: Vec::new(),
+            ports: Vec::new(),
         }));
         let child = Arc::new(Mutex::new(child));
 
@@ -797,18 +888,7 @@ impl Daemon {
             kill_session_and_reap(&child);
             let shared = existing_tab.shared.clone();
             drop(tabs);
-            let mut sh = shared.lock();
-            let snap = snapshot(&sh);
-            client.enqueue(Arc::new(frame_bytes(OUTPUT, &id_payload(id, &snap))));
-            if let Some(sub) = sh.subscribers.iter_mut().find(|s| Arc::ptr_eq(&s.client, client)) {
-                sub.count += 1;
-            } else {
-                sh.subscribers.push(Subscriber {
-                    client: client.clone(),
-                    count: 1,
-                });
-            }
-            drop(sh);
+            reattach(&mut shared.lock(), id, client);
             return Ok(());
         }
 
@@ -926,6 +1006,11 @@ impl Daemon {
                 .collect()
         };
         crate::pty::process_tree_usage(&roots)
+    }
+
+    fn stop_listener(&self, id: &str, pid: u32) -> Result<(), String> {
+        let root = self.tabs.lock().get(id).and_then(|t| t.child.lock().process_id());
+        crate::pty::stop_tree_listener(root.ok_or("That terminal has no running process")?, pid)
     }
 
     /// Where one tab's shell is now, for opening a new terminal alongside it.
@@ -1267,6 +1352,14 @@ pub fn cwd(id: &str) -> Option<String> {
     query::<CwdReply>(&Command::Cwd { id: id.to_string() })?.cwd
 }
 
+/// Stops (SIGTERM) `pid` if it listens on a port in tab `id`'s process tree.
+/// Errors carry a message for the user.
+pub fn stop_listener(id: &str, pid: u32) -> Result<(), String> {
+    let cmd = Command::StopListener { id: id.to_string(), pid };
+    let reply = query::<StopReply>(&cmd).ok_or("The terminal daemon did not answer")?;
+    reply.error.map_or(Ok(()), Err)
+}
+
 /// Post a notification for `id` through the daemon (out-of-band, no tty needed).
 /// Returns whether it was handed off, which says the daemon accepted the frame,
 /// not that it owns the tab. Used by `thel notify` when a daemon is running.
@@ -1310,6 +1403,11 @@ fn client_read_loop(mut r: UnixStream, routes: Arc<Mutex<HashMap<String, Channel
                 Some(Event::TabNotify { id, message }) => {
                     if let Some(ch) = routes.lock().get(&id) {
                         let _ = ch.send(TermMsg::Notify { message });
+                    }
+                }
+                Some(Event::TabPorts { id, ports }) => {
+                    if let Some(ch) = routes.lock().get(&id) {
+                        let _ = ch.send(TermMsg::Ports { ports });
                     }
                 }
                 Some(Event::Error { id, message }) => {
@@ -1607,6 +1705,7 @@ mod tests {
             parser: vt100::Parser::new(24, 80, 100),
             scrollback: VecDeque::new(),
             subscribers: Vec::new(),
+            ports: Vec::new(),
         };
         sh.parser.process(normal);
         sh.scrollback.extend(normal.iter().copied());
@@ -1656,6 +1755,7 @@ mod tests {
             parser: vt100::Parser::new(24, 80, 100),
             scrollback: VecDeque::new(),
             subscribers: Vec::new(),
+            ports: Vec::new(),
         };
 
         // Attach from background listener (count 1).
@@ -1691,6 +1791,32 @@ mod tests {
             }
         }
         assert_eq!(sh.subscribers.len(), 0);
+    }
+
+    #[test]
+    fn reattach_queues_the_ports_after_the_snapshot() {
+        let (a, mut b) = std::os::unix::net::UnixStream::pair().unwrap();
+        b.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let client = Client::spawn(&a).unwrap();
+        let port = crate::pty::ListenPort { port: 5173, pid: 42, name: "node".into() };
+        let mut sh = TabShared {
+            parser: vt100::Parser::new(24, 80, 100),
+            scrollback: VecDeque::new(),
+            subscribers: Vec::new(),
+            ports: vec![port.clone()],
+        };
+
+        reattach(&mut sh, "t1", &client);
+
+        let (ty, p) = read_frame(&mut b).unwrap();
+        assert_eq!((ty, parse_id_payload(&p).map(|(id, _)| id)), (OUTPUT, Some("t1".into())));
+        let (ty, p) = read_frame(&mut b).unwrap();
+        assert_eq!(ty, CONTROL);
+        match parse_json::<Event>(&p) {
+            Some(Event::TabPorts { id, ports }) => assert_eq!((id.as_str(), ports), ("t1", vec![port])),
+            _ => panic!("expected TabPorts after the snapshot"),
+        }
+        assert_eq!(sh.subscribers.len(), 1);
     }
 
     #[test]

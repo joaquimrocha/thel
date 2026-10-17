@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { killTerminalWindow } from "@/lib/pty";
+import { killTerminalWindow, type ListenPort } from "@/lib/pty";
 import { useNotes } from "@/store/notes";
 import type { TermProgress } from "@/lib/ansi";
 
@@ -28,6 +28,9 @@ export interface Terminal {
   // Runtime-only: a foreground process is running (vs an idle shell). Driven by
   // the daemon's pushed busy events (see TerminalPane's channel handler).
   busy?: boolean;
+  // Runtime-only: TCP listeners in the terminal's process tree, sorted by
+  // port, as last pushed by the daemon. Undefined until it pushes any.
+  ports?: ListenPort[];
   // Runtime-only: the user has typed into this terminal since it started, so a
   // bell is now a real "wants input"/done signal rather than a re-run program's
   // startup bell (which storms on a 100-terminal restore). Reset on reload since
@@ -225,6 +228,7 @@ export interface SessionState {
   // notifications panel).
   clearAllAttention: () => void;
   setBusy: (terminalId: string, value: boolean) => void;
+  setPorts: (terminalId: string, ports: ListenPort[]) => void;
   markInteracted: (terminalId: string) => void;
   // zoom = undefined resets the terminal to the default zoom.
   setZoom: (terminalId: string, zoom: number | undefined) => void;
@@ -613,6 +617,8 @@ export const useSessions = create<SessionState>((set, get) => ({
         exited: true,
         exitCode: code,
         busy: false,
+        // The daemon kills the tree on exit and pushes no final empty list.
+        ports: undefined,
       }),
     })),
 
@@ -638,6 +644,9 @@ export const useSessions = create<SessionState>((set, get) => ({
       const sessions = patchTerminal(s.sessions, terminalId, { busy: value });
       return sessions === s.sessions ? s : { sessions };
     }),
+
+  setPorts: (terminalId, ports) =>
+    set((s) => ({ sessions: patchTerminal(s.sessions, terminalId, { ports }) })),
 
   markInteracted: (terminalId) =>
     set((s) => ({

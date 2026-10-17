@@ -11,6 +11,9 @@ export interface MockConfig {
   // terminal_status responses.
   terminalBusy?: boolean;
   terminalDead?: boolean;
+  // Listeners pushed to every terminal when it attaches. stop_port_process
+  // drops the one it stops, pushes the rest, and records it in __MOCK__.stopped.
+  ports?: { port: number; pid: number; name: string }[];
   // Bytes of output each create_session emits, simulating a reattach snapshot
   // (for the startup benchmark). 0/undefined → just a prompt.
   snapshotBytes?: number;
@@ -176,6 +179,7 @@ function install(config: MockConfig) {
           } else {
             setTimeout(() => send({ kind: "data", data: "$ " }), delay);
           }
+          if (m.ports?.length) setTimeout(() => send({ kind: "ports", ports: m.ports }), delay);
         }
         if (m.createSessionDelayMs)
           return new Promise((r) => setTimeout(r, m.createSessionDelayMs));
@@ -210,6 +214,13 @@ function install(config: MockConfig) {
             { cpuSeconds: n * 0.5, rssBytes: 64 * 1024 * 1024 },
           ]),
         );
+      }
+      case "stop_port_process": {
+        const store = w.__MOCK__ as Record<string, unknown>;
+        m.ports = (m.ports ?? []).filter((p) => p.pid !== args.pid);
+        for (const send of termChannels.values()) send({ kind: "ports", ports: m.ports });
+        store.stopped = [...((store.stopped as unknown[]) ?? []), args];
+        return null;
       }
       case "scroll_terminal": {
         const store = w.__MOCK__ as Record<string, unknown>;

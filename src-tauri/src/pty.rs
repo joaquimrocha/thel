@@ -30,6 +30,8 @@ pub enum TermMsg {
     // An out-of-band notification for this tab (from `thel notify`), forwarded by
     // the daemon so it reaches the GUI even when the caller has no tty.
     Notify { message: String },
+    // The tab's TCP listeners, pushed by the daemon whenever they change.
+    Ports { ports: Vec<ListenPort> },
     Exit { code: Option<i32> },
 }
 
@@ -206,6 +208,20 @@ pub fn usage(ids: &[String]) -> HashMap<String, Usage> {
     out
 }
 
+/// Stops (SIGTERM) `pid`, which must still listen on a port in terminal `id`'s
+/// process tree. The daemon owns the tree, so it checks and signals. Errors
+/// carry a message for the user.
+pub fn stop_listener(id: &str, pid: u32) -> Result<(), String> {
+    #[cfg(unix)]
+    let out = crate::daemon::stop_listener(id, pid);
+    #[cfg(not(unix))]
+    let out = {
+        let _ = (id, pid);
+        Err(UNSUPPORTED.to_string())
+    };
+    out
+}
+
 /// Where a terminal's shell currently is, so a new terminal can open where the
 /// one you were last in got to. The daemon owns the process, so it answers.
 pub fn cwd(id: &str) -> Option<String> {
@@ -229,6 +245,231 @@ pub struct Usage {
     pub rss_bytes: u64,
 }
 
+/// A TCP port in the LISTEN state and the process holding it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ListenPort {
+    pub port: u16,
+    pub pid: u32,
+    /// The process name (comm), e.g. "node".
+    pub name: String,
+}
+
+/// CPU time and resident memory for each root's whole process tree, so a shell
+/// running an agent reports the agent's cost too. A root whose process is gone
+/// reports zero.
+pub(crate) fn process_tree_usage(roots: &[(String, u32)]) -> HashMap<String, Usage> {
+    sample_trees(roots)
+        .into_iter()
+        .map(|(id, usage, _)| (id, usage))
+        .collect()
+}
+
+/// TCP listeners in each root's whole process tree, sorted by port. Every root
+/// is in the result, with an empty list when nothing in its tree listens.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn process_tree_ports(roots: &[(String, u32)]) -> HashMap<String, Vec<ListenPort>> {
+    let sampled = sample_trees(roots);
+    let trees: Vec<&HashSet<u32>> = sampled.iter().map(|(_, _, t)| t).collect();
+    let all: HashSet<u32> = trees.iter().flat_map(|t| t.iter().copied()).collect();
+    let ports = assign_ports(&trees, listening_ports(&all));
+    sampled.into_iter().map(|(id, _, _)| id).zip(ports).collect()
+}
+
+/// Which TCP sockets listen right now, cheap to read, so a poller can skip the
+/// process walk while it is unchanged. None where no cheap check exists, which
+/// means the caller must always walk.
+#[cfg(unix)]
+pub(crate) fn listen_fingerprint() -> Option<Vec<u64>> {
+    #[cfg(target_os = "linux")]
+    let out = {
+        let mut inodes: Vec<u64> = listen_sockets().into_keys().collect();
+        inodes.sort_unstable();
+        Some(inodes)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let out = None;
+    out
+}
+
+/// Sends SIGTERM to `pid` if a fresh sample shows it listening on a port in
+/// `root`'s process tree. On Linux a pidfd opened before the check pins the
+/// process, so a pid reused after the check is never signalled. Errors carry
+/// a message for the user.
+#[cfg(unix)]
+pub(crate) fn stop_tree_listener(root: u32, pid: u32) -> Result<(), String> {
+    const GONE: &str = "That process is no longer listening in this terminal";
+    let fail = |e: std::io::Error| match e.raw_os_error() {
+        Some(libc::ESRCH) => GONE.to_string(),
+        _ => e.to_string(),
+    };
+    // A pid of 0 or one that wraps negative would signal a process group.
+    let raw = libc::pid_t::try_from(pid).ok().filter(|&p| p > 0).ok_or(GONE)?;
+    #[cfg(target_os = "linux")]
+    let pidfd = match pidfd_open(raw) {
+        Ok(fd) => Some(fd),
+        // No pidfds (Linux before 5.3, or a sandbox that blocks the call), so
+        // fall back to kill.
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOSYS | libc::EPERM)) => None,
+        Err(e) => return Err(fail(e)),
+    };
+    let held = process_tree_ports(&[(String::new(), root)])
+        .into_values()
+        .flatten()
+        .any(|p| p.pid == pid);
+    if !held {
+        return Err(GONE.into());
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(fd) = pidfd {
+        use std::os::fd::AsRawFd;
+        // SAFETY: fd is a live pidfd we own; a null siginfo sends the signal as
+        // kill(2) would.
+        let r = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                fd.as_raw_fd(),
+                libc::SIGTERM,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        return if r == 0 { Ok(()) } else { Err(fail(std::io::Error::last_os_error())) };
+    }
+    // SAFETY: raw is a positive pid, so kill targets that one process.
+    if unsafe { libc::kill(raw, libc::SIGTERM) } != 0 {
+        return Err(fail(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn pidfd_open(pid: libc::pid_t) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: pidfd_open takes a pid and flags and returns a new fd or -1.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fd is a fresh descriptor that nothing else owns.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as std::os::fd::RawFd) })
+}
+
+/// Hands each listener to the root whose tree holds its pid, sorted by port.
+/// A socket shared by a parent and its forked children shows once per holder.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn assign_ports(trees: &[&HashSet<u32>], ports: Vec<ListenPort>) -> Vec<Vec<ListenPort>> {
+    let mut out = vec![Vec::new(); trees.len()];
+    for p in ports {
+        if let Some(i) = trees.iter().position(|t| t.contains(&p.pid)) {
+            out[i].push(p);
+        }
+    }
+    for v in &mut out {
+        v.sort_by_key(|p| (p.port, p.pid));
+        v.dedup_by_key(|p| (p.port, p.pid));
+    }
+    out
+}
+
+/// Listening TCP sockets by inode, from one /proc/net/tcp or tcp6 table.
+/// Columns: `local_address` is hex `ADDR:PORT`, `st` 0A is LISTEN, and the
+/// inode is the tenth.
+#[cfg(target_os = "linux")]
+fn parse_proc_net_tcp(table: &str) -> impl Iterator<Item = (u64, u16)> + '_ {
+    table.lines().skip(1).filter_map(|line| {
+        let f: Vec<&str> = line.split_ascii_whitespace().collect();
+        if *f.get(3)? != "0A" {
+            return None;
+        }
+        let port = u16::from_str_radix(f.get(1)?.rsplit_once(':')?.1, 16).ok()?;
+        Some((f.get(9)?.parse().ok()?, port))
+    })
+}
+
+/// Every LISTEN socket in the daemon's network namespace, inode -> port.
+/// /proc/net/tcp is per namespace, and the terminals run in the daemon's.
+#[cfg(target_os = "linux")]
+fn listen_sockets() -> HashMap<u64, u16> {
+    let mut sockets = HashMap::new();
+    for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        if let Ok(table) = std::fs::read_to_string(path) {
+            sockets.extend(parse_proc_net_tcp(&table));
+        }
+    }
+    sockets
+}
+
+/// Listeners among `pids`: match each pid's socket fds against the kernel's
+/// LISTEN table.
+#[cfg(target_os = "linux")]
+fn listening_ports(pids: &HashSet<u32>) -> Vec<ListenPort> {
+    let sockets = listen_sockets();
+    if sockets.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for &pid in pids {
+        let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+            continue;
+        };
+        let ports: Vec<u16> = fds
+            .flatten()
+            .filter_map(|fd| {
+                let link = std::fs::read_link(fd.path()).ok()?;
+                let inode = link.to_str()?.strip_prefix("socket:[")?.strip_suffix(']')?;
+                sockets.get(&inode.parse::<u64>().ok()?).copied()
+            })
+            .collect();
+        if ports.is_empty() {
+            continue;
+        }
+        let name = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .map(|c| c.trim_end().to_string())
+            .unwrap_or_default();
+        out.extend(ports.into_iter().map(|port| ListenPort { port, pid, name: name.clone() }));
+    }
+    out
+}
+
+/// Parses `lsof -F pcn` output: a `p<pid>` line opens each process, `c<name>`
+/// names it, and each `n<addr>:<port>` is one socket. Addresses can be IPv6
+/// (`[::1]:3000`) or `*:3000`, so the port is after the last colon.
+#[cfg(any(target_os = "macos", test))]
+fn parse_lsof(out: &str) -> Vec<ListenPort> {
+    let (mut pid, mut name, mut ports) = (0u32, String::new(), Vec::new());
+    for line in out.lines() {
+        let (tag, value) = line.split_at(line.len().min(1));
+        match tag {
+            "p" => pid = value.parse().unwrap_or(0),
+            "c" => name = value.to_string(),
+            "n" => {
+                if let Some(port) = value.rsplit_once(':').and_then(|(_, p)| p.parse().ok()) {
+                    ports.push(ListenPort { port, pid, name: name.clone() });
+                }
+            }
+            _ => {}
+        }
+    }
+    ports
+}
+
+/// macOS has no /proc/net, and libproc's socket info needs a call per fd, so
+/// one `lsof` run covers every pid instead. lsof exits 1 when nothing matches,
+/// so its status is not an error.
+#[cfg(target_os = "macos")]
+fn listening_ports(pids: &HashSet<u32>) -> Vec<ListenPort> {
+    if pids.is_empty() {
+        return Vec::new();
+    }
+    let list: Vec<String> = pids.iter().map(u32::to_string).collect();
+    std::process::Command::new("/usr/sbin/lsof")
+        .args(["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-F", "pcn", "-p"])
+        .arg(list.join(","))
+        .output()
+        .map(|o| parse_lsof(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default()
+}
+
 #[cfg(target_os = "linux")]
 fn clock_ticks() -> f64 {
     let t = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
@@ -249,19 +490,19 @@ fn page_size() -> u64 {
     }
 }
 
-/// CPU time and resident memory for each root's whole process tree, so a shell
-/// running an agent reports the agent's cost too. One pass over /proc serves
-/// every root, since the alternative walks it once per terminal.
+/// Each root's CPU time, resident memory and set of pids in its whole process
+/// tree. One pass over /proc serves every root, since the alternative walks it
+/// once per terminal.
 ///
 /// ponytail: RSS is summed naively, so pages shared between a parent and its
 /// children are counted more than once; read PSS from /proc/<pid>/smaps_rollup
 /// instead if the number ever has to be exact.
 #[cfg(target_os = "linux")]
-pub(crate) fn process_tree_usage(roots: &[(String, u32)]) -> HashMap<String, Usage> {
+fn sample_trees(roots: &[(String, u32)]) -> Vec<(String, Usage, HashSet<u32>)> {
     // pid -> (ppid, cpu ticks, rss pages)
     let mut procs: HashMap<u32, (u32, u64, u64)> = HashMap::new();
     let Ok(dir) = std::fs::read_dir("/proc") else {
-        return HashMap::new();
+        return Vec::new();
     };
     for entry in dir.flatten() {
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
@@ -315,13 +556,11 @@ pub(crate) fn process_tree_usage(roots: &[(String, u32)]) -> HashMap<String, Usa
                     stack.extend(kids);
                 }
             }
-            (
-                id.clone(),
-                Usage {
-                    cpu_seconds: cpu as f64 / ticks,
-                    rss_bytes: rss * page,
-                },
-            )
+            let usage = Usage {
+                cpu_seconds: cpu as f64 / ticks,
+                rss_bytes: rss * page,
+            };
+            (id.clone(), usage, seen)
         })
         .collect()
 }
@@ -378,7 +617,7 @@ fn macos_proc_usage(pid: u32) -> Option<(u32, u64, u64)> {
 /// (ppid, cpu, rss) map, then each root's whole tree is summed. CPU comes back in
 /// nanoseconds and RSS in bytes, so no clock-tick / page-size scaling is needed.
 #[cfg(target_os = "macos")]
-pub(crate) fn process_tree_usage(roots: &[(String, u32)]) -> HashMap<String, Usage> {
+fn sample_trees(roots: &[(String, u32)]) -> Vec<(String, Usage, HashSet<u32>)> {
     // pid -> (ppid, cpu nanoseconds, rss bytes)
     let mut procs: HashMap<u32, (u32, u64, u64)> = HashMap::new();
     for pid in macos_all_pids() {
@@ -411,13 +650,11 @@ pub(crate) fn process_tree_usage(roots: &[(String, u32)]) -> HashMap<String, Usa
                     stack.extend(kids);
                 }
             }
-            (
-                id.clone(),
-                Usage {
-                    cpu_seconds: cpu_ns as f64 / 1_000_000_000.0,
-                    rss_bytes: rss,
-                },
-            )
+            let usage = Usage {
+                cpu_seconds: cpu_ns as f64 / 1_000_000_000.0,
+                rss_bytes: rss,
+            };
+            (id.clone(), usage, seen)
         })
         .collect()
 }
@@ -425,8 +662,8 @@ pub(crate) fn process_tree_usage(roots: &[(String, u32)]) -> HashMap<String, Usa
 /// No process enumeration on other platforms (Windows), so the dialog shows the
 /// terminals with no numbers until one is added.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(crate) fn process_tree_usage(_roots: &[(String, u32)]) -> HashMap<String, Usage> {
-    HashMap::new()
+fn sample_trees(_roots: &[(String, u32)]) -> Vec<(String, Usage, ())> {
+    Vec::new()
 }
 
 /// Where a process currently is, so a new terminal can open where the one you
@@ -562,6 +799,94 @@ mod tests {
         );
         assert_eq!(out["gone"].rss_bytes, 0);
         assert_eq!(out["gone"].cpu_seconds, 0.0);
+    }
+
+    /// A listener this test process opens must show up on its own tree, with
+    /// our pid, and nowhere else.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finds_a_listening_port_in_the_tree() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let me = std::process::id();
+        let out = super::process_tree_ports(&[
+            ("self".to_string(), me),
+            ("gone".to_string(), u32::MAX),
+        ]);
+        assert!(
+            out["self"].iter().any(|p| p.port == port && p.pid == me),
+            "port {port} missing from {:?}",
+            out["self"],
+        );
+        assert!(out["gone"].is_empty());
+    }
+
+    /// Stops a child that listens, and refuses one that does not.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stops_only_a_listener_in_the_tree() {
+        use std::io::BufRead;
+        let script = "import socket,time\n\
+            s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen()\n\
+            print(s.getsockname()[1], flush=True); time.sleep(30)";
+        let mut child = std::process::Command::new("python3")
+            .args(["-c", script])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let pid = child.id();
+
+        let me = std::process::id();
+        assert_eq!(
+            super::stop_tree_listener(pid, me),
+            Err("That process is no longer listening in this terminal".to_string()),
+        );
+        assert_eq!(super::stop_tree_listener(pid, pid), Ok(()));
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGTERM));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_only_listening_rows_of_proc_net_tcp() {
+        // Trimmed rows: a LISTEN on 127.0.0.1:3000 (0BB8) and an ESTABLISHED
+        // (01) connection, which must be skipped.
+        let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:0BB8 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 424242 1 0000000000000000 100 0 0 10 0
+   1: 0100007F:A1B2 0100007F:0BB8 01 00000000:00000000 00:00000000 00000000  1000        0 434343 1 0000000000000000 20 4 30 10 -1
+";
+        let got: Vec<_> = super::parse_proc_net_tcp(table).collect();
+        assert_eq!(got, vec![(424242, 3000)]);
+    }
+
+    #[test]
+    fn parses_lsof_field_output() {
+        let out = "p501\ncnode\nf23\nn*:5173\nf24\nn[::1]:9229\np777\ncpython3\nf3\nn127.0.0.1:8000\n";
+        let got = super::parse_lsof(out);
+        let port = |port, pid, name: &str| super::ListenPort { port, pid, name: name.into() };
+        assert_eq!(
+            got,
+            vec![port(5173, 501, "node"), port(9229, 501, "node"), port(8000, 777, "python3")]
+        );
+    }
+
+    #[test]
+    fn assigns_ports_to_the_tree_that_holds_the_pid() {
+        let port = |port, pid| super::ListenPort { port, pid, name: String::new() };
+        let (a, b) = (
+            std::collections::HashSet::from([1, 2]),
+            std::collections::HashSet::from([3]),
+        );
+        let got = super::assign_ports(
+            &[&a, &b],
+            // Unsorted, a duplicate from tcp and tcp6, and a pid in no tree.
+            vec![port(8080, 2), port(3000, 1), port(3000, 1), port(5000, 3), port(9, 99)],
+        );
+        assert_eq!(got, vec![vec![port(3000, 1), port(8080, 2)], vec![port(5000, 3)]]);
     }
 
     #[test]

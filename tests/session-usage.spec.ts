@@ -81,3 +81,54 @@ test("resource panel closes when another session becomes active", async ({
   await second.click();
   await expect(panel).toBeHidden();
 });
+
+test("lists a terminal's listening ports and stops one", async ({ page }) => {
+  await gotoApp(page, {
+    ports: [
+      { port: 5173, pid: 4242, name: "node" },
+      { port: 8000, pid: 777, name: "python3" },
+    ],
+  });
+  await createSession(page);
+  const panel = page.getByRole("dialog");
+
+  await page.keyboard.press("Control+Shift+R");
+  const ports = panel.getByTestId("listen-port");
+  await expect(ports).toHaveText([/localhost:5173.*node pid 4242/, /localhost:8000.*python3 pid 777/]);
+
+  await panel.getByRole("button", { name: "Stop node (pid 4242)" }).click();
+  await expect(ports).toHaveText([/:8000/]);
+  const stopped = await page.evaluate(
+    () => (window as never as { __MOCK__: { stopped: unknown[] } }).__MOCK__.stopped,
+  );
+  expect(stopped).toEqual([{ terminal: expect.any(String), pid: 4242 }]);
+});
+
+test("a listening port's row shows the terminal running it", async ({ page }) => {
+  await page.addInitScript(() => {
+    const term = (id: string, title: string) => ({ id, title, command: "bash", args: [] });
+    const layout = {
+      activeSessionId: "s0",
+      sessions: [
+        {
+          id: "s0",
+          name: "app",
+          cwd: "/home/test/app",
+          groups: [{ id: "g0", activeTerminalId: "t1", terminals: [term("t0", "vite"), term("t1", "shell")] }],
+          layout: { t: "leaf", group: "g0" },
+          activeGroupId: "g0",
+        },
+      ],
+    };
+    if (!localStorage.getItem("__store__thel-layout.json"))
+      localStorage.setItem("__store__thel-layout.json", JSON.stringify({ layout }));
+  });
+  await gotoApp(page, { ports: [{ port: 5173, pid: 4242, name: "node" }] });
+  const tab = (id: string) => page.locator(`[data-tab-id="${id}"]`);
+  await expect(tab("t1")).toHaveClass(/bg-secondary/);
+
+  await page.keyboard.press("Control+Shift+R");
+  // The mock reports the port on every terminal; the first row is vite's.
+  await page.getByRole("button", { name: "Show the terminal running port 5173" }).first().click();
+  await expect(tab("t0")).toHaveClass(/bg-secondary/);
+});

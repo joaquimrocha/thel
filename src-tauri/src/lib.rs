@@ -77,6 +77,13 @@ fn session_usage(ids: Vec<String>) -> std::collections::HashMap<String, pty::Usa
     pty::usage(&ids)
 }
 
+/// Stops (SIGTERM) a process listening on a port in `terminal`'s tree, from the
+/// session usage dialog. Errors when the pid no longer listens there.
+#[tauri::command(async)]
+fn stop_port_process(terminal: String, pid: u32) -> Result<(), String> {
+    pty::stop_listener(&terminal, pid)
+}
+
 /// Permanently destroy a terminal (the user closed the tab, or its window).
 #[tauri::command]
 fn kill_terminal_window(id: String) {
@@ -727,6 +734,7 @@ pub fn run() {
             close_session,
             terminal_status,
             session_usage,
+            stop_port_process,
             kill_terminal_window,
             terminal_cwd,
             update_app_menu,
