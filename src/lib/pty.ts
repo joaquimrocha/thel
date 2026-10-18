@@ -6,6 +6,8 @@ export type TermMsg =
   | { kind: "notify"; message: string }
   // The TCP listeners in the terminal's process tree, pushed when they change.
   | { kind: "ports"; ports: ListenPort[] }
+  // The terminal has run nothing but its shell for a while, or stopped doing so.
+  | { kind: "idle"; idle: boolean }
   | { kind: "exit"; code: number | null };
 
 export interface CreateOpts {

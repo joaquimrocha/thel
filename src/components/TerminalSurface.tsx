@@ -231,6 +231,7 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
   const setProcTitle = useSessions((s) => s.setProcTitle);
   const setProgress = useSessions((s) => s.setProgress);
   const setPorts = useSessions((s) => s.setPorts);
+  const setIdle = useSessions((s) => s.setIdle);
   const closeTerminal = useSessions((s) => s.closeTerminal);
 
   useEffect(() => {
@@ -316,6 +317,8 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
           notify(terminal.id, "message", msg.message);
         } else if (msg.kind === "ports") {
           setPorts(terminal.id, msg.ports);
+        } else if (msg.kind === "idle") {
+          setIdle(terminal.id, msg.idle);
         } else {
           closeTerminal(terminal.id);
         }
@@ -332,6 +335,7 @@ function DaemonTerminalListener({ terminal }: { terminal: Terminal }) {
   }, [
     closeTerminal,
     setBusy,
+    setIdle,
     setPorts,
     setProcTitle,
     setProgress,

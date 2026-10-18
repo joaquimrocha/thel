@@ -18,6 +18,25 @@ const session = (terminals: Terminal[]): Session => ({
   activeGroupId: "g1",
 });
 
+describe("a terminal running only its shell for a while", () => {
+  test("shows idle unless it is busy, exited or wants attention", () => {
+    expect(terminalDotState(term("t1", { idle: true }))).toBe("idle");
+    expect(terminalDotState(term("t1", { idle: true, busy: true }))).toBe("busy");
+    expect(terminalDotState(term("t1", { idle: true, exited: true }))).toBe("exited");
+    expect(terminalDotState(term("t1", { idle: true, attention: true }))).toBe("attention");
+  });
+
+  test("makes its session idle only when every live terminal is", () => {
+    expect(sessionDotState(session([term("t1", { idle: true })]))).toBe("idle");
+    expect(
+      sessionDotState(session([term("t1", { idle: true }), term("t2")])),
+    ).toBe("running");
+    expect(
+      sessionDotState(session([term("t1", { idle: true }), term("t2", { exited: true })])),
+    ).toBe("idle");
+  });
+});
+
 describe("a muted terminal doesn't pulse", () => {
   test("its own dot shows running, not busy", () => {
     expect(terminalDotState(term("t1", { busy: true }))).toBe("busy");

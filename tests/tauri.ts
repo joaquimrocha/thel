@@ -460,6 +460,12 @@ function install(config: MockConfig) {
       send?.({ kind: "busy", busy });
       return !!send;
     },
+    // The daemon's pushed idle state for one terminal.
+    __idleTerminalById: (id: string, idle: boolean) => {
+      const send = termChannels.get(id);
+      send?.({ kind: "idle", idle });
+      return !!send;
+    },
     // Report the index-th terminal's process exit (the Direct path's exit
     // signal). code 0 = clean exit.
     __exitTerminal: (index: number, code: number | null) =>

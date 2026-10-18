@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use portable_pty::{Child, MasterPty, PtySize};
@@ -31,7 +31,7 @@ use tauri::ipc::Channel;
 
 use crate::pty::{decode_utf8_stream, CreateOpts, TermMsg};
 
-const PROTOCOL_VERSION: u32 = 3;
+const PROTOCOL_VERSION: u32 = 4;
 const EMPTY_GRACE: Duration = Duration::from_secs(45);
 // How often the daemon samples each tab's foreground state to push busy
 // transitions. Foreground-pgroup changes have no kernel event, so this is a
@@ -49,6 +49,11 @@ const PORTS_POLL: Duration = if cfg!(target_os = "linux") {
 // Looks in a row that may skip the process walk. The cheap check misses a
 // socket handed to a forked child, so a full walk still runs this often.
 const PORTS_RESCAN: u32 = 15;
+// How often the daemon checks whether each tab runs nothing but its shell, and
+// how long that must last before the tab is idle. Long enough that the gap
+// between two commands never counts.
+const IDLE_POLL: Duration = Duration::from_secs(10);
+const IDLE_AFTER: Duration = Duration::from_secs(5 * 60);
 const DAEMON_ARG: &str = "__daemon";
 /// Scrollback the VTE keeps (lines), used for the alt-screen snapshot path.
 const SCROLLBACK: usize = 1000;
@@ -229,6 +234,9 @@ enum Event {
     // The TCP listeners in a tab's process tree changed. Also sent on attach
     // when the tab has any.
     TabPorts { id: String, ports: Vec<crate::pty::ListenPort> },
+    // The tab became idle (nothing but its shell for IDLE_AFTER) or stopped
+    // being idle. Also sent on attach when the tab is idle.
+    TabIdle { id: String, idle: bool },
     Error { id: String, message: String },
 }
 
@@ -394,6 +402,8 @@ struct TabShared {
     subscribers: Vec<Subscriber>,
     // Listeners as last pushed by ports_monitor, for a client that attaches.
     ports: Vec<crate::pty::ListenPort>,
+    // Idle state as last pushed by idle_monitor, for a client that attaches.
+    idle: bool,
 }
 
 /// What to send a (re)attaching client: the raw scrollback, which is the normal
@@ -560,6 +570,10 @@ pub fn run() {
         let daemon = daemon.clone();
         move || ports_monitor(daemon)
     });
+    std::thread::spawn({
+        let daemon = daemon.clone();
+        move || idle_monitor(daemon)
+    });
 
     for stream in listener.incoming().flatten() {
         let daemon = daemon.clone();
@@ -623,13 +637,7 @@ fn ports_monitor(daemon: Arc<Daemon>) {
     let mut skipped = 0;
     loop {
         std::thread::sleep(PORTS_POLL);
-        let attached: Vec<(String, u32, Arc<Mutex<TabShared>>)> = {
-            let tabs = daemon.tabs.lock();
-            tabs.iter()
-                .filter(|(_, t)| !t.shared.lock().subscribers.is_empty())
-                .filter_map(|(id, t)| Some((id.clone(), t.child.lock().process_id()?, t.shared.clone())))
-                .collect()
-        };
+        let attached = tab_roots(&daemon, true);
         if attached.is_empty() {
             last_roots.clear();
             continue;
@@ -646,19 +654,64 @@ fn ports_monitor(daemon: Arc<Daemon>) {
         (last_sockets, last_roots) = (sockets, roots);
         for (id, _, shared) in attached {
             let now = ports.remove(&id).unwrap_or_default();
-            let subs: Vec<Arc<Client>> = {
-                let mut sh = shared.lock();
-                if sh.ports == now {
-                    continue;
-                }
-                sh.ports = now.clone();
-                sh.subscribers.iter().map(|s| s.client.clone()).collect()
-            };
-            let ev = Arc::new(control_json(&Event::TabPorts { id, ports: now }));
-            for c in &subs {
-                c.enqueue(ev.clone());
-            }
+            push_on_change(&shared, |sh| {
+                (sh.ports != now).then(|| {
+                    sh.ports = now.clone();
+                    Event::TabPorts { id, ports: now }
+                })
+            });
         }
+    }
+}
+
+/// Push each tab's idle state to its subscribers when it changes. A tab is
+/// idle once it has run nothing but its shell for IDLE_AFTER.
+fn idle_monitor(daemon: Arc<Daemon>) {
+    let mut since: HashMap<String, Instant> = HashMap::new();
+    loop {
+        std::thread::sleep(IDLE_POLL);
+        let tabs = tab_roots(&daemon, false);
+        let roots: Vec<(String, u32)> = tabs.iter().map(|(id, pid, _)| (id.clone(), *pid)).collect();
+        let shell_only = crate::pty::process_tree_shell_only(&roots);
+        let now = Instant::now();
+        // Also drops tabs that went away, so `since` can't grow unbounded.
+        since.retain(|id, _| shell_only.get(id) == Some(&true));
+        for (id, _, shared) in tabs {
+            if shell_only.get(&id) == Some(&true) {
+                since.entry(id.clone()).or_insert(now);
+            }
+            let idle = since.get(&id).is_some_and(|&at| now - at >= IDLE_AFTER);
+            push_on_change(&shared, |sh| {
+                (sh.idle != idle).then(|| {
+                    sh.idle = idle;
+                    Event::TabIdle { id, idle }
+                })
+            });
+        }
+    }
+}
+
+/// Each tab's id, child pid and shared state, only the tabs with a subscriber
+/// when `attached_only`. Tabs whose child has no pid are left out.
+fn tab_roots(daemon: &Daemon, attached_only: bool) -> Vec<(String, u32, Arc<Mutex<TabShared>>)> {
+    let tabs = daemon.tabs.lock();
+    tabs.iter()
+        .filter(|(_, t)| !attached_only || !t.shared.lock().subscribers.is_empty())
+        .filter_map(|(id, t)| Some((id.clone(), t.child.lock().process_id()?, t.shared.clone())))
+        .collect()
+}
+
+/// Run `update` under the tab's lock and send the event it returns, if any, to
+/// the tab's subscribers after the lock is released.
+fn push_on_change(shared: &Mutex<TabShared>, update: impl FnOnce(&mut TabShared) -> Option<Event>) {
+    let (ev, subs): (Event, Vec<Arc<Client>>) = {
+        let mut sh = shared.lock();
+        let Some(ev) = update(&mut sh) else { return };
+        (ev, sh.subscribers.iter().map(|s| s.client.clone()).collect())
+    };
+    let ev = Arc::new(control_json(&ev));
+    for c in &subs {
+        c.enqueue(ev.clone());
     }
 }
 
@@ -806,16 +859,19 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>) {
     }
 }
 
-/// Subscribe `client` to an existing tab. The snapshot and the tab's ports are
-/// queued before the subscriber is added, all under the caller's lock on `sh`,
-/// so they precede any live output (tab_reader clones the subscriber list
-/// under the same lock).
+/// Subscribe `client` to an existing tab. The snapshot, the tab's ports and
+/// its idle state are queued before the subscriber is added, all under the
+/// caller's lock on `sh`, so they precede any live output (tab_reader clones
+/// the subscriber list under the same lock).
 fn reattach(sh: &mut TabShared, id: &str, client: &Arc<Client>) {
     let snap = snapshot(sh);
     client.enqueue(Arc::new(frame_bytes(OUTPUT, &id_payload(id, &snap))));
     if !sh.ports.is_empty() {
         let ports = sh.ports.clone();
         client.enqueue(Arc::new(control_json(&Event::TabPorts { id: id.to_string(), ports })));
+    }
+    if sh.idle {
+        client.enqueue(Arc::new(control_json(&Event::TabIdle { id: id.to_string(), idle: true })));
     }
     if let Some(sub) = sh.subscribers.iter_mut().find(|s| Arc::ptr_eq(&s.client, client)) {
         sub.count += 1;
@@ -878,6 +934,7 @@ impl Daemon {
             scrollback: VecDeque::new(),
             subscribers: Vec::new(),
             ports: Vec::new(),
+            idle: false,
         }));
         let child = Arc::new(Mutex::new(child));
 
@@ -1410,6 +1467,11 @@ fn client_read_loop(mut r: UnixStream, routes: Arc<Mutex<HashMap<String, Channel
                         let _ = ch.send(TermMsg::Ports { ports });
                     }
                 }
+                Some(Event::TabIdle { id, idle }) => {
+                    if let Some(ch) = routes.lock().get(&id) {
+                        let _ = ch.send(TermMsg::Idle { idle });
+                    }
+                }
                 Some(Event::Error { id, message }) => {
                     eprintln!("[thel] daemon error for {id}: {message}");
                 }
@@ -1706,6 +1768,7 @@ mod tests {
             scrollback: VecDeque::new(),
             subscribers: Vec::new(),
             ports: Vec::new(),
+            idle: false,
         };
         sh.parser.process(normal);
         sh.scrollback.extend(normal.iter().copied());
@@ -1756,6 +1819,7 @@ mod tests {
             scrollback: VecDeque::new(),
             subscribers: Vec::new(),
             ports: Vec::new(),
+            idle: false,
         };
 
         // Attach from background listener (count 1).
@@ -1804,6 +1868,7 @@ mod tests {
             scrollback: VecDeque::new(),
             subscribers: Vec::new(),
             ports: vec![port.clone()],
+            idle: false,
         };
 
         reattach(&mut sh, "t1", &client);

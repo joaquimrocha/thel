@@ -6,7 +6,8 @@ import { sessionTerminals, type Session, type Terminal } from "@/store/sessions"
 export type DotState =
   | "none" // session has no terminals
   | "exited" // every terminal has exited
-  | "running" // shell alive, but no foreground work
+  | "running" // something runs, but no foreground work
+  | "idle" // only the shell has run for a while
   | "busy" // a foreground process is running
   | "attention"; // wants attention (bell / exit while unfocused)
 
@@ -14,7 +15,8 @@ export type DotState =
 export function terminalDotState(t: Terminal): DotState {
   if (t.attention) return "attention";
   if (t.exited) return "exited";
-  return t.busy && !t.muted ? "busy" : "running";
+  if (t.busy && !t.muted) return "busy";
+  return t.idle ? "idle" : "running";
 }
 
 export function sessionDotState(s: Session): DotState {
@@ -23,7 +25,8 @@ export function sessionDotState(s: Session): DotState {
   if (terminals.some((t) => t.attention)) return "attention";
   const live = terminals.filter((t) => !t.exited);
   if (live.some((t) => t.busy && !t.muted)) return "busy";
-  return live.length ? "running" : "exited";
+  if (live.length === 0) return "exited";
+  return live.every((t) => t.idle) ? "idle" : "running";
 }
 
 // One row per state, so the dot's class and the icon's tint can't drift apart.
@@ -34,20 +37,29 @@ export function sessionDotState(s: Session): DotState {
 // on the dark background but only 2:1 on white, under the 3:1 a non-text
 // indicator needs, so the light theme drops a shade; the dot's `dark:` variants
 // do the same. Busy is the only state near that line.
+//
+// Exited is hollow (a faded icon) so it reads apart from idle's solid gray.
 const STYLE: Record<
   DotState,
-  { dot: string; ping?: string; hex: string; light?: string }
+  { label: string; dot: string; ping?: string; hex: string; light?: string; icon?: string }
 > = {
-  none: { dot: "bg-transparent", hex: "#71717a" },
-  exited: { dot: "bg-muted-foreground/40", hex: "#52525b" },
-  running: { dot: "bg-emerald-500", hex: "#10b981" },
+  none: { label: "No terminals", dot: "bg-transparent", hex: "#71717a" },
+  exited: {
+    label: "Exited",
+    dot: "border border-muted-foreground/60",
+    hex: "#52525b",
+    icon: "opacity-50",
+  },
+  running: { label: "Running", dot: "bg-emerald-500", hex: "#10b981" },
+  idle: { label: "Idle", dot: "bg-zinc-500", hex: "#71717a" },
   busy: {
+    label: "Working",
     dot: "bg-amber-600 dark:bg-amber-500",
     ping: "bg-amber-500 dark:bg-amber-400",
     hex: "#f59e0b",
     light: "#d97706",
   },
-  attention: { dot: "bg-blue-500", hex: "#3b82f6" },
+  attention: { label: "Needs attention", dot: "bg-blue-500", hex: "#3b82f6" },
 };
 
 // `className` carries the size (e.g. "size-2"); defaults to the tab/row size.
@@ -75,7 +87,7 @@ export function StatusDot({
       // Same effect as the busy dot: an expanding, fading echo of the icon
       // behind the solid one.
       return (
-        <span className="relative flex size-4 shrink-0">
+        <span role="img" aria-label={style.label} className="relative flex size-4 shrink-0">
           <SvgIcon
             svg={icon}
             color={color}
@@ -94,15 +106,16 @@ export function StatusDot({
       <SvgIcon
         svg={icon}
         color={color}
+        label={style.label}
         onError={onIconError}
-        className="size-4 shrink-0"
+        className={cn("size-4 shrink-0", style.icon)}
       />
     );
   }
   if (state === "busy") {
     // Solid dot under an expanding, fading ring to signal active work.
     return (
-      <span className={cn("relative flex shrink-0", size)}>
+      <span role="img" aria-label={style.label} className={cn("relative flex shrink-0", size)}>
         <span
           className={cn(
             "absolute inline-flex h-full w-full animate-ping rounded-full opacity-75",
@@ -118,5 +131,11 @@ export function StatusDot({
       </span>
     );
   }
-  return <span className={cn("shrink-0 rounded-full", size, style.dot)} />;
+  return (
+    <span
+      role="img"
+      aria-label={style.label}
+      className={cn("shrink-0 rounded-full", size, style.dot)}
+    />
+  );
 }

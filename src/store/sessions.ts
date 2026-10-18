@@ -31,6 +31,9 @@ export interface Terminal {
   // Runtime-only: TCP listeners in the terminal's process tree, sorted by
   // port, as last pushed by the daemon. Undefined until it pushes any.
   ports?: ListenPort[];
+  // Runtime-only: nothing but the shell has run here for a while, so the
+  // terminal holds no program's memory. Pushed by the daemon.
+  idle?: boolean;
   // Runtime-only: the user has typed into this terminal since it started, so a
   // bell is now a real "wants input"/done signal rather than a re-run program's
   // startup bell (which storms on a 100-terminal restore). Reset on reload since
@@ -234,6 +237,7 @@ export interface SessionState {
   clearAllAttention: () => void;
   setBusy: (terminalId: string, value: boolean) => void;
   setPorts: (terminalId: string, ports: ListenPort[]) => void;
+  setIdle: (terminalId: string, value: boolean) => void;
   markInteracted: (terminalId: string) => void;
   // zoom = undefined resets the terminal to the default zoom.
   setZoom: (terminalId: string, zoom: number | undefined) => void;
@@ -665,6 +669,12 @@ export const useSessions = create<SessionState>((set, get) => ({
 
   setPorts: (terminalId, ports) =>
     set((s) => ({ sessions: patchTerminal(s.sessions, terminalId, { ports }) })),
+
+  setIdle: (terminalId, value) =>
+    set((s) => {
+      const sessions = patchTerminal(s.sessions, terminalId, { idle: value });
+      return sessions === s.sessions ? s : { sessions };
+    }),
 
   markInteracted: (terminalId) =>
     set((s) => ({

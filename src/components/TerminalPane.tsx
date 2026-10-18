@@ -546,6 +546,8 @@ export function TerminalPane({
           if (!watched()) notify(tab.id, "message", msg.message);
         } else if (msg.kind === "ports") {
           useSessions.getState().setPorts(tab.id, msg.ports);
+        } else if (msg.kind === "idle") {
+          useSessions.getState().setIdle(tab.id, msg.idle);
         } else {
           handleExit();
         }

@@ -13,11 +13,14 @@ export function SvgIcon({
   svg,
   color,
   className,
+  label,
   onError,
 }: {
   svg: string;
   color?: string;
   className?: string;
+  // Alt text. Without one the icon is decorative and hidden from assistive tech.
+  label?: string;
   onError?: () => void;
 }) {
   const tinted = color ? svg.replace(/currentColor/g, color) : svg;
@@ -25,8 +28,8 @@ export function SvgIcon({
   return (
     <img
       src={src}
-      alt=""
-      aria-hidden
+      alt={label ?? ""}
+      aria-hidden={label ? undefined : true}
       onError={onError}
       className={cn("inline-block", className)}
     />

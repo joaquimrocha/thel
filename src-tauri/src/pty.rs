@@ -32,6 +32,8 @@ pub enum TermMsg {
     Notify { message: String },
     // The tab's TCP listeners, pushed by the daemon whenever they change.
     Ports { ports: Vec<ListenPort> },
+    // The tab has run nothing but its shell for a while, or stopped doing so.
+    Idle { idle: bool },
     Exit { code: Option<i32> },
 }
 
@@ -300,6 +302,72 @@ pub(crate) fn process_tree_ports(roots: &[(String, u32)]) -> HashMap<String, Vec
     sampled.into_iter().map(|(id, _, _)| id).zip(ports).collect()
 }
 
+/// Whether each root's process tree is nothing but its shell: no foreground or
+/// background job, and no program started in place of a shell.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn process_tree_shell_only(roots: &[(String, u32)]) -> HashMap<String, bool> {
+    sample_trees(roots)
+        .into_iter()
+        .map(|(id, _, tree)| (id, shell_only(&tree)))
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn shell_only(tree: &HashSet<u32>) -> bool {
+    tree.len() == 1 && tree.iter().all(|&pid| is_shell(&process_name(pid)))
+}
+
+/// Whether `name` (a process name) is a login shell: one listed in
+/// /etc/shells, or a common one where that file is missing.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn is_shell(name: &str) -> bool {
+    static SHELLS: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+    SHELLS
+        .get_or_init(|| {
+            shell_names(&std::fs::read_to_string("/etc/shells").unwrap_or_default())
+        })
+        .contains(name)
+}
+
+/// Base names of the shells in an /etc/shells file, plus common ones.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn shell_names(etc_shells: &str) -> HashSet<String> {
+    let listed = etc_shells
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.rsplit('/').next());
+    ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]
+        .into_iter()
+        .chain(listed)
+        .map(String::from)
+        .collect()
+}
+
+/// The process name (comm), or "" when the process is gone.
+#[cfg(target_os = "linux")]
+fn process_name(pid: u32) -> String {
+    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .map(|c| c.trim_end().to_string())
+        .unwrap_or_default()
+}
+
+/// The process name (comm), or "" when the process is gone.
+#[cfg(target_os = "macos")]
+fn process_name(pid: u32) -> String {
+    let Some(info) = macos_task_info(pid) else {
+        return String::new();
+    };
+    let comm: Vec<u8> = info
+        .pbsd
+        .pbi_comm
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
+    String::from_utf8_lossy(&comm).into_owned()
+}
+
 /// Which TCP sockets listen right now, cheap to read, so a poller can skip the
 /// process walk while it is unchanged. None where no cheap check exists, which
 /// means the caller must always walk.
@@ -448,9 +516,7 @@ fn listening_ports(pids: &HashSet<u32>) -> Vec<ListenPort> {
         if ports.is_empty() {
             continue;
         }
-        let name = std::fs::read_to_string(format!("/proc/{pid}/comm"))
-            .map(|c| c.trim_end().to_string())
-            .unwrap_or_default();
+        let name = process_name(pid);
         out.extend(ports.into_iter().map(|port| ListenPort { port, pid, name: name.clone() }));
     }
     out
@@ -657,8 +723,19 @@ fn macos_all_pids() -> Vec<u32> {
 /// readable, which is all a root's tree contains.
 #[cfg(target_os = "macos")]
 fn macos_proc_usage(pid: u32) -> Option<(u32, u64, u64)> {
+    let info = macos_task_info(pid)?;
+    let cpu_ns = info.ptinfo.pti_total_user + info.ptinfo.pti_total_system;
+    Some((info.pbsd.pbi_ppid, cpu_ns, info.ptinfo.pti_resident_size))
+}
+
+/// One PROC_PIDTASKALLINFO call for `pid`. None if the process is gone or task
+/// info is denied (another user's process).
+#[cfg(target_os = "macos")]
+fn macos_task_info(pid: u32) -> Option<libc::proc_taskallinfo> {
+    // SAFETY: proc_taskallinfo is plain C data, valid when all zero.
     let mut info: libc::proc_taskallinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_taskallinfo>() as libc::c_int;
+    // SAFETY: the buffer is a live proc_taskallinfo and `size` is its length.
     let n = unsafe {
         libc::proc_pidinfo(
             pid as libc::c_int,
@@ -668,11 +745,7 @@ fn macos_proc_usage(pid: u32) -> Option<(u32, u64, u64)> {
             size,
         )
     };
-    if n != size {
-        return None; // gone, or task info denied for another user's process
-    }
-    let cpu_ns = info.ptinfo.pti_total_user + info.ptinfo.pti_total_system;
-    Some((info.pbsd.pbi_ppid, cpu_ns, info.ptinfo.pti_resident_size))
+    (n == size).then_some(info)
 }
 
 /// macOS equivalent of the Linux /proc walk: one libproc pass builds the pid ->
@@ -946,6 +1019,89 @@ mod tests {
 
         assert_eq!(walked[0].2.len(), 1, "the walk sees only the shell");
         assert_eq!(scoped.len(), 2, "the scope also holds the escaped child");
+    }
+
+    #[test]
+    fn knows_shells_from_etc_shells_and_by_default() {
+        let names = super::shell_names("# comment\n/bin/bash\n/usr/bin/xonsh\n\n");
+        assert!(names.contains("bash") && names.contains("xonsh"));
+        assert!(names.contains("zsh"), "common shells even if unlisted");
+        assert!(!names.contains("claude") && !names.contains("node"));
+    }
+
+    /// Walked directly rather than through process_tree_shell_only, which reads
+    /// the terminal scope the tests may themselves run in.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_lone_shell_is_shell_only_and_one_with_a_job_is_not() {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        let sample = |pid: u32| {
+            let walked = super::walk_process_trees(&[("t".to_string(), pid)]);
+            super::shell_only(&walked[0].2)
+        };
+        // Waits on its stdin, running nothing.
+        let mut lone = Command::new("sh").stdin(Stdio::piped()).spawn().unwrap();
+        // A background job keeps the shell alive beside it.
+        let mut job = Command::new("sh")
+            .args(["-c", "sleep 30 & wait"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let (lone_only, job_only) = (sample(lone.id()), sample(job.id()));
+        let _ = lone.kill();
+        // SAFETY: a negative pid signals the job's own process group, which
+        // process_group(0) made; it holds only the test's sh and sleep.
+        unsafe { libc::kill(-(job.id() as libc::pid_t), libc::SIGKILL) };
+        let _ = lone.wait();
+        let _ = job.wait();
+        assert!(lone_only, "a shell alone");
+        assert!(!job_only, "a shell with a job");
+    }
+
+    /// The same check read from a terminal scope, where the shell is in its
+    /// own cgroup. Runs only where a systemd user manager answers.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_scoped_lone_shell_is_shell_only_and_one_with_a_job_is_not() {
+        use std::process::{Command, Stdio};
+        let Some(bin) =
+            crate::cgroup::systemd_run().filter(|_| !crate::cgroup::tests::in_container())
+        else {
+            eprintln!("no systemd user manager in view; skipping");
+            return;
+        };
+        let spawn = |args: &[&str]| {
+            Command::new(bin)
+                .args(crate::cgroup::SCOPE_ARGS)
+                .args(args)
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap()
+        };
+        let scoped = |pid: u32, procs: usize| {
+            let scope = (0..100)
+                .find_map(|_| {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    let scope = crate::cgroup::tests::new_scope_of(pid)?;
+                    (crate::cgroup::procs(&scope).len() == procs).then_some(scope)
+                })
+                .expect("the shell lands in a thel scope");
+            super::scope_usage("t", &scope).2
+        };
+        let mut lone = spawn(&["sh"]);
+        let mut job = spawn(&["sh", "-c", "sleep 30 & wait"]);
+        let (lone_tree, job_tree) = (scoped(lone.id(), 1), scoped(job.id(), 2));
+        let (lone_only, job_only) = (super::shell_only(&lone_tree), super::shell_only(&job_tree));
+        for pid in lone_tree.iter().chain(&job_tree) {
+            // SAFETY: each pid is a live process of this test's own scopes.
+            unsafe { libc::kill(*pid as libc::pid_t, libc::SIGKILL) };
+        }
+        let _ = lone.wait();
+        let _ = job.wait();
+        assert!(lone_only, "a shell alone in its scope");
+        assert!(!job_only, "a shell with a job in its scope");
     }
 
     #[cfg(target_os = "linux")]
