@@ -3,8 +3,11 @@ use std::process::Command;
 use serde::Serialize;
 
 /// Run `git -C <cwd> <args>` and return trimmed stdout, or None on failure.
+/// `--no-optional-locks` keeps status and diff from taking index.lock for their
+/// optional refresh, which would fail a `git commit` running in the session.
 fn git(cwd: &str, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
+        .arg("--no-optional-locks")
         .arg("-C")
         .arg(cwd)
         .args(args)
