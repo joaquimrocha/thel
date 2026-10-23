@@ -786,6 +786,7 @@ pub fn run() {
             git::fetch_remote,
             git::create_worktree,
             git::remove_worktree,
+            git::create_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -35,14 +35,24 @@ test("creating a session focuses its new terminal", async ({ page }) => {
   await expect(page.locator(".xterm-helper-textarea")).toBeFocused();
 });
 
-test("a missing folder shows not-found and blocks create", async ({ page }) => {
-  await gotoApp(page, { dirExists: false });
-  await openNew(page);
-  await expect(page.getByText("Folder not found.")).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Create session" }),
-  ).toBeDisabled();
-});
+for (const init of [false, true]) {
+  test(`a missing folder is created${init ? " with git init" : ""} with its session`, async ({
+    page,
+  }) => {
+    await gotoApp(page, { dirExists: false });
+    await openNew(page);
+    await page.getByPlaceholder("/path/to/folder").fill("/home/test/new");
+    const gitBox = page.getByLabel("Initialize a git repository");
+    await expect(gitBox).toBeChecked();
+    if (!init) await gitBox.uncheck();
+    await page.getByRole("button", { name: "Create folder and session" }).click();
+    await expect(page.getByText("No sessions open.")).toBeHidden();
+    const folders = await page.evaluate(
+      () => (window as Record<string, any>).__MOCK__.folders,
+    );
+    expect(folders).toEqual([{ path: "/home/test/new", init }]);
+  });
+}
 
 test("a git repo shows the worktree tabs", async ({ page }) => {
   await gotoApp(page, { git: gitRepo });

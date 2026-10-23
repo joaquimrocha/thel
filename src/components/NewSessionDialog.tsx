@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Folder, GitBranch, Check, ChevronRight, RefreshCw } from "lucide-react";
 import { cn, inputClass } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -19,6 +20,7 @@ import {
   branches,
   fetchRemote,
   createWorktree,
+  createFolder,
   worktreeInfo,
   type Worktree,
 } from "@/lib/git";
@@ -35,6 +37,8 @@ import {
 import { ActionTooltip } from "./ActionTooltip";
 import { PathInput } from "./PathInput";
 import { BranchInput } from "./BranchInput";
+
+const stripTrailingSlash = (p: string) => (p.length > 1 ? p.replace(/\/+$/, "") : p);
 
 export function NewSessionDialog() {
   const open_ = useUI((s) => s.newSessionOpen);
@@ -54,6 +58,7 @@ export function NewSessionDialog() {
   const [fetched, setFetched] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [gitInit, setGitInit] = useState(true);
 
   const [tab, setTab] = useState<"create" | "use">("create");
   // The branch field only grabs focus once the user picks the tab, so that a
@@ -95,7 +100,7 @@ export function NewSessionDialog() {
   };
 
   const loadDir = async (raw: string) => {
-    const dir = raw.length > 1 ? raw.replace(/\/+$/, "") : raw;
+    const dir = stripTrailingSlash(raw);
     const req = ++loadReq.current;
     setTab("create");
     setTabPicked(false);
@@ -165,6 +170,7 @@ export function NewSessionDialog() {
     setWtPathEdited(false);
     setError(null);
     setNotFound(false);
+    setGitInit(true);
     let cancelled = false;
     void (async () => {
       let start: string | null | undefined = newSessionDir;
@@ -256,11 +262,38 @@ export function NewSessionDialog() {
           ? "A worktree already exists at this location."
           : null;
 
-  const canConfirm = creatingWorktree
-    ? !!trimmedBranch && !creating && !blockReason
-    : !!selected;
+  const canConfirm = notFound
+    ? !!pathInput.trim() && !creating
+    : creatingWorktree
+      ? !!trimmedBranch && !creating && !blockReason
+      : !!selected;
 
   const confirm = async () => {
+    if (notFound) {
+      // The path field, not the last debounced load, so a click right after
+      // typing creates what the field shows.
+      const dir = stripTrailingSlash(expandPath(pathInput.trim()));
+      if (!dir || creating) return;
+      window.clearTimeout(typeTimer.current);
+      setCreating(true);
+      setError(null);
+      try {
+        await createFolder(dir, gitInit);
+        // The new folder can sit inside an existing repo, so ask git either way.
+        const info = await gitInfo(dir).catch(() => null);
+        await createSessionInDir({
+          cwd: dir,
+          repoRoot: info?.repo_root,
+          name: sessionNameForDir(dir),
+        });
+        setOpen(false);
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setCreating(false);
+      }
+      return;
+    }
     if (creatingWorktree) {
       if (!trimmedBranch || creating || blockReason) return;
       setCreating(true);
@@ -481,9 +514,21 @@ export function NewSessionDialog() {
           )}
 
           {notFound && (
-            <p className="text-sm text-destructive">
-              Folder not found. Check the path or browse for it.
-            </p>
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">
+                This folder doesn't exist yet.
+              </p>
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={gitInit}
+                  onCheckedChange={(v) => setGitInit(v === true)}
+                />
+                Initialize a git repository
+              </label>
+              {error && (
+                <p className="break-words text-xs text-destructive">{error}</p>
+              )}
+            </div>
           )}
 
           {cwd && !repoRoot && (
@@ -498,7 +543,11 @@ export function NewSessionDialog() {
             <Button variant="ghost">Cancel</Button>
           </DialogClose>
           <Button onClick={confirm} disabled={!canConfirm}>
-            {creating ? "Creating…" : "Create session"}
+            {creating
+              ? "Creating…"
+              : notFound
+                ? "Create folder and session"
+                : "Create session"}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -257,6 +257,33 @@ pub async fn create_worktree(
     .await
 }
 
+/// Create the folder at `path` with any missing parents, then `git init` it
+/// when `init` is set. `path` must be absolute. A failed init leaves the
+/// folder in place.
+#[tauri::command]
+pub async fn create_folder(path: String, init: bool) -> Result<(), String> {
+    crate::blocking(move || {
+        if !std::path::Path::new(&path).is_absolute() {
+            return Err(format!("Not an absolute path: {path}"));
+        }
+        std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+        if !init {
+            return Ok(());
+        }
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&path)
+            .arg("init")
+            .output()
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            return Ok(());
+        }
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    })
+    .await
+}
+
 /// Remove the worktree at `path`. `force` deletes it even with uncommitted or
 /// untracked changes (git refuses otherwise); the caller warns the user first.
 #[tauri::command]
@@ -573,5 +600,29 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&wt);
+    }
+
+    #[test]
+    fn create_folder_makes_parents_and_inits_on_request() {
+        if !git_available() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("thel_mkdir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let plain = root.join("a/b");
+        let repo = root.join("repo");
+
+        block_on(create_folder(plain.to_string_lossy().to_string(), false)).unwrap();
+        assert!(plain.is_dir());
+        assert!(!plain.join(".git").exists());
+
+        block_on(create_folder(repo.to_string_lossy().to_string(), true)).unwrap();
+        assert!(repo.join(".git").is_dir());
+
+        assert_eq!(
+            block_on(create_folder("rel/dir".into(), false)),
+            Err("Not an absolute path: rel/dir".into())
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

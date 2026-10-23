@@ -300,6 +300,11 @@ function install(config: MockConfig) {
         store.fetched = ((store.fetched as number) || 0) + 1;
         return null;
       }
+      case "create_folder": {
+        const store = w.__MOCK__ as Record<string, unknown>;
+        store.folders = [...((store.folders as unknown[]) || []), args];
+        return null;
+      }
       case "create_worktree": {
         const created = (w.__MOCK__ as Record<string, unknown>).created as
           | unknown[]

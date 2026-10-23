@@ -50,3 +50,7 @@ export const createWorktree = (
 
 export const removeWorktree = (repoRoot: string, path: string, force: boolean) =>
   invoke<void>("remove_worktree", { repoRoot, path, force });
+
+/** Create the folder at `path` (absolute) and its parents; `init` also runs git init. */
+export const createFolder = (path: string, init: boolean) =>
+  invoke<void>("create_folder", { path, init });

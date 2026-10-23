@@ -283,10 +283,10 @@ export class App {
     await this.press("N", { ctrl: true, shift: true });
     const path = await this.find('input[placeholder="/path/to/folder"]');
     // The dialog resolves a typed path in the background, and until it does,
-    // Create would use the previous one. A missing folder disables Create, so
-    // Create coming back enabled means `dir` itself has resolved.
+    // Create would use the previous one. A missing folder relabels Create, so
+    // "Create session" coming back means `dir` itself has resolved.
     await this.fill(path, join(dir, "missing"));
-    await this.find("//*[contains(text(), 'Folder not found')]", "xpath");
+    await this.find("//*[contains(text(), \"doesn't exist yet\")]", "xpath");
     await this.fill(path, dir);
     await this.click(await this.button("Create session"));
     await this.focused(".xterm-helper-textarea");
