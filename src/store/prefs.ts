@@ -18,6 +18,7 @@ const NOTIFY_BELL_KEY = "thel.notifyBell";
 const NOTIFY_WAITING_KEY = "thel.notifyAgentWaiting";
 const NOTIFY_FINISHED_KEY = "thel.notifyCommandFinished";
 const GROUP_BY_REPO_KEY = "thel.groupSessionsByRepo";
+const MARK_IDLE_KEY = "thel.markIdle";
 
 // Prefs live in localStorage shared by every app window, but each window caches
 // them in its own store. We broadcast each change so the others update live
@@ -125,6 +126,10 @@ interface PrefsState {
   // its worktrees beneath). Default off: a flat list in the user's order.
   groupSessionsByRepo: boolean;
   setGroupSessionsByRepo: (value: boolean) => void;
+  // Show a terminal the daemon reports idle with a gray dot. Off draws it as
+  // running.
+  markIdle: boolean;
+  setMarkIdle: (value: boolean) => void;
 }
 
 export const usePrefs = create<PrefsState>((set) => ({
@@ -184,6 +189,11 @@ export const usePrefs = create<PrefsState>((set) => ({
     persistBool(GROUP_BY_REPO_KEY, groupSessionsByRepo);
     set({ groupSessionsByRepo });
   },
+  markIdle: readBool(MARK_IDLE_KEY, true),
+  setMarkIdle: (markIdle) => {
+    persistBool(MARK_IDLE_KEY, markIdle);
+    set({ markIdle });
+  },
 }));
 
 // Apply a change received from another window. Reuses the public setters (under
@@ -204,6 +214,7 @@ const REMOTE_APPLIERS: Record<string, (value: unknown) => void> = {
     usePrefs.getState().setNotifyCommandFinished(Boolean(v)),
   [GROUP_BY_REPO_KEY]: (v) =>
     usePrefs.getState().setGroupSessionsByRepo(Boolean(v)),
+  [MARK_IDLE_KEY]: (v) => usePrefs.getState().setMarkIdle(Boolean(v)),
 };
 
 /** Mirror preference changes made in other app windows. No-op outside Tauri. */

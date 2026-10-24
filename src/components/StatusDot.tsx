@@ -1,5 +1,6 @@
 import { SvgIcon } from "./SvgIcon";
 import { cn } from "@/lib/utils";
+import { usePrefs } from "@/store/prefs";
 import { useTheme } from "@/store/theme";
 import { sessionTerminals, type Session, type Terminal } from "@/store/sessions";
 
@@ -79,8 +80,9 @@ export function StatusDot({
   // Subscribed rather than read off <html>: an icon's colour is baked into its
   // markup at render, so a theme switch has to re-render it.
   const dark = useTheme((s) => s.theme === "dark");
+  const markIdle = usePrefs((s) => s.markIdle);
   const size = className ?? "size-1.5";
-  const style = STYLE[state];
+  const style = STYLE[state === "idle" && !markIdle ? "running" : state];
   if (icon) {
     const color = !dark && style.light ? style.light : style.hex;
     if (state === "busy") {

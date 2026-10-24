@@ -70,6 +70,8 @@ export function SettingsDialog() {
   const newTerminalInSessionDir = usePrefs((s) => s.newTerminalInSessionDir);
   const groupSessionsByRepo = usePrefs((s) => s.groupSessionsByRepo);
   const setGroupSessionsByRepo = usePrefs((s) => s.setGroupSessionsByRepo);
+  const markIdle = usePrefs((s) => s.markIdle);
+  const setMarkIdle = usePrefs((s) => s.setMarkIdle);
   const setNewTerminalInSessionDir = usePrefs(
     (s) => s.setNewTerminalInSessionDir,
   );
@@ -251,6 +253,16 @@ export function SettingsDialog() {
                   Sessions in the same git repo, its worktrees included, sit
                   under a header named after the repo's folder. Click the
                   header to fold them away.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-2 text-sm">
+                  <Switch checked={markIdle} onCheckedChange={setMarkIdle} />
+                  Mark idle terminals
+                </label>
+                <p className="pl-9 text-xs text-muted-foreground">
+                  A terminal that has run nothing but its shell for five
+                  minutes shows a gray dot instead of green.
                 </p>
               </div>
             </TabsContent>
