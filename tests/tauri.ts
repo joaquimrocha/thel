@@ -3,6 +3,8 @@ import type { Page } from "@playwright/test";
 export interface MockConfig {
   // Window label this page reports (default "main" = the default profile).
   label?: string;
+  // Labels of the other windows open beside this one.
+  windows?: string[];
   // Whether this window was opened by the app rather than launched by the OS
   // (gotoApp puts the marker the real window carries in the URL).
   spawned?: boolean;
@@ -223,6 +225,18 @@ function install(config: MockConfig) {
           ]),
         );
       }
+      // thel session's bridge: the last reported sessions, and how often this
+      // window asked for adopted terminals.
+      case "report_sessions": {
+        const store = w.__MOCK__ as Record<string, unknown>;
+        store.reported = args.sessions;
+        return null;
+      }
+      case "watch_sessions": {
+        const store = w.__MOCK__ as Record<string, unknown>;
+        store.watched = ((store.watched as number) ?? 0) + 1;
+        return null;
+      }
       case "stop_port_process": {
         const store = w.__MOCK__ as Record<string, unknown>;
         m.ports = (m.ports ?? []).filter((p) => p.pid !== args.pid);
@@ -404,7 +418,7 @@ function install(config: MockConfig) {
       // label rather than actually created (see __createdWindows). Lookups still
       // report it, as real Tauri does, so opening it twice is caught here too.
       if (cmd === "plugin:window|get_all_windows")
-        return Promise.resolve([cfg.label || "main", ...created]);
+        return Promise.resolve([cfg.label || "main", ...(cfg.windows ?? []), ...created]);
       if (cmd === "plugin:webview|create_webview_window") {
         const opts = a.options as { label: string };
         created.push(opts.label);
@@ -440,10 +454,12 @@ function install(config: MockConfig) {
     __closeRequestedReady: () => closeReqHandlerId !== null,
     // Labels of the profile windows the app opened, in order.
     __createdWindows: () => [...created],
-    // Deliver an event to this window's listeners, as another window's emitTo
-    // does.
+    // Deliver an app event to this window's listeners, as the Rust side's emit
+    // or another window's emitTo does. Returns how many listeners got it.
     __emitEvent: (event: string, payload: unknown) => {
-      for (const id of eventHandlers.get(event) ?? []) callbacks.get(id)?.({ event, id, payload });
+      const ids = (eventHandlers.get(event) ?? []).filter((id) => callbacks.has(id));
+      for (const id of ids) callbacks.get(id)?.({ event, id, payload });
+      return ids.length;
     },
     // Push output into the index-th started terminal (creation order), e.g. a
     // bell ("\x07") to exercise the attention indicator.

@@ -96,6 +96,33 @@ async fn stop_port_process(terminal: String, pid: u32) -> Result<(), String> {
     blocking(move || pty::stop_listener(&terminal, pid)).await
 }
 
+/// Has the daemon hand this GUI the terminals it starts for `thel session`, as
+/// `thel-session-adopt` events for each window to place. Each call also
+/// replays the ones still waiting, so a window that just opened sees them.
+#[tauri::command(async)]
+fn watch_sessions(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(unix)]
+    return daemon::watch(app);
+    #[cfg(not(unix))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
+/// Tells the daemon which sessions the calling window shows, so `thel
+/// session` can find and list them.
+#[tauri::command(async)]
+fn report_sessions(window: tauri::Window, sessions: Vec<session::DirSession>) -> Result<(), String> {
+    #[cfg(unix)]
+    return daemon::report_sessions(window.label().to_string(), sessions);
+    #[cfg(not(unix))]
+    {
+        let _ = (window, sessions);
+        Ok(())
+    }
+}
+
 /// Permanently destroy a terminal (the user closed the tab, or its window).
 #[tauri::command]
 async fn kill_terminal_window(id: String) {
@@ -767,6 +794,8 @@ pub fn run() {
             terminal_status,
             session_usage,
             stop_port_process,
+            watch_sessions,
+            report_sessions,
             kill_terminal_window,
             terminal_cwd,
             update_app_menu,
