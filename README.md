@@ -110,6 +110,21 @@ also picks up bells and OSC 9 / 777 / 99 notification escapes from any program.
 
 See [docs/notifications.md](docs/notifications.md) for the full details.
 
+## Driving thel from a terminal
+
+A program in a thel terminal, such as a coding agent, can open sessions and
+terminals, list them and type into them with `thel session`:
+
+```sh
+id=$(thel session new -n tests -- npm test --watch)
+thel session send-keys -t "$id" q
+```
+
+It works only from inside a thel terminal. On Linux, a sandboxed program's
+requests wait for you to allow them in the thel window; macOS can't tell a
+sandboxed program apart. See
+[docs/session-cli.md](docs/session-cli.md).
+
 ## Prerequisites
 
 - Node 18+ and pnpm
