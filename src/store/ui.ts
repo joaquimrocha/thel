@@ -11,7 +11,16 @@ export interface ConfirmRequest {
   // Notice mode: a single non-destructive OK button, no Cancel (e.g. an error
   // report where there is nothing to confirm).
   okOnly?: boolean;
+  cancelLabel?: string;
   onConfirm: (checked: boolean) => void;
+  // Called when the user declines: Cancel, Escape or clicking away.
+  onCancel?: () => void;
+  // Names the request so withdrawConfirm can take it back unanswered.
+  key?: string;
+  // Raised by something other than the user: the confirm button stays
+  // disabled for a moment and focus starts on the dialog itself, so keystrokes
+  // meant for a terminal answer it neither way.
+  guarded?: boolean;
 }
 
 interface UIState {
@@ -126,6 +135,8 @@ interface UIState {
   confirmQueue: ConfirmRequest[];
   requestConfirm: (req: ConfirmRequest) => void;
   clearConfirm: () => void;
+  // Drops the request with this key, shown or queued, without calling back.
+  withdrawConfirm: (key: string) => void;
 }
 
 export const SIDEBAR_MIN = 160;
@@ -285,6 +296,13 @@ export const useUI = create<UIState>((set) => ({
   clearConfirm: () =>
     set((s) => {
       const [next, ...rest] = s.confirmQueue;
+      return { confirm: next ?? null, confirmQueue: rest };
+    }),
+  withdrawConfirm: (key) =>
+    set((s) => {
+      const confirmQueue = s.confirmQueue.filter((r) => r.key !== key);
+      if (s.confirm?.key !== key) return { confirmQueue };
+      const [next, ...rest] = confirmQueue;
       return { confirm: next ?? null, confirmQueue: rest };
     }),
 }));

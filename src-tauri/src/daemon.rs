@@ -19,7 +19,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::mpsc::{sync_channel, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, LazyLock, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
 use crate::pty::{decode_utf8_stream, CreateOpts, TermMsg};
-use crate::session::{Adopt, DirSession, Directory, Place, Reply, Request};
+use crate::session::{Adopt, Approval, DirSession, Directory, Place, Reply, Request};
 
 const PROTOCOL_VERSION: u32 = 5;
 const EMPTY_GRACE: Duration = Duration::from_secs(45);
@@ -56,6 +56,23 @@ const PORTS_RESCAN: u32 = 15;
 const IDLE_POLL: Duration = Duration::from_secs(10);
 const IDLE_AFTER: Duration = Duration::from_secs(5 * 60);
 const DAEMON_ARG: &str = "__daemon";
+// How long a sandboxed caller's request waits for the user's answer. Long
+// enough to notice the prompt and read it; the caller is blocked meanwhile.
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
+// How long a terminal's sandboxed programs can't ask again after the user
+// says no, doubled on each no up to DENY_PAUSE_MAX, so a program can't wear
+// the user down with the same question.
+const DENY_PAUSE: Duration = Duration::from_secs(30);
+const DENY_PAUSE_MAX: Duration = Duration::from_secs(30 * 60);
+/// Takes the user's answer to a question: whether allowed, and whether for
+/// good.
+type AnswerTx = SyncSender<(bool, bool)>;
+// How often a waiting approval checks whether its caller hung up.
+const HANGUP_POLL: Duration = Duration::from_millis(250);
+// The longest request the approval prompt shows, in bytes of its summary. A
+// longer one is refused rather than cut, so the user sees all of what they
+// allow.
+const APPROVAL_SUMMARY_MAX: usize = 4096;
 /// Scrollback the VTE keeps (lines), used for the alt-screen snapshot path.
 const SCROLLBACK: usize = 1000;
 /// Raw normal-screen output kept per tab (bytes) and replayed on reattach so the
@@ -170,32 +187,45 @@ struct Peer {
     pid: Option<u32>,
     /// The peer runs confined while the daemon does not: inside Landlock,
     /// seccomp, bubblewrap or Flatpak. It may still post notifications for and
-    /// read state of its own terminal, but it must not get the daemon to start,
-    /// type into or stop anything, which would run outside its sandbox.
+    /// read state of its own terminal, but without the user's yes it must not
+    /// get the daemon to start, type into or stop anything, which would run
+    /// outside its sandbox.
     sandboxed: bool,
     /// For a sandboxed peer, the tab it runs in, found when it connected,
     /// while it was known to be alive. Its pid could later pass to a process
     /// in another tab. Held as that tab's state too, since a tab that ends
     /// can come back under its id (see own_tab).
     tab: Option<(String, Weak<Mutex<TabShared>>)>,
+    /// For a sandboxed peer, the program it belongs to (see sandbox_program),
+    /// found alongside its tab.
+    program: Option<(u32, u64)>,
+    /// The connection, to notice the peer hanging up.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fd: RawFd,
 }
 
 impl Peer {
     fn of(fd: RawFd, daemon: &Daemon) -> Peer {
         let pid = peer_pid(fd);
         let sandboxed = peer_confined(fd, pid) && !daemon_confined();
-        // Checked alive after the walk, so a pid that passed to another
-        // process meanwhile can't name that process's tab.
-        let tab = if sandboxed {
-            let tab = pid.and_then(|p| daemon.tab_of_pid(p)).and_then(|id| {
-                let shared = Arc::downgrade(&daemon.tabs.lock().get(&id)?.shared);
-                Some((id, shared))
-            });
-            tab.filter(|_| peer_alive(fd))
-        } else {
-            None
+        // A sandboxed program that can write to cgroupfs could move itself into
+        // another tab's scope, so it is known by its ancestry only. Checked
+        // alive after the walk, so a pid that passed to another process
+        // meanwhile can't name that process's tab.
+        let (tab, program) = match pid {
+            Some(p) if sandboxed => {
+                let chain = steady_ancestry(p).unwrap_or_default();
+                let roots = daemon.roots();
+                let tab = chain.iter().find_map(|(p, _)| roots.get(p).cloned()).and_then(|id| {
+                    let shared = Arc::downgrade(&daemon.tabs.lock().get(&id)?.shared);
+                    Some((id, shared))
+                });
+                let found = (tab, sandbox_program(&chain));
+                if peer_alive(fd) { found } else { (None, None) }
+            }
+            _ => (None, None),
         };
-        Peer { pid, sandboxed, tab }
+        Peer { pid, sandboxed, tab, program, fd }
     }
 
     /// The id of the tab a sandboxed peer connected from, while that tab
@@ -205,6 +235,24 @@ impl Peer {
         let (id, shared) = self.tab.as_ref()?;
         let same = daemon.tabs.lock().get(id).is_some_and(|t| std::ptr::eq(shared.as_ptr(), Arc::as_ptr(&t.shared)));
         same.then(|| id.clone())
+    }
+
+    /// Whether the peer closed its end of the connection, even with bytes it
+    /// sent still unread.
+    #[cfg(target_os = "linux")]
+    fn hung_up(&self) -> bool {
+        let mut p = libc::pollfd { fd: self.fd, events: libc::POLLRDHUP, revents: 0 };
+        // SAFETY: p is one valid pollfd, and a zero timeout keeps this from
+        // blocking.
+        let n = unsafe { libc::poll(&mut p, 1, 0) };
+        n > 0 && p.revents & (libc::POLLRDHUP | libc::POLLHUP) != 0
+    }
+
+    /// Only a sandboxed peer waits for an answer, and nothing reads as
+    /// sandboxed outside Linux.
+    #[cfg(not(target_os = "linux"))]
+    fn hung_up(&self) -> bool {
+        false
     }
 }
 
@@ -325,6 +373,70 @@ fn no_new_privs(_pid: u32) -> Option<bool> {
     Some(false)
 }
 
+/// `pid` and its ancestors with their start times, nearest first, as
+/// `ancestors` walks them. None unless the walk still holds once done: each
+/// process kept its start time and its parent. A process that exits mid-walk
+/// can pass its pid to an unrelated one, which would splice that one's
+/// ancestors into the chain.
+#[cfg(target_os = "linux")]
+fn steady_ancestry(pid: u32) -> Option<Vec<(u32, u64)>> {
+    // Each process with its start time and parent, from one read of its stat.
+    let seen = std::cell::RefCell::new(Vec::new());
+    let n = crate::session::ancestors(pid, |p| {
+        let (parent, start) = proc_stat(p)?;
+        seen.borrow_mut().push((p, start, parent));
+        Some(parent)
+    })
+    .count();
+    let chain = seen.into_inner();
+    let holds = chain.len() == n && chain.iter().all(|&(p, start, parent)| proc_stat(p) == Some((parent, start)));
+    holds.then(|| chain.into_iter().map(|(p, start, _)| (p, start)).collect())
+}
+
+/// Only Linux has sandboxed peers.
+#[cfg(not(target_os = "linux"))]
+fn steady_ancestry(_pid: u32) -> Option<Vec<(u32, u64)>> {
+    None
+}
+
+/// The sandboxed program at the start of `chain` (see steady_ancestry) is
+/// part of: its topmost ancestor that runs with no_new_privs, as its pid and
+/// start time, so a reused pid is another program.
+fn sandbox_program(chain: &[(u32, u64)]) -> Option<(u32, u64)> {
+    let mut it = chain.iter().copied();
+    let first = it.next()?;
+    Some(it.take_while(|&(p, _)| no_new_privs(p) == Some(true)).last().unwrap_or(first))
+}
+
+/// `pid`'s parent, and when it started in clock ticks since boot.
+#[cfg(target_os = "linux")]
+fn proc_stat(pid: u32) -> Option<(u32, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let fields = crate::pty::stat_fields(&stat)?;
+    // Fields 4 and 22 of /proc/<pid>/stat, counted from the state field after comm.
+    Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
+}
+
+/// When `pid` started, in clock ticks since boot.
+#[cfg(target_os = "linux")]
+fn start_time(pid: u32) -> Option<u64> {
+    proc_stat(pid).map(|(_, start)| start)
+}
+
+/// The executable of the program that started at `start` as `pid`, while it
+/// runs. Read before the start time is checked, so a pid that passed to
+/// another process meanwhile names nothing.
+#[cfg(target_os = "linux")]
+fn exe_of(pid: u32, start: u64) -> Option<String> {
+    let exe = proc_exe(pid as i32)?;
+    (start_time(pid) == Some(start)).then(|| exe.to_string_lossy().into_owned())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn exe_of(_pid: u32, _start: u64) -> Option<String> {
+    None
+}
+
 #[cfg(any(target_os = "linux", test))]
 fn status_no_new_privs(status: &str) -> bool {
     status
@@ -411,6 +523,13 @@ enum Command {
         window: String,
         sessions: Vec<DirSession>,
     },
+    /// The user's answer to an Approval. `remember` allows every later
+    /// request from the same sandboxed program, until its terminal ends.
+    Answer {
+        req: u64,
+        allow: bool,
+        remember: bool,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -435,6 +554,10 @@ enum Event {
     // An adopted terminal no longer waits for a window: one opened it, or it
     // was closed. Windows that held it back for a session on its way drop it.
     Claimed { terminal: String },
+    // A sandboxed caller's request for the user to allow or deny.
+    Approve { approval: Approval },
+    // An Approval was answered or timed out; windows still showing it close it.
+    Resolved { req: u64 },
 }
 
 /// Reply to Command::Status: tab id -> a foreground command is running.
@@ -727,6 +850,20 @@ struct Daemon {
     /// The sessions each GUI window last reported. Kept after the GUI leaves,
     /// so a request still finds its session while no window is open.
     directory: Mutex<Directory>,
+    /// Sandboxed callers' requests waiting for an answer, and where to send it.
+    approvals: Mutex<Vec<(Approval, AnswerTx)>>,
+    next_approval: AtomicU64,
+    /// Terminals whose sandboxed programs the user said no to, with when they
+    /// may ask again and how long the last pause was.
+    denied: Mutex<HashMap<String, (std::time::Instant, Duration)>>,
+    /// The sandboxed program in each terminal the user allowed everything
+    /// from (see sandbox_program), until the terminal ends.
+    trusted: Mutex<HashMap<String, (u32, u64)>>,
+    /// The terminal of the sandboxed caller that started each terminal, so
+    /// its list shows what it started, until the caller's terminal ends.
+    started: Mutex<HashMap<String, String>>,
+    /// How long a sandboxed caller's request waits for the user's answer.
+    approval_timeout: Duration,
 }
 
 pub fn run() {
@@ -770,7 +907,7 @@ pub fn run() {
     if daemon_confined() {
         eprintln!(
             "[thel-daemon] running with no_new_privs, as a sandboxed program would: \
-             no caller can be told apart as sandboxed, so none is refused"
+             no caller can be told apart as sandboxed, so none is asked about"
         );
     }
 
@@ -972,7 +1109,7 @@ fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
     let peer = Peer::of(stream.as_raw_fd(), daemon);
     if peer.sandboxed {
         eprintln!(
-            "[thel-daemon] pid {} is sandboxed: it may only notify and read state",
+            "[thel-daemon] pid {} is sandboxed: it may notify, read state, and ask through `thel session`",
             peer.pid.unwrap_or(0)
         );
     }
@@ -1079,7 +1216,8 @@ fn refuse(cmd: Command, client: &Arc<Client>) {
         | Command::Notify { .. }
         | Command::Session { .. }
         | Command::Watch
-        | Command::Directory { .. } => return,
+        | Command::Directory { .. }
+        | Command::Answer { .. } => return,
     };
     client.enqueue(Arc::new(reply));
 }
@@ -1153,13 +1291,16 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>, peer: &Pee
             for (adopt, _) in daemon.adopts.lock().iter().cloned() {
                 client.enqueue(Arc::new(control_json(&Event::Adopt { adopt })));
             }
+            for (approval, _) in daemon.approvals.lock().iter() {
+                let approval = approval.clone();
+                client.enqueue(Arc::new(control_json(&Event::Approve { approval })));
+            }
             if !watchers.iter().any(|w| Arc::ptr_eq(w, client)) {
                 watchers.push(client.clone());
             }
         }
-        Command::Directory { window, sessions } => {
-            crate::session::report(&mut daemon.directory.lock(), window, sessions);
-        }
+        Command::Directory { window, sessions } => daemon.report(window, sessions),
+        Command::Answer { req, allow, remember } => daemon.answer(req, allow, remember),
     }
 }
 
@@ -1210,6 +1351,12 @@ impl Daemon {
             watchers: Mutex::new(Vec::new()),
             adopts: Mutex::new(Vec::new()),
             directory: Mutex::new(HashMap::new()),
+            approvals: Mutex::new(Vec::new()),
+            next_approval: AtomicU64::new(first_approval_id()),
+            denied: Mutex::new(HashMap::new()),
+            trusted: Mutex::new(HashMap::new()),
+            started: Mutex::new(HashMap::new()),
+            approval_timeout: APPROVAL_TIMEOUT,
         })
     }
 
@@ -1369,17 +1516,33 @@ impl Daemon {
             if claimed {
                 self.broadcast(&Event::Claimed { terminal: id.to_string() });
             }
+            self.forget_tab(id);
         }
         self.maybe_schedule_exit();
     }
 
-    /// Notes the exit of tab `id`, which just ended, if it waits for a GUI: it
-    /// keeps waiting, with its exit for the GUI that opens it.
-    fn ended_unshown(&self, id: &str, code: Option<i32>) {
+    /// Keeps the exit of tab `id`, which just ended, for the GUI that opens it
+    /// if it still waits for one.
+    fn keep_exit(&self, id: &str, code: Option<i32>) {
         // Under the adopts lock, so a GUI opening it meanwhile finds the exit.
         if let Some((_, exit)) = self.adopts.lock().iter_mut().find(|(a, _)| a.terminal == id) {
             exit.get_or_insert(code);
         }
+    }
+
+    /// Forgets tab `id`, once it's out of the tabs: its trust, its pause and
+    /// its open questions go. After the removal, so a question or trust added
+    /// meanwhile, which checks the tab is there, is found here.
+    fn forget_tab(&self, id: &str) {
+        let asked: Vec<u64> =
+            self.approvals.lock().iter().filter(|(a, _)| a.caller == id).map(|(a, _)| a.req).collect();
+        // Dropping the answer's sender tells the waiting request the terminal closed.
+        for req in asked {
+            self.resolve(req, false);
+        }
+        self.trusted.lock().remove(id);
+        self.denied.lock().remove(id);
+        self.started.lock().retain(|_, caller| caller != id);
     }
 
     fn statuses(&self) -> HashMap<String, bool> {
@@ -1409,19 +1572,66 @@ impl Daemon {
 
     /// Carries out a `thel session` request for the program behind `peer`.
     fn session(self: &Arc<Self>, peer: &Peer, req: Request) -> Reply {
-        let fail = |e: &str| Reply { error: Some(e.to_string()), ..Reply::default() };
-        let Some(caller) = peer.pid.and_then(|p| self.tab_of_pid(p)) else {
-            return fail("thel session works only from inside a thel terminal");
+        self.try_session(peer, req).unwrap_or_else(|e| Reply { error: Some(e), ..Reply::default() })
+    }
+
+    fn try_session(self: &Arc<Self>, peer: &Peer, req: Request) -> Result<Reply, String> {
+        let outside = "thel session works only from inside a thel terminal";
+        let caller = if peer.sandboxed {
+            peer.tab.as_ref().ok_or(outside)?;
+            peer.own_tab(self).ok_or("the caller's terminal closed")?
+        } else {
+            peer.pid.and_then(|p| self.tab_of_pid(p)).ok_or(outside)?
         };
-        if peer.sandboxed {
-            return fail("thel refuses this from a sandboxed process");
+        // A sandboxed program may list sessions, but anything that starts or
+        // types needs the user's yes, which runs it outside the sandbox.
+        let trusted = peer.program.is_some() && self.trusted.lock().get(&caller) == peer.program.as_ref();
+        let asks = peer.sandboxed && req != (Request::List { all: false }) && !trusted;
+        req.check()?;
+        let req = if asks {
+            // Before the lookups, so a request that can't be asked fails the
+            // same way whatever it names.
+            self.may_ask(&self.approvals.lock(), &caller)?;
+            let (req, session) = self.pin_session(&caller, req.resolved()?)?;
+            self.ask(peer, &caller, &req, session.as_deref())?;
+            req
+        } else {
+            req
+        };
+        self.carry_out(&caller, req, peer.sandboxed, asks)
+    }
+
+    /// Notes that `caller` started `terminal`, for its list, if it's sandboxed.
+    fn mark_started(&self, terminal: &str, caller: &str, sandboxed: bool) {
+        if sandboxed {
+            self.started.lock().insert(terminal.to_string(), caller.to_string());
         }
-        if let Err(e) = req.check() {
-            return fail(&e);
+    }
+
+    /// Records the sessions `window` shows. A window that leaves hands the
+    /// questions it was showing to another, which asks them again.
+    fn report(&self, window: String, sessions: Vec<crate::session::DirSession>) {
+        let left = sessions.is_empty();
+        let to = {
+            let mut dir = self.directory.lock();
+            crate::session::report(&mut dir, window.clone(), sessions);
+            dir.keys().min().cloned()
+        };
+        if !left {
+            return;
         }
-        match self.carry_out(&caller, req) {
-            Ok(reply) => reply,
-            Err(e) => fail(&e),
+        let moved: Vec<Approval> = self
+            .approvals
+            .lock()
+            .iter_mut()
+            .filter(|(a, _)| a.window.as_deref() == Some(window.as_str()))
+            .map(|(a, _)| {
+                a.window = to.clone();
+                a.clone()
+            })
+            .collect();
+        for approval in moved {
+            self.broadcast(&Event::Approve { approval });
         }
     }
 
@@ -1430,35 +1640,39 @@ impl Daemon {
         crate::session::session_of(&self.directory.lock(), tab).map(|(w, _)| w.to_string())
     }
 
-    fn carry_out(self: &Arc<Self>, caller: &str, req: Request) -> Result<Reply, String> {
+    /// Carries out `req` for tab `caller`, with its session `pinned` to an id
+    /// by pin_session.
+    fn carry_out(self: &Arc<Self>, caller: &str, req: Request, sandboxed: bool, pinned: bool) -> Result<Reply, String> {
         match req {
             Request::New { name, cwd, command } => {
                 let name = name.unwrap_or_else(|| crate::session::name_for_dir(&cwd));
                 // The window the caller is in, so the session shows up beside it.
                 let window = self.window_of(caller);
-                let terminal = self.start(command, cwd, Place::NewSession { name, window })?;
+                let terminal = self.start(command, cwd, Place::NewSession { name, window }, sandboxed)?;
+                self.mark_started(&terminal, caller, sandboxed);
                 Ok(Reply { terminal: Some(terminal), ..Reply::default() })
             }
             Request::Terminal { session, cwd, command } => {
-                let id = {
-                    let dir = self.directory.lock();
-                    match &session {
-                        Some(key) => crate::session::find_session(&dir, key)?.1.id.clone(),
-                        None => crate::session::session_of(&dir, caller)
-                            .ok_or("this terminal's session is unknown; pass -t SESSION")?
-                            .1
-                            .id
-                            .clone(),
-                    }
-                };
-                let terminal = self.start(command, cwd, Place::Session { id })?;
+                let (id, _) = self.session_id(caller, session.as_deref(), pinned)?;
+                let terminal = self.start(command, cwd, Place::Session { id }, sandboxed)?;
+                self.mark_started(&terminal, caller, sandboxed);
                 Ok(Reply { terminal: Some(terminal), ..Reply::default() })
             }
-            Request::List => {
+            Request::List { all } => {
                 let alive: std::collections::HashSet<String> =
                     self.tabs.lock().keys().cloned().collect();
-                let sessions =
-                    crate::session::list(&self.directory.lock(), &alive, self.adopts.lock().iter().map(|(a, _)| a));
+                let dir = self.directory.lock();
+                let mut sessions = crate::session::list(&dir, &alive, self.adopts.lock().iter().map(|(a, _)| a));
+                // Without asking, a sandboxed program sees only its own session
+                // and those it started: the others' names can be private.
+                if sandboxed && !all {
+                    let own = crate::session::session_of(&dir, caller).map(|(_, s)| s.id.as_str());
+                    let started = self.started.lock();
+                    sessions.retain(|l| {
+                        (l.id.is_some() && l.id.as_deref() == own)
+                            || l.terminals.iter().any(|t| started.get(&t.id).is_some_and(|c| c == caller))
+                    });
+                }
                 Ok(Reply { sessions, ..Reply::default() })
             }
             Request::SendKeys { terminal, data } => {
@@ -1468,9 +1682,200 @@ impl Daemon {
         }
     }
 
+    /// The id and name of the session `key` names, or of the one showing
+    /// `caller`. A `pinned` key is an id only: the session the user allowed
+    /// a request for, which mustn't turn into another one named like it.
+    fn session_id(&self, caller: &str, key: Option<&str>, pinned: bool) -> Result<(String, String), String> {
+        let dir = self.directory.lock();
+        let found = match key {
+            Some(key) if pinned => crate::session::session_by_id(&dir, key)
+                .ok_or("the session this was allowed for closed")?,
+            Some(key) => crate::session::find_session(&dir, key)?,
+            None => crate::session::session_of(&dir, caller)
+                .ok_or("this terminal's session is unknown; pass -t SESSION")?,
+        };
+        Ok((found.1.id.clone(), found.1.name.clone()))
+    }
+
+    /// `req` with its session pinned to the id it names now, and how the
+    /// prompt names that session, so it names the one the request acts on.
+    fn pin_session(&self, caller: &str, req: Request) -> Result<(Request, Option<String>), String> {
+        Ok(match req {
+            Request::Terminal { session, cwd, command } => {
+                let (id, label) = self.pinned(caller, session.as_deref())?;
+                (Request::Terminal { session: Some(id), cwd, command }, Some(label))
+            }
+            other => (other, None),
+        })
+    }
+
+    /// The id of the session `key` names, and how the prompt names it.
+    fn pinned(&self, caller: &str, key: Option<&str>) -> Result<(String, String), String> {
+        // Only a sandboxed caller pins, and its list hides the sessions it
+        // didn't start, so a failed lookup mustn't tell it their names or ids.
+        let (id, name) = self
+            .session_id(caller, key, false)
+            .map_err(|e| if key.is_some() { "no session by that name or id".to_string() } else { e })?;
+        let label = crate::session::session_label(&self.directory.lock(), &id, &name);
+        Ok((id, label))
+    }
+
+    /// Asks the watching GUIs to allow `req` from a sandboxed program in tab
+    /// `caller`, and waits for the answer. Fails on a no, or when nobody
+    /// answers in time.
+    fn ask(&self, peer: &Peer, caller: &str, req: &Request, session: Option<&str>) -> Result<(), String> {
+        let summary = crate::session::describe(req, session.unwrap_or_default());
+        if summary.len() > APPROVAL_SUMMARY_MAX {
+            return Err(format!(
+                "this request is too long to ask about ({} bytes; at most {APPROVAL_SUMMARY_MAX})",
+                summary.len()
+            ));
+        }
+        let target = match req {
+            Request::SendKeys { terminal, .. } => Some(terminal.clone()),
+            _ => None,
+        };
+        let (caller_session, target_session) = {
+            let dir = self.directory.lock();
+            let label = |t: &str| {
+                crate::session::session_of(&dir, t).map(|(_, s)| crate::session::session_label(&dir, &s.id, &s.name))
+            };
+            (label(caller), target.as_deref().and_then(label))
+        };
+        let approval = Approval {
+            req: self.next_approval.fetch_add(1, Ordering::Relaxed),
+            caller: caller.to_string(),
+            caller_session,
+            summary,
+            target_session,
+            target,
+            window: self.window_of(caller),
+            program: peer.program.and_then(|(pid, start)| exe_of(pid, start)),
+        };
+        let (tx, rx) = sync_channel(1);
+        {
+            // One question per terminal at a time, so a program can't bury the
+            // user in prompts.
+            let mut approvals = self.approvals.lock();
+            self.may_ask(&approvals, caller)?;
+            // Under the approvals lock, so a tab that ends after this check
+            // finds the question when its end settles them.
+            if !self.tabs.lock().contains_key(caller) {
+                return Err("the caller's terminal closed".into());
+            }
+            approvals.push((approval.clone(), tx));
+        }
+        self.broadcast(&Event::Approve { approval: approval.clone() });
+        // A caller that gives up (Ctrl-C) takes its question with it, so a
+        // later yes can't run what nobody waits for anymore.
+        let deadline = std::time::Instant::now() + self.approval_timeout;
+        let answer = loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match rx.recv_timeout(left.min(HANGUP_POLL)) {
+                Ok((true, _)) if peer.hung_up() => break Err("the caller hung up".to_string()),
+                Ok(answer) => break Ok(answer),
+                Err(RecvTimeoutError::Disconnected) => break Err("the caller's terminal closed".to_string()),
+                Err(_) if peer.hung_up() => break Err("the caller hung up".to_string()),
+                Err(_) if left.is_zero() => {
+                    break Err(format!(
+                        "no answer in thel within {} s; is a thel window open?",
+                        self.approval_timeout.as_secs()
+                    ))
+                }
+                Err(_) => {}
+            }
+        };
+        match answer {
+            Ok((true, remember)) => {
+                // A yes for good needs the program the prompt named.
+                if let Some(program) = peer.program.filter(|_| remember && approval.program.is_some()) {
+                    // Checked under the trusted lock, so a tab that ends
+                    // meanwhile drops the trust again when its end takes it.
+                    let mut trusted = self.trusted.lock();
+                    if self.tabs.lock().contains_key(caller) {
+                        trusted.insert(caller.to_string(), program);
+                    }
+                }
+                self.denied.lock().remove(caller);
+                Ok(())
+            }
+            Ok((false, _)) => Err("denied in thel".into()),
+            Err(e) => {
+                // A question withdrawn while shown pauses too, so a program
+                // can't swap it for another under the user's click. So does
+                // one the user allowed as its caller hung up.
+                if self.resolve(approval.req, true).is_none() {
+                    let _approvals = self.approvals.lock();
+                    if self.tabs.lock().contains_key(caller) {
+                        self.lengthen_pause(caller);
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Whether tab `caller` may ask now: with no question of its own waiting
+    /// and no pause after a no. Called under the approvals lock, which a
+    /// question's pause is set under as it goes, so no request slips in
+    /// between the two.
+    fn may_ask(&self, approvals: &[(Approval, AnswerTx)], caller: &str) -> Result<(), String> {
+        // One question per terminal at a time, so a program can't bury the
+        // user in prompts.
+        if approvals.iter().any(|(a, _)| a.caller == caller) {
+            return Err("a request from this terminal is already waiting for an answer".into());
+        }
+        if let Some((until, _)) = self.denied.lock().get(caller) {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if !left.is_zero() {
+                return Err(format!("denied in thel; ask again in {} s", left.as_secs() + 1));
+            }
+        }
+        Ok(())
+    }
+
+    /// The user's answer to approval `req`.
+    fn answer(&self, req: u64, allow: bool, remember: bool) {
+        if let Some((_, tx)) = self.resolve(req, !allow) {
+            let _ = tx.try_send((allow, remember));
+        }
+    }
+
+    /// Drops approval `req` and tells the GUIs it's settled. With `longer`
+    /// (a no, or a question withdrawn or timed out) its terminal's pause
+    /// doubles. A withdrawn question counts too, so a program can't ask and
+    /// give up over and over to stay at the shortest pause. A yes lifts the
+    /// pause only once its request goes ahead (see ask).
+    fn resolve(&self, req: u64, longer: bool) -> Option<(Approval, AnswerTx)> {
+        let mut approvals = self.approvals.lock();
+        let i = approvals.iter().position(|(a, _)| a.req == req)?;
+        let found = approvals.remove(i);
+        if longer {
+            self.lengthen_pause(&found.0.caller);
+        }
+        drop(approvals);
+        self.broadcast(&Event::Resolved { req });
+        Some(found)
+    }
+
+    /// Doubles the pause of tab `caller`'s sandboxed programs, or starts it.
+    /// Called under the approvals lock, which ask reads the pause under.
+    fn lengthen_pause(&self, caller: &str) {
+        let mut denied = self.denied.lock();
+        let p = denied.get(caller).map_or(DENY_PAUSE, |(_, p)| (*p * 2).min(DENY_PAUSE_MAX));
+        denied.insert(caller.to_string(), (std::time::Instant::now() + p, p));
+    }
+
     /// Starts a terminal with no GUI attached and hands it to the watching
-    /// GUIs to show at `place`. Returns its id.
-    fn start(self: &Arc<Self>, command: Vec<String>, cwd: String, place: Place) -> Result<String, String> {
+    /// GUIs to show at `place`, for a sandboxed program if `sandboxed`.
+    /// Returns its id.
+    fn start(
+        self: &Arc<Self>,
+        command: Vec<String>,
+        cwd: String,
+        place: Place,
+        sandboxed: bool,
+    ) -> Result<String, String> {
         let (command, args) = match command.split_first() {
             Some((c, a)) => (c.clone(), a.to_vec()),
             None => (crate::default_shell(), Vec::new()),
@@ -1480,7 +1885,7 @@ impl Daemon {
             return Err(format!("no folder {cwd}"));
         }
         let id = new_id().map_err(|e| format!("no terminal id: {e}"))?;
-        let adopt = Adopt { terminal: id.clone(), command, args, cwd, place };
+        let adopt = Adopt { terminal: id.clone(), command, args, cwd, place, sandboxed };
         // The GUI resizes it to its pane when it shows it.
         let a = &adopt;
         let shared = self.open(&id, a.command.clone(), a.args.clone(), Some(a.cwd.clone()), None, 80, 24, None)?;
@@ -1504,15 +1909,15 @@ impl Daemon {
         }
     }
 
+    /// Each tab's shell pid, and the tab.
+    fn roots(&self) -> HashMap<u32, String> {
+        self.tabs.lock().iter().filter_map(|(id, t)| Some((t.child.lock().process_id()?, id.clone()))).collect()
+    }
+
     /// The tab whose processes include `pid`: by ancestry, or on Linux by the
     /// tab's cgroup scope, which also holds processes that left its tree.
     fn tab_of_pid(&self, pid: u32) -> Option<String> {
-        let roots: HashMap<u32, String> = self
-            .tabs
-            .lock()
-            .iter()
-            .filter_map(|(id, t)| Some((t.child.lock().process_id()?, id.clone())))
-            .collect();
+        let roots = self.roots();
         crate::session::tab_of(pid, &roots, parent_pid).or_else(|| tab_by_scope(pid, &roots))
     }
 
@@ -1542,6 +1947,14 @@ impl Daemon {
             }
         });
     }
+}
+
+/// A random start for approval ids, so an answer meant for a daemon that
+/// ended can't settle a request of the one after it. Under 2^53, which a
+/// JavaScript number holds exactly.
+fn first_approval_id() -> u64 {
+    // Without /dev/urandom the ids start at 1, which only loses that guard.
+    urandom().map_or(1, |b| (u64::from_le_bytes(b) >> 12).max(1))
 }
 
 /// A fresh terminal id: 128 random bits in hex.
@@ -1575,8 +1988,7 @@ fn tab_by_scope(_pid: u32, _roots: &HashMap<u32, String>) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn parent_pid(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    crate::pty::stat_fields(&stat)?.get(1)?.parse().ok()
+    proc_stat(pid).map(|(parent, _)| parent)
 }
 
 #[cfg(target_os = "macos")]
@@ -1693,11 +2105,12 @@ fn finish_tab(daemon: &Arc<Daemon>, id: &str, code: Option<i32>) {
     }
     // Before the tab goes, so a GUI opening it meanwhile finds either the tab
     // or its exit.
-    daemon.ended_unshown(id, code);
+    daemon.keep_exit(id, code);
     let removed = daemon.tabs.lock().remove(id);
     let Some(t) = removed else {
         return; // already finished by another path
     };
+    daemon.forget_tab(id);
     kill_session_and_reap(&t.child);
     let subs = t.shared.lock().subscribers.iter().map(|s| s.client.clone()).collect::<Vec<_>>();
     let ev = Arc::new(control_json(&Event::TabExited {
@@ -1964,8 +2377,16 @@ impl SessionReplay {
 
 static SESSION_REPLAY: LazyLock<Mutex<SessionReplay>> = LazyLock::new(Default::default);
 
-/// The app the GUI's connection hands terminals started for `thel session` to.
+/// The app the GUI's connection hands `thel session` events to.
 static SESSION_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+fn session_event(name: &'static str, payload: impl Serialize) {
+    if let (Some(app), Ok(v)) = (SESSION_APP.get(), serde_json::to_value(payload)) {
+        // Fails only once the app is shutting down, when no window is left to
+        // show it; the daemon keeps what waits for the next start.
+        let _ = tauri::Emitter::emit(app, name, v);
+    }
+}
 
 /// Sends `cmd` on the GUI's connection.
 fn send_command(cmd: &Command) -> Result<(), String> {
@@ -1973,13 +2394,19 @@ fn send_command(cmd: &Command) -> Result<(), String> {
     on_client_error(c.send_frame(CONTROL, &serde_json::to_vec(cmd).unwrap_or_default()))
 }
 
-/// Has the daemon send this GUI every terminal started for `thel session`,
-/// waiting ones first, and passes each to `app`. Call once.
+/// Has the daemon send this GUI `thel session` events: every terminal started
+/// for it and every approval to ask, the waiting ones first. The first call's
+/// `app` gets them all; later calls just replay what is waiting.
 pub fn watch(app: tauri::AppHandle) -> Result<(), String> {
     // Already set by an earlier call, which keeps getting them.
     let _ = SESSION_APP.set(app);
     SESSION_REPLAY.lock().watching = true;
     send_command(&Command::Watch)
+}
+
+/// Passes on the user's answer to a sandboxed caller's request.
+pub fn answer(req: u64, allow: bool, remember: bool) -> Result<(), String> {
+    send_command(&Command::Answer { req, allow, remember })
 }
 
 /// Reports a window's sessions, so `thel session` can find and list them.
@@ -2058,20 +2485,10 @@ fn client_read_loop(mut r: UnixStream, routes: Arc<Mutex<HashMap<String, Channel
                 Some(Event::Error { id, message }) => {
                     eprintln!("[thel] daemon error for {id}: {message}");
                 }
-                Some(Event::Adopt { adopt }) => {
-                    if let Some(app) = SESSION_APP.get() {
-                        // Fails only once the app is shutting down, when no
-                        // window is left to show it; the daemon still lists it
-                        // for the next start.
-                        let _ = tauri::Emitter::emit(app, "thel-session-adopt", &adopt);
-                    }
-                }
-                Some(Event::Claimed { terminal }) => {
-                    if let Some(app) = SESSION_APP.get() {
-                        // As for an Adopt: only a GUI on its way out misses it.
-                        let _ = tauri::Emitter::emit(app, "thel-session-claimed", &terminal);
-                    }
-                }
+                Some(Event::Adopt { adopt }) => session_event("thel-session-adopt", adopt),
+                Some(Event::Claimed { terminal }) => session_event("thel-session-claimed", terminal),
+                Some(Event::Approve { approval }) => session_event("thel-session-approve", approval),
+                Some(Event::Resolved { req }) => session_event("thel-session-resolved", req),
                 None => {}
             },
             _ => break, // EOF / error: daemon gone
@@ -2453,16 +2870,26 @@ mod tests {
         assert_eq!(sh.subscribers.len(), 0);
     }
 
+    /// Opens tab "caller" running a shell, and returns its pid.
+    fn caller_tab(d: &Arc<Daemon>) -> u32 {
+        d.open("caller", "sh".into(), vec![], Some("/".into()), None, 80, 24, None).unwrap();
+        d.tabs.lock()["caller"].child.lock().process_id().unwrap()
+    }
+
+    /// A peer `pid`, in `d`'s tab "caller" when `sandboxed`.
+    fn peer(d: &Daemon, pid: Option<u32>, sandboxed: bool) -> Peer {
+        let tab = sandboxed.then(|| ("caller".into(), Arc::downgrade(&d.tabs.lock()["caller"].shared)));
+        Peer { pid, sandboxed, tab, program: None, fd: -1 }
+    }
+
     /// A terminal started for `thel session` that ends before any GUI shows it
     /// stays on the waiting list, and the GUI opening it later gets its exit
     /// instead of a second run.
     #[test]
     fn an_unshown_terminal_that_ended_is_not_run_again() {
         let d = Daemon::new();
-        d.open("caller", "sh".into(), vec![], Some("/".into()), None, 80, 24, None)
-            .unwrap();
-        let pid = d.tabs.lock()["caller"].child.lock().process_id().unwrap();
-        let inside = Peer { pid: Some(pid), sandboxed: false, tab: None };
+        let pid = caller_tab(&d);
+        let inside = peer(&d, Some(pid), false);
         let req = Request::New { name: None, cwd: "/".into(), command: vec!["true".into()] };
         let id = d.session(&inside, req).terminal.expect("a terminal id");
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -2486,7 +2913,7 @@ mod tests {
             rows: 24,
         };
         d.watchers.lock().push(client.clone());
-        dispatch(&d, open, &client, &Peer { pid: None, sandboxed: false, tab: None });
+        dispatch(&d, open, &client, &peer(&d, None, false));
 
         // Every window hears it is placed, so none holds it back to place again.
         let mut next = || parse_json::<Event>(&read_frame(&mut b).unwrap().1);
@@ -2573,14 +3000,12 @@ mod tests {
     #[test]
     fn a_program_in_a_tab_drives_sessions() {
         let d = Daemon::new();
-        d.open("caller", "sh".into(), vec![], Some("/".into()), None, 80, 24, None)
-            .unwrap();
-        let pid = d.tabs.lock()["caller"].child.lock().process_id().unwrap();
+        let pid = caller_tab(&d);
         d.directory.lock().insert(
             "main".into(),
             vec![DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["caller".into()] }],
         );
-        let inside = Peer { pid: Some(pid), sandboxed: false, tab: None };
+        let inside = peer(&d, Some(pid), false);
         let ask = |peer: &Peer, req: Request| d.session(peer, req);
 
         let new = ask(&inside, Request::New { name: None, cwd: "/tmp".into(), command: vec![] });
@@ -2594,8 +3019,9 @@ mod tests {
                 Place::Session { id: "s1".into() },
             ]
         );
+        assert!(d.adopts.lock().iter().all(|(a, _)| !a.sandboxed));
 
-        let listed = ask(&inside, Request::List).sessions;
+        let listed = ask(&inside, Request::List { all: false }).sessions;
         assert!(listed.iter().any(|l| l.id.as_deref() == Some("s1")
             && l.terminals.iter().any(|t| t.id == cat && t.state == crate::session::TerminalState::Starting)));
         assert!(ask(&inside, Request::SendKeys { terminal: cat.clone(), data: b"hi\r".to_vec() })
@@ -2609,10 +3035,12 @@ mod tests {
         let nope = Request::Terminal { session: Some("nope".into()), cwd: "/".into(), command: vec![] };
         assert!(err(ask(&inside, nope)).contains("no session named or with id \"nope\""));
 
-        let outside = Peer { pid: Some(std::process::id()), sandboxed: false, tab: None };
-        assert!(ask(&outside, Request::List).error.unwrap().contains("inside a thel terminal"));
-        let sandboxed = Peer { pid: Some(pid), sandboxed: true, tab: Some(("caller".into(), Arc::downgrade(&d.tabs.lock()["caller"].shared))) };
-        assert!(ask(&sandboxed, Request::List).error.unwrap().contains("sandboxed"));
+        let outside = peer(&d, Some(std::process::id()), false);
+        assert!(ask(&outside, Request::List { all: false }).error.unwrap().contains("inside a thel terminal"));
+        // A sandboxed program may list, but must ask for the rest (see
+        // a_sandboxed_request_waits_for_the_users_answer).
+        let sandboxed = peer(&d, Some(pid), true);
+        assert!(ask(&sandboxed, Request::List { all: false }).error.is_none());
 
         for id in ["caller".to_string(), new_id, cat] {
             d.kill(&id);
@@ -2642,6 +3070,313 @@ mod tests {
         ));
     }
 
+    /// Sends `req` from `peer` on another thread, for one that waits for an
+    /// answer.
+    #[cfg(target_os = "linux")]
+    fn ask_bg(d: &Arc<Daemon>, peer: &Peer, req: Request) -> std::thread::JoinHandle<Reply> {
+        let (d, peer) = (d.clone(), peer.clone());
+        std::thread::spawn(move || d.session(&peer, req))
+    }
+
+    /// A sandboxed program gets one question at a time per terminal, and a
+    /// request too long to show in full is refused without asking.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sandboxed_program_cant_flood_the_prompt() {
+        let d = Daemon::new();
+        let pid = caller_tab(&d);
+        let peer = peer(&d, Some(pid), true);
+        let long = Request::SendKeys { terminal: "caller".into(), data: vec![b'x'; APPROVAL_SUMMARY_MAX] };
+        let err = d.session(&peer, long).error.unwrap();
+        assert!(err.contains("too long"), "{err}");
+        assert!(d.approvals.lock().is_empty());
+
+        let keys = || Request::SendKeys { terminal: "caller".into(), data: b"ls".to_vec() };
+        let waiter = ask_bg(&d, &peer, keys());
+        let req = first_approval(&d).req;
+        let err = d.session(&peer, keys()).error.unwrap();
+        assert!(err.contains("already waiting"), "{err}");
+        // Whatever it names, so a wait tells it nothing about what is there.
+        let folder = Request::New { name: None, cwd: "/nope".into(), command: vec![] };
+        assert!(d.session(&peer, folder).error.unwrap().contains("already waiting"));
+        d.answer(req, false, false);
+        assert_eq!(waiter.join().unwrap().error.as_deref(), Some("denied in thel"));
+        d.kill("caller");
+    }
+
+    /// A question shown in a window that leaves is asked again in another.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_window_that_leaves_hands_on_its_questions() {
+        let d = Daemon::new();
+        caller_tab(&d);
+        let api = DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["caller".into()] };
+        d.report("w1".into(), vec![api]);
+        d.report("w2".into(), vec![DirSession { id: "s2".into(), name: "web".into(), terminals: vec![] }]);
+        let peer = peer(&d, None, true);
+        let waiter = ask_bg(&d, &peer, Request::SendKeys { terminal: "caller".into(), data: b"ls".to_vec() });
+        assert_eq!(first_approval(&d).window.as_deref(), Some("w1"));
+        d.report("w1".into(), vec![]);
+        let a = first_approval(&d);
+        assert_eq!(a.window.as_deref(), Some("w2"));
+        d.answer(a.req, false, false);
+        waiter.join().unwrap();
+        d.kill("caller");
+    }
+
+    /// A terminal asked to start in a folder that isn't there doesn't start.
+    #[test]
+    fn a_terminal_starts_only_in_a_folder() {
+        let d = Daemon::new();
+        let start = |cwd: &str| d.start(vec![], cwd.into(), Place::Session { id: "s1".into() }, false);
+        assert_eq!(start("/nope").unwrap_err(), "no folder /nope");
+        assert!(d.adopts.lock().is_empty());
+    }
+
+    /// A sandboxed list shows the caller's session and the ones it started
+    /// without asking, and every session after a yes.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sandboxed_list_shows_what_it_started_and_asks_for_the_rest() {
+        let d = Daemon::new();
+        caller_tab(&d);
+        d.directory.lock().insert(
+            "main".into(),
+            vec![
+                DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["caller".into()] },
+                DirSession { id: "s2".into(), name: "web".into(), terminals: vec!["t2".into()] },
+            ],
+        );
+        let peer = peer(&d, None, true);
+        let names = |r: Reply| r.sessions.into_iter().map(|l| l.name).collect::<Vec<_>>();
+        let new = Request::New { name: Some("dev".into()), cwd: "/".into(), command: vec!["cat".into()] };
+        let waiter = ask_bg(&d, &peer, new);
+        d.answer(first_approval(&d).req, true, false);
+        let dev = waiter.join().unwrap().terminal.expect("a terminal id");
+        assert_eq!(names(d.session(&peer, Request::List { all: false })), ["api", "dev"]);
+
+        // Once a window shows it, the session has an id and still lists.
+        d.adopts.lock().clear();
+        d.directory.lock().get_mut("main").unwrap().push(DirSession {
+            id: "s3".into(),
+            name: "dev".into(),
+            terminals: vec![dev.clone()],
+        });
+        assert_eq!(names(d.session(&peer, Request::List { all: false })), ["api", "dev"]);
+
+        let waiter = ask_bg(&d, &peer, Request::List { all: true });
+        let a = first_approval(&d);
+        assert_eq!(a.summary, "list every session and its terminals");
+        d.answer(a.req, true, false);
+        assert_eq!(names(waiter.join().unwrap()), ["api", "web", "dev"]);
+        d.kill(&dev);
+        d.kill("caller");
+        assert!(d.started.lock().is_empty());
+    }
+
+    /// The first question waiting for an answer, once one comes in.
+    #[cfg(target_os = "linux")]
+    fn first_approval(d: &Daemon) -> Approval {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some((a, _)) = d.approvals.lock().first() {
+                return a.clone();
+            }
+            assert!(std::time::Instant::now() < deadline, "no question came in");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// An allowed request acts on the session it was allowed for, not on one
+    /// that took its place under a name like its id, and a sandboxed list
+    /// shows only the caller's own session.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sandboxed_request_acts_on_the_session_it_was_allowed_for() {
+        let d = Daemon::new();
+        caller_tab(&d);
+        d.directory.lock().insert(
+            "main".into(),
+            vec![
+                DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["caller".into()] },
+                DirSession { id: "s2".into(), name: "web".into(), terminals: vec!["t2".into()] },
+            ],
+        );
+        let peer = peer(&d, None, true);
+        // A name it can't see gets the same answer whether it exists or not.
+        let nope = Request::Terminal { session: Some("nope".into()), cwd: "/".into(), command: vec![] };
+        assert_eq!(d.session(&peer, nope).error.as_deref(), Some("no session by that name or id"));
+        assert!(d.approvals.lock().is_empty());
+        let req = Request::Terminal { session: Some("s2".into()), cwd: "/".into(), command: vec![] };
+        let waiter = ask_bg(&d, &peer, req);
+        let a = first_approval(&d);
+        assert_eq!(a.summary, "open a terminal running a shell in /, in session \"web\"");
+        assert_eq!(a.caller_session.as_deref(), Some("session \"api\""));
+        d.directory.lock().get_mut("main").unwrap()[1] =
+            DirSession { id: "s9".into(), name: "s2".into(), terminals: vec![] };
+        d.answer(a.req, true, false);
+        assert_eq!(waiter.join().unwrap().error.as_deref(), Some("the session this was allowed for closed"));
+        assert!(d.adopts.lock().is_empty());
+
+        let listed = d.session(&peer, Request::List { all: false }).sessions;
+        assert_eq!(listed.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["api"]);
+        d.kill("caller");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sandboxed_request_waits_for_the_users_answer() {
+        let d = Daemon::new();
+        let pid = caller_tab(&d);
+        d.directory.lock().insert(
+            "main".into(),
+            vec![DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["caller".into()] }],
+        );
+        let peer = Peer { program: Some((pid, start_time(pid).unwrap())), ..peer(&d, Some(pid), true) };
+        let keys = || Request::SendKeys { terminal: "caller".into(), data: b"ls\r".to_vec() };
+        let asking = {
+            let (d, peer) = (d.clone(), peer.clone());
+            move |answer: Option<(bool, bool)>| {
+                let waiter = ask_bg(&d, &peer, keys());
+                let a = first_approval(&d);
+                assert_eq!(a.target.as_deref(), Some("caller"));
+                assert_eq!(a.window.as_deref(), Some("main"));
+                // The terminal's process stands in for the sandboxed program.
+                assert!(a.program.is_some_and(|p| p.starts_with('/')), "names the program");
+                let req = a.req;
+                if let Some((allow, remember)) = answer {
+                    d.answer(req, allow, remember);
+                    // A no's pause is set as the answer lands, before the
+                    // request wakes.
+                    assert!(allow || d.denied.lock().contains_key("caller"));
+                }
+                waiter.join().unwrap()
+            }
+        };
+
+        assert_eq!(asking(Some((false, false))).error.as_deref(), Some("denied in thel"));
+        // A no holds back the next question, longer after each no.
+        let again = || d.session(&peer, keys()).error.unwrap_or_default();
+        let pause_over = || d.denied.lock().get_mut("caller").unwrap().0 = std::time::Instant::now();
+        assert_eq!(again(), "denied in thel; ask again in 30 s");
+        pause_over();
+        assert_eq!(asking(Some((false, false))).error.as_deref(), Some("denied in thel"));
+        assert_eq!(again(), "denied in thel; ask again in 60 s");
+        pause_over();
+        assert!(asking(Some((true, false))).error.is_none());
+        assert!(d.denied.lock().is_empty());
+        assert!(d.approvals.lock().is_empty());
+        // Allowed for good: the next request goes through without asking.
+        assert!(asking(Some((true, true))).error.is_none());
+        assert!(d.session(&peer, keys()).error.is_none());
+        let new = d.session(&peer, Request::New { name: None, cwd: "/".into(), command: vec![] });
+        assert!(d.adopts.lock().iter().all(|(a, _)| a.sandboxed));
+        d.kill(&new.terminal.expect("a terminal id"));
+        assert!(d.approvals.lock().is_empty());
+        // For that program only: another one in the terminal still asks.
+        let other = Peer { program: Some((pid, 2)), ..peer.clone() };
+        // One the prompt can't name is allowed once at most.
+        let waiter = ask_bg(&d, &other, keys());
+        let a = first_approval(&d);
+        assert_eq!(a.program, None);
+        d.answer(a.req, true, true);
+        assert!(waiter.join().unwrap().error.is_none());
+        assert_eq!(d.trusted.lock().get("caller"), peer.program.as_ref());
+        let waiter = ask_bg(&d, &other, keys());
+        d.answer(first_approval(&d).req, false, false);
+        assert_eq!(waiter.join().unwrap().error.as_deref(), Some("denied in thel"));
+        // Until the terminal ends.
+        d.kill("caller");
+        assert!(d.trusted.lock().is_empty());
+    }
+
+    /// A caller that hangs up while it waits takes its question with it, and
+    /// one nobody answers gives up after the timeout.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_question_ends_with_its_caller_or_its_timeout() {
+        let mut d = Daemon::new();
+        Arc::get_mut(&mut d).unwrap().approval_timeout = Duration::from_millis(300);
+        caller_tab(&d);
+        let keys = || Request::SendKeys { terminal: "caller".into(), data: b"ls".to_vec() };
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let peer = Peer { fd: ours.as_raw_fd(), ..peer(&d, None, true) };
+
+        let waiter = ask_bg(&d, &peer, keys());
+        first_approval(&d);
+        // Bytes left unread don't hide the hangup.
+        (&theirs).write_all(b"x").unwrap();
+        drop(theirs);
+        assert_eq!(waiter.join().unwrap().error.as_deref(), Some("the caller hung up"));
+        assert!(d.approvals.lock().is_empty());
+        // And pauses the terminal, so it can't swap in another question at once.
+        assert!(d.session(&peer, keys()).error.unwrap().contains("ask again in 30 s"));
+        d.denied.lock().get_mut("caller").unwrap().0 = std::time::Instant::now();
+
+        // Also when an Allow comes in before the daemon noticed: it doesn't
+        // lift the pause, which goes on doubling.
+        let (ours2, theirs) = UnixStream::pair().unwrap();
+        let late = Peer { fd: ours2.as_raw_fd(), ..peer.clone() };
+        let waiter = ask_bg(&d, &late, keys());
+        let req = first_approval(&d).req;
+        drop(theirs);
+        d.answer(req, true, false);
+        assert_eq!(waiter.join().unwrap().error.as_deref(), Some("the caller hung up"));
+        assert!(d.session(&peer, keys()).error.unwrap().contains("ask again in 60 s"));
+
+        // Each question that goes unanswered lengthens the pause, like a no.
+        d.denied.lock().insert("caller".into(), (std::time::Instant::now(), DENY_PAUSE));
+        let alone = Peer { fd: -1, ..peer };
+        assert!(d.session(&alone, keys()).error.unwrap().contains("no answer in thel"));
+        assert!(d.approvals.lock().is_empty());
+        assert!(d.session(&alone, keys()).error.unwrap().contains("ask again in 60 s"));
+        d.kill("caller");
+    }
+
+    /// A terminal that ends takes its questions with it, and a yes that lands
+    /// after the end can't trust it, nor can a question from it be asked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_question_ends_with_its_terminal() {
+        let d = Daemon::new();
+        caller_tab(&d);
+        let peer = peer(&d, None, true);
+        let keys = || Request::SendKeys { terminal: "caller".into(), data: b"ls".to_vec() };
+        let waiter = ask_bg(&d, &peer, keys());
+        let req = first_approval(&d).req;
+        d.kill("caller");
+        assert_eq!(waiter.join().unwrap().error.as_deref(), Some("the caller's terminal closed"));
+        assert!(d.approvals.lock().is_empty());
+        d.answer(req, true, true);
+        assert!(d.trusted.lock().is_empty());
+        assert_eq!(d.session(&peer, keys()).error.as_deref(), Some("the caller's terminal closed"));
+        // Nor once a new tab takes its id.
+        caller_tab(&d);
+        assert_eq!(d.session(&peer, keys()).error.as_deref(), Some("the caller's terminal closed"));
+        assert!(d.approvals.lock().is_empty());
+        d.kill("caller");
+    }
+
+    /// A program is known by its start time, which stays put while it runs
+    /// and comes after its parent's.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reads_a_start_time_that_stays_put() {
+        let me = std::process::id();
+        let first = start_time(me).expect("readable");
+        let busy = std::time::Instant::now();
+        while busy.elapsed() < Duration::from_millis(100) {
+            std::hint::black_box(first);
+        }
+        assert_eq!(start_time(me), Some(first));
+        assert!(first >= start_time(parent_pid(me).unwrap()).unwrap());
+        let chain = steady_ancestry(me).expect("a steady chain");
+        assert_eq!(chain[0], (me, first));
+        assert!(sandbox_program(&chain).is_some());
+        assert_eq!(exe_of(me, first), std::env::current_exe().ok().map(|e| e.to_string_lossy().into_owned()));
+        assert_eq!(exe_of(me, first + 1), None);
+    }
+
     #[test]
     fn reads_no_new_privs_from_proc_status() {
         assert!(status_no_new_privs("Name:\tsh\nNoNewPrivs:\t1\nSeccomp:\t0\n"));
@@ -2664,6 +3399,10 @@ mod tests {
         assert!(!Command::Status.harmless(own) && !Command::Usage.harmless(own));
         assert!(!Command::Detach { id: id() }.harmless(own));
         assert!(!Command::Resize { id: id(), cols: 1, rows: 1 }.harmless(own));
+        // Otherwise it could approve its own requests, or misplace them.
+        assert!(!Command::Answer { req: 1, allow: true, remember: true }.harmless(own));
+        assert!(!Command::Directory { window: "main".into(), sessions: vec![] }.harmless(own));
+        assert!(!Command::Watch.harmless(own));
         let open = Command::Open {
             id: id(),
             command: "sh".into(),

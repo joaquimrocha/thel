@@ -4,15 +4,17 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 // user isn't already looking at thel. The window opens focused.
 let focused = true;
 const focusGainedCbs = new Set<() => void>();
+const focusChangeCbs = new Set<() => void>();
 
-// Update focus state and, on a false->true transition, run the focus-gained
-// callbacks. Both the DOM fallback and Tauri's authoritative events funnel
-// through here, so a callback runs once per gain no matter which source
-// reported it.
+// Update focus state and run the change callbacks, and on a gain the
+// focus-gained ones. Both the DOM fallback and Tauri's authoritative events
+// funnel through here, so a callback runs once per change no matter which
+// source reported it.
 function setFocused(next: boolean): void {
-  const gained = next && !focused;
+  if (next === focused) return;
   focused = next;
-  if (gained) focusGainedCbs.forEach((cb) => cb());
+  if (next) focusGainedCbs.forEach((cb) => cb());
+  focusChangeCbs.forEach((cb) => cb());
 }
 
 // DOM focus/blur as a baseline (plain browser / some webviews).
@@ -44,6 +46,15 @@ export function onFocusGained(cb: () => void): () => void {
   focusGainedCbs.add(cb);
   return () => {
     focusGainedCbs.delete(cb);
+  };
+}
+
+/** Run `cb` whenever the app window gains or loses focus, from the same
+ * source as onFocusGained. Returns an unsubscribe. */
+export function onFocusChange(cb: () => void): () => void {
+  focusChangeCbs.add(cb);
+  return () => {
+    focusChangeCbs.delete(cb);
   };
 }
 

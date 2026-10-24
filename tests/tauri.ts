@@ -232,6 +232,11 @@ function install(config: MockConfig) {
         store.reported = args.sessions;
         return null;
       }
+      case "answer_session": {
+        const store = w.__MOCK__ as Record<string, unknown>;
+        store.answers = [...((store.answers as unknown[]) ?? []), args];
+        return null;
+      }
       case "watch_sessions": {
         const store = w.__MOCK__ as Record<string, unknown>;
         store.watched = ((store.watched as number) ?? 0) + 1;

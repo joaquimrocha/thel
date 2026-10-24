@@ -30,7 +30,9 @@ pub enum Request {
         cwd: String,
         command: Vec<String>,
     },
-    List,
+    /// The sessions; for a sandboxed caller, without `all`, only its own and
+    /// those it started.
+    List { all: bool },
     SendKeys {
         terminal: String,
         data: Vec<u8>,
@@ -43,10 +45,26 @@ impl Request {
     pub fn check(&self) -> Result<(), String> {
         match self {
             Request::New { cwd, .. } | Request::Terminal { cwd, .. } if !Path::new(cwd).is_absolute() => {
-                Err(format!("the directory {cwd} is not an absolute path"))
+                Err(format!("the directory {} is not an absolute path", shown(cwd)))
             }
             _ => Ok(()),
         }
+    }
+
+    /// The request with the links in its directory resolved, so a prompt
+    /// shows the folder the terminal starts in.
+    pub fn resolved(self) -> Result<Request, String> {
+        // One error whatever went wrong, so a sandboxed caller learns no more
+        // of what is there than a prompt would show.
+        let real = |cwd: String| match std::fs::canonicalize(&cwd) {
+            Ok(p) if p.is_dir() => Ok(p.to_string_lossy().into_owned()),
+            _ => Err(format!("no folder {}", shown(&cwd))),
+        };
+        Ok(match self {
+            Request::New { name, cwd, command } => Request::New { name, cwd: real(cwd)?, command },
+            Request::Terminal { session, cwd, command } => Request::Terminal { session, cwd: real(cwd)?, command },
+            other => other,
+        })
     }
 }
 
@@ -96,6 +114,101 @@ impl TerminalState {
     }
 }
 
+/// A sandboxed caller's request, waiting for the user to allow or deny it in a
+/// thel window.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Approval {
+    pub req: u64,
+    /// The terminal the caller runs in.
+    pub caller: String,
+    /// How the prompt names the session showing `caller` (see session_label).
+    pub caller_session: Option<String>,
+    /// What it asks for, in words.
+    pub summary: String,
+    /// The terminal a SendKeys request types into, for the GUI to name.
+    pub target: Option<String>,
+    /// How the prompt names the session showing `target` (see session_label).
+    pub target_session: Option<String>,
+    /// The window that shows the caller's terminal, which is the one to ask.
+    pub window: Option<String>,
+    /// The executable of the sandboxed program asking (see sandbox_program),
+    /// which a yes for good trusts along with all it runs.
+    pub program: Option<String>,
+}
+
+/// `req` in words, for the approval prompt. `session` is how it names the
+/// session a Terminal request acts on (see session_label); the other
+/// requests have none. Every part the caller chose goes through `shown` or
+/// `named`, so it can't pass for the prompt's own words. What runs and where
+/// comes first, before any name the caller chose.
+pub fn describe(req: &Request, session: &str) -> String {
+    let cmd = |c: &[String]| {
+        if c.is_empty() {
+            "a shell".to_string()
+        } else {
+            format!("`{}`", c.iter().map(|a| shown(a)).collect::<Vec<_>>().join(" "))
+        }
+    };
+    match req {
+        Request::New { name, cwd, command } => format!(
+            "open a session running {} in {}{}",
+            cmd(command),
+            shown(cwd),
+            name.as_ref().map_or(String::new(), |n| format!(", named {}", named(n)))
+        ),
+        Request::Terminal { cwd, command, .. } => {
+            format!("open a terminal running {} in {}, in {session}", cmd(command), shown(cwd))
+        }
+        Request::List { all: true } => "list every session and its terminals".into(),
+        Request::List { all: false } => "list the sessions".into(),
+        Request::SendKeys { terminal, data } => {
+            format!("type into terminal {}: {}", shown(terminal), shown_bytes(data))
+        }
+    }
+}
+
+/// Whether `b` shows as itself in the prompt: a plain path or word character.
+fn plain(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"/._-+=:,@%~".contains(&b)
+}
+
+/// Something that runs, as the approval prompt shows it: as it is when it
+/// holds only plain path and word characters, else in double quotes with
+/// everything but printable ASCII escaped. A blank-looking or invisible
+/// character can't hide what follows it.
+fn shown(s: &str) -> String {
+    if !s.is_empty() && s.bytes().all(plain) {
+        s.to_string()
+    } else {
+        format!("\"{}\"", s.escape_default())
+    }
+}
+
+/// Bytes to type, as the approval prompt shows them: like `shown`, with any
+/// byte outside printable ASCII as `\xNN`, so even bytes that aren't UTF-8
+/// show as what gets typed.
+fn shown_bytes(data: &[u8]) -> String {
+    if !data.is_empty() && data.iter().copied().all(plain) {
+        String::from_utf8_lossy(data).into_owned()
+    } else {
+        format!("\"{}\"", data.escape_ascii())
+    }
+}
+
+/// How many characters of a name the approval prompt shows, the same as
+/// TITLE_MAX in sessionBridge.ts for the names the GUI adds.
+const NAME_MAX: usize = 60;
+
+/// A name the caller chose, as the approval prompt shows it: its first
+/// `NAME_MAX` characters in double quotes, with everything but printable ASCII
+/// escaped. A look-alike quote or a run of blank characters can't fake the
+/// end of the name or push the rest of the prompt out of view.
+fn named(s: &str) -> String {
+    let cut: String = s.chars().take(NAME_MAX).collect();
+    let more = if cut.len() < s.len() { "…" } else { "" };
+    format!("\"{}{more}\"", cut.escape_default())
+}
+
 /// A session as a GUI window reports it.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DirSession {
@@ -112,6 +225,9 @@ pub struct Adopt {
     pub args: Vec<String>,
     pub cwd: String,
     pub place: Place,
+    /// Started for a sandboxed program. A window restores it as a plain
+    /// shell, so the user's yes runs the command this once.
+    pub sandboxed: bool,
 }
 
 /// Where a window shows an Adopt: in a new session in `window` (with none,
@@ -154,7 +270,7 @@ pub fn report(dir: &mut Directory, window: String, sessions: Vec<DirSession>) {
 
 /// The session `key` names, by id or else by a unique name, and its window.
 pub fn find_session<'a>(dir: &'a Directory, key: &str) -> Result<(&'a str, &'a DirSession), String> {
-    if let Some(hit) = sessions(dir).find(|(_, s)| s.id == key) {
+    if let Some(hit) = session_by_id(dir, key) {
         return Ok(hit);
     }
     let named: Vec<_> = sessions(dir).filter(|(_, s)| s.name == key).collect();
@@ -167,6 +283,21 @@ pub fn find_session<'a>(dir: &'a Directory, key: &str) -> Result<(&'a str, &'a D
             many.iter().map(|(_, s)| s.id.as_str()).collect::<Vec<_>>().join(", ")
         )),
     }
+}
+
+/// How the approval prompt names session `id`, called `name`: by its name,
+/// and the start of its id too when another session has that name.
+pub fn session_label(dir: &Directory, id: &str, name: &str) -> String {
+    if matches!(find_session(dir, name), Ok((_, s)) if s.id == id) {
+        format!("session {}", named(name))
+    } else {
+        format!("session {} (id {})", named(name), shown(&id.chars().take(8).collect::<String>()))
+    }
+}
+
+/// The session with id `id`, and its window.
+pub fn session_by_id<'a>(dir: &'a Directory, id: &str) -> Option<(&'a str, &'a DirSession)> {
+    sessions(dir).find(|(_, s)| s.id == id)
 }
 
 /// The session showing `terminal`, and its window.
@@ -282,7 +413,8 @@ fn key(name: &str) -> Option<Vec<u8>> {
 pub const HELP: &str = "Usage: thel session COMMAND [OPTIONS]
 
 Open, list and type into thel sessions from inside a thel terminal, e.g. from
-an agent. A sandboxed caller is refused.
+an agent. On Linux, a sandboxed caller's request waits for approval in the thel
+window.
 
 Commands:
   new [-n NAME] [-c DIR] [-- CMD [ARG...]]
@@ -291,8 +423,9 @@ Commands:
   terminal [-t SESSION] [-c DIR] [-- CMD [ARG...]]
         Open a terminal in SESSION, an id or a name (default: this terminal's
         session). Prints the terminal's id.
-  list [--json]
-        List the sessions and their terminals.
+  list [-a] [--json]
+        List the sessions and their terminals. A sandboxed caller sees only
+        its own session and those it started; -a asks to see all of them.
   send-keys -t TERMINAL [-l] KEY...
         Type into a terminal. Each KEY is text or a key name: Enter, Tab,
         Escape, BSpace, Space, Up, Down, Left, Right, Home, End, C-<letter>,
@@ -348,7 +481,7 @@ fn parse(args: &[String], cwd: &str) -> Result<Parsed, String> {
                 let v = it.next().ok_or_else(|| format!("{a} needs a value"))?;
                 opts.insert(a.as_str(), v.clone());
             }
-            "-l" | "--json" => {
+            "-l" | "--json" | "-a" => {
                 flags.insert(a.as_str());
             }
             // A word with a space in it is text, such as a note's "- [ ] item".
@@ -365,7 +498,7 @@ fn parse(args: &[String], cwd: &str) -> Result<Parsed, String> {
     let takes: &[&str] = match sub.as_str() {
         "new" => &["-n", "-c"],
         "terminal" => &["-t", "-c"],
-        "list" => &["--json"],
+        "list" => &["-a", "--json"],
         "send-keys" => &["-t", "-l"],
         "help" | "-h" | "--help" => return Ok(Parsed::Help),
         other => return Err(format!("unknown command {other}")),
@@ -397,7 +530,7 @@ fn parse(args: &[String], cwd: &str) -> Result<Parsed, String> {
             command: tail,
         },
         "list" if !tail.is_empty() => return Err(format!("unexpected argument {}", tail[0])),
-        "list" => Request::List,
+        "list" => Request::List { all: flags.contains("-a") },
         "send-keys" => Request::SendKeys {
             terminal: opts.get("-t").cloned().ok_or("send-keys needs -t TERMINAL")?,
             data: keys(&tail, flags.contains("-l")),
@@ -439,7 +572,7 @@ pub fn run(args: &[String]) -> i32 {
     if let Some(t) = reply.terminal {
         println!("{t}");
     }
-    if req == Request::List {
+    if matches!(req, Request::List { .. }) {
         if json {
             println!("{}", serde_json::to_string_pretty(&reply.sessions).unwrap_or_default());
         } else {
@@ -454,9 +587,10 @@ fn format_list(sessions: &[Listed]) -> String {
     let mut out = String::new();
     for s in sessions {
         let id = s.id.as_deref().unwrap_or("(not shown yet)");
-        out.push_str(&format!("{}\t{id}\n", if s.name.is_empty() { "?" } else { &s.name }));
+        let name = if s.name.is_empty() { "?".to_string() } else { shown(&s.name) };
+        out.push_str(&format!("{name}\t{}\n", shown(id)));
         for t in &s.terminals {
-            out.push_str(&format!("  {}\t{}\n", t.id, t.state.as_str()));
+            out.push_str(&format!("  {}\t{}\n", shown(&t.id), t.state.as_str()));
         }
     }
     out
@@ -497,7 +631,11 @@ mod tests {
         );
         assert_eq!(
             parse(&args(&["list", "--json"]), "/w").unwrap(),
-            Parsed::Ask { req: Request::List, json: true }
+            Parsed::Ask { req: Request::List { all: false }, json: true }
+        );
+        assert_eq!(
+            parse(&args(&["list", "-a"]), "/w").unwrap(),
+            Parsed::Ask { req: Request::List { all: true }, json: false }
         );
         assert_eq!(parse(&args(&[]), "/w").unwrap(), Parsed::Help);
         assert_eq!(parse(&args(&["new", "--help"]), "/w").unwrap(), Parsed::Help);
@@ -564,6 +702,60 @@ mod tests {
         assert_eq!(r.check(), Ok(()));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolves_a_link_in_the_directory_to_ask_about() {
+        let r = Request::Terminal { session: None, cwd: "/proc/self/cwd".into(), command: vec![] };
+        let Request::Terminal { cwd, .. } = r.resolved().unwrap() else { panic!() };
+        assert_eq!(cwd, std::env::current_dir().unwrap().to_string_lossy());
+        let gone = Request::New { name: None, cwd: "/nonexistent-thel".into(), command: vec![] };
+        assert_eq!(gone.resolved().unwrap_err(), "no folder /nonexistent-thel");
+        let file = Request::New { name: None, cwd: "/proc/self/exe".into(), command: vec![] };
+        assert_eq!(file.resolved().unwrap_err(), "no folder /proc/self/exe");
+    }
+
+    #[test]
+    fn tells_sessions_that_share_a_name_apart() {
+        let mut d = Directory::new();
+        let api = |id: &str| DirSession { id: id.into(), name: "api".into(), terminals: vec![] };
+        d.insert("w".into(), vec![api("3f2a9c1d77")]);
+        assert_eq!(session_label(&d, "3f2a9c1d77", "api"), "session \"api\"");
+        d.get_mut("w").unwrap().push(api("b0"));
+        assert_eq!(session_label(&d, "3f2a9c1d77", "api"), "session \"api\" (id 3f2a9c1d)");
+    }
+
+    #[test]
+    fn describes_requests_for_the_prompt() {
+        let r = Request::New { name: Some("api".into()), cwd: "/srv".into(), command: args(&["npm", "test"]) };
+        assert_eq!(describe(&r, ""), "open a session running `npm test` in /srv, named \"api\"");
+        let r = Request::Terminal { session: None, cwd: "/".into(), command: vec![] };
+        assert_eq!(describe(&r, "session \"api\""), "open a terminal running a shell in /, in session \"api\"");
+        // Control characters show escaped, so the prompt shows what gets typed.
+        let r = Request::SendKeys { terminal: "t1".into(), data: b"rm -rf ~\r".to_vec() };
+        assert_eq!(describe(&r, ""), "type into terminal t1: \"rm -rf ~\\r\"");
+        // What the caller chose can't end the sentence early or reorder it.
+        let r = Request::New {
+            name: Some("x\" in /srv running `ls`. Safe".into()),
+            cwd: "/srv\n\nthel checked this".into(),
+            command: args(&["sh", "-c", "curl x | sh", "\u{202e}ls"]),
+        };
+        assert_eq!(
+            describe(&r, ""),
+            "open a session running `sh -c \"curl x | sh\" \"\\u{202e}ls\"` \
+             in \"/srv\\n\\nthel checked this\", named \"x\\\" in /srv running `ls`. Safe\""
+        );
+        // A name can't fake its closing quote with a look-alike, nor hide what
+        // follows it behind a long run of blank characters.
+        let name = format!("api\u{201d} {}", "\u{2800}".repeat(100));
+        assert_eq!(named(&name), format!("\"api\\u{{201d}} {}…\"", "\\u{2800}".repeat(55)));
+        // A blank-looking character in what runs or gets typed shows escaped,
+        // and so does a byte that isn't UTF-8.
+        let r = Request::Terminal { session: None, cwd: "/".into(), command: args(&["\u{2800}\u{2800}rm"]) };
+        assert_eq!(describe(&r, "session \"api\""), "open a terminal running `\"\\u{2800}\\u{2800}rm\"` in /, in session \"api\"");
+        let r = Request::SendKeys { terminal: "t1".into(), data: b"\xe2\xa0\x80\x9b; rm".to_vec() };
+        assert_eq!(describe(&r, ""), "type into terminal t1: \"\\xe2\\xa0\\x80\\x9b; rm\"");
+    }
+
     #[test]
     fn finds_the_caller_by_its_ancestry() {
         let roots = HashMap::from([(100, "t1".to_string()), (200, "t2".to_string())]);
@@ -611,6 +803,7 @@ mod tests {
                 args: vec![],
                 cwd: "/".into(),
                 place: Place::Session { id: "s1".into() },
+                sandboxed: false,
             },
             Adopt {
                 terminal: "t6".into(),
@@ -618,6 +811,7 @@ mod tests {
                 args: vec![],
                 cwd: "/".into(),
                 place: Place::NewSession { name: "fresh".into(), window: Some("main".into()) },
+                sandboxed: false,
             },
         ];
         let mut got = list(&d, &alive, &adopts);
@@ -630,5 +824,7 @@ mod tests {
         // One that ended before a window showed it.
         assert_eq!((got[1].id.as_deref(), states(&got[1])), (None, vec!["t6 exited".to_string()]));
         assert_eq!(format_list(&got[2..]), "web\ts2\n  t3\trunning\n");
+        got[2].name = "\x1b]52;c;eA==\x07".into();
+        assert_eq!(format_list(&got[2..]), "\"\\u{1b}]52;c;eA==\\u{7}\"\ts2\n  t3\trunning\n");
     }
 }

@@ -96,9 +96,10 @@ async fn stop_port_process(terminal: String, pid: u32) -> Result<(), String> {
     blocking(move || pty::stop_listener(&terminal, pid)).await
 }
 
-/// Has the daemon hand this GUI the terminals it starts for `thel session`, as
-/// `thel-session-adopt` events for each window to place. Each call also
-/// replays the ones still waiting, so a window that just opened sees them.
+/// Has the daemon send this GUI its `thel session` events: the terminals it
+/// starts (`thel-session-adopt`) and the sandboxed callers' requests to ask
+/// about (`thel-session-approve`, `thel-session-resolved`). Each call also
+/// replays what still waits, so a window that just opened sees it.
 #[tauri::command(async)]
 fn watch_sessions(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(unix)]
@@ -106,6 +107,18 @@ fn watch_sessions(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(not(unix))]
     {
         let _ = app;
+        Ok(())
+    }
+}
+
+/// The user's answer to a sandboxed program's `thel session` request.
+#[tauri::command(async)]
+fn answer_session(req: u64, allow: bool, remember: bool) -> Result<(), String> {
+    #[cfg(unix)]
+    return daemon::answer(req, allow, remember);
+    #[cfg(not(unix))]
+    {
+        let _ = (req, allow, remember);
         Ok(())
     }
 }
@@ -796,6 +809,7 @@ pub fn run() {
             stop_port_process,
             watch_sessions,
             report_sessions,
+            answer_session,
             kill_terminal_window,
             terminal_cwd,
             update_app_menu,
