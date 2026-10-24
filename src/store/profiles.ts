@@ -167,11 +167,13 @@ export async function restoreOpenProfiles() {
 }
 
 /** Drop this window from the open list as it closes. The last window is left in
- * place: the app is quitting, and that list is what the next launch restores. */
-export async function releaseProfileWindow() {
+ * place: the app is quitting, and that list is what the next launch restores.
+ * Returns whether this window was dropped, so it won't come back. */
+export async function releaseProfileWindow(): Promise<boolean> {
   const open = await readOpen();
-  if (open.length <= 1) return;
+  if (open.length <= 1) return false;
   await writeOpen(open.filter((x) => x !== currentProfileId()));
+  return true;
 }
 
 interface ProfilesState {

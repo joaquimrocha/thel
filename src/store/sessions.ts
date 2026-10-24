@@ -103,6 +103,21 @@ export interface SessionInit {
   repoMain?: string;
 }
 
+// A session with one pane that holds `terminals`.
+function newSession(init: SessionInit & { name: string }, terminals: Terminal[] = []): Session {
+  const groupId = crypto.randomUUID();
+  return {
+    id: crypto.randomUUID(),
+    name: init.name,
+    cwd: init.cwd,
+    repoRoot: init.repoRoot,
+    repoMain: init.repoMain,
+    groups: [{ id: groupId, terminals, activeTerminalId: terminals[0]?.id }],
+    layout: { t: "leaf", group: groupId },
+    activeGroupId: groupId,
+  };
+}
+
 /** All terminals in a session, flattened across its split groups. */
 export function sessionTerminals(s: Session): Terminal[] {
   return s.groups.flatMap((g) => g.terminals);
@@ -195,6 +210,14 @@ export interface SessionState {
 
   // groupId defaults to the session's active group.
   addTerminal: (sessionId: string, term: Terminal, groupId?: string) => void;
+  // Shows a terminal something else started (`thel session`) without taking
+  // the user away from what they look at: into an existing session's active
+  // pane, or as a new session. Returns the session that holds it, undefined
+  // when the session is not in this window.
+  adoptTerminal: (
+    term: Terminal,
+    place: { sessionId: string } | { name: string; cwd: string },
+  ) => string | undefined;
   // Open `term` in a new pane split off `targetGroupId` (or the active pane) in
   // the given direction.
   splitGroup: (
@@ -306,23 +329,17 @@ function patchTerminal(
   });
 }
 
+/** Ids of the sessions closed in this window. A terminal `thel session`
+ * started in one just before it closed still comes (see sessionBridge). */
+export const closedSessions = new Set<string>();
+
 export const useSessions = create<SessionState>((set, get) => ({
   sessions: [],
   activeSessionId: undefined,
   hydrated: false,
 
   addSession: (init) => {
-    const groupId = crypto.randomUUID();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      name: init?.name ?? `Session ${get().sessions.length + 1}`,
-      cwd: init?.cwd,
-      repoRoot: init?.repoRoot,
-      repoMain: init?.repoMain,
-      groups: [{ id: groupId, terminals: [] }],
-      layout: { t: "leaf", group: groupId },
-      activeGroupId: groupId,
-    };
+    const session = newSession({ ...init, name: init?.name ?? `Session ${get().sessions.length + 1}` });
     set((s) => ({
       sessions: [...s.sessions, session],
       activeSessionId: session.id,
@@ -331,6 +348,7 @@ export const useSessions = create<SessionState>((set, get) => ({
   },
 
   removeSession: (id) => {
+    closedSessions.add(id);
     // Kill every terminal's process in the session. The daemon keeps tabs alive
     // on detach, so closing a session must kill them explicitly.
     const session = get().sessions.find((x) => x.id === id);
@@ -416,6 +434,39 @@ export const useSessions = create<SessionState>((set, get) => ({
         };
       }),
     })),
+
+  adoptTerminal: (term, place) => {
+    const holder = get().sessions.find((s) => sessionTerminals(s).some((t) => t.id === term.id));
+    if (holder) return holder.id;
+    if ("sessionId" in place) {
+      if (!get().sessions.some((s) => s.id === place.sessionId)) return undefined;
+      set((s) => ({
+        sessions: s.sessions.map((ss) =>
+          ss.id !== place.sessionId
+            ? ss
+            : {
+                ...ss,
+                groups: ss.groups.map((g) =>
+                  g.id === activeGroupOf(ss)?.id
+                    ? {
+                        ...g,
+                        terminals: [...g.terminals, term],
+                        activeTerminalId: g.activeTerminalId ?? term.id,
+                      }
+                    : g,
+                ),
+              },
+        ),
+      }));
+      return place.sessionId;
+    }
+    const session = newSession(place, [term]);
+    set((s) => ({
+      sessions: [...s.sessions, session],
+      activeSessionId: s.activeSessionId ?? session.id,
+    }));
+    return session.id;
+  },
 
   splitGroup: (sessionId, term, dir, targetGroupId) =>
     set((s) => ({

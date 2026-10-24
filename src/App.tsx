@@ -28,6 +28,7 @@ import {
   flushSessions,
   startSessionMoves,
 } from "@/lib/persistence";
+import { startSessionBridge, withdrawSessions } from "@/lib/sessionBridge";
 import { checkDaemon, killTerminalWindow } from "@/lib/pty";
 import { hydrateLaunchers, startLauncherPersistence, flushLaunchers } from "@/store/launchers";
 import { hydrateKeybindings, startKeybindingPersistence, flushKeybindings } from "@/store/keybindings";
@@ -153,8 +154,9 @@ export default function App() {
           );
       }
       // The window is closing for real now, so take it out of the list of
-      // profiles to reopen on the next launch.
-      await releaseProfileWindow();
+      // profiles to reopen on the next launch, and its sessions out of what
+      // `thel session` can reach.
+      if (await releaseProfileWindow()) await withdrawSessions();
     });
     return () => void unlisten.then((f) => f());
   }, []);
@@ -165,6 +167,7 @@ export default function App() {
   // previous version: if so, prompt to restart it and defer hydration (which
   // would auto-start terminals against it) until the user resolves it.
   useEffect(() => {
+    let stopped = false;
     let unsubscribe = () => {};
     void (async () => {
       // A main window that's only here to reopen other profiles is about to go,
@@ -178,13 +181,21 @@ export default function App() {
       const stopMoves = await startSessionMoves();
       await hydrateSessions();
       const stopPersistence = startPersistence();
+      const stopBridge = startSessionBridge();
       unsubscribe = () => {
         stopPersistence();
         stopMoves();
+        stopBridge();
       };
+      // Cleaned up meanwhile, as StrictMode's second mount in dev does: the
+      // mount that follows starts its own.
+      if (stopped) unsubscribe();
       for (const s of useSessions.getState().sessions) void refreshSessionGit(s.id);
     })();
-    return () => unsubscribe();
+    return () => {
+      stopped = true;
+      unsubscribe();
+    };
   }, []);
 
   // Restore + persist launchers.

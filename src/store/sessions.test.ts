@@ -143,6 +143,16 @@ describe("reorderSessionBlock", () => {
   });
 });
 
+describe("adoptTerminal", () => {
+  test("lands in the first group when the active group id is stale", () => {
+    useSessions.setState({
+      sessions: seed().map((s) => (s.id === "s2" ? { ...s, activeGroupId: "gone" } : s)),
+    });
+    useSessions.getState().adoptTerminal(term("t9"), { sessionId: "s2" });
+    expect(S()[1].groups[0].terminals.map((t) => t.id)).toEqual(["t4", "t9"]);
+  });
+});
+
 describe("markExited", () => {
   test("drops the exited terminal's listening ports", () => {
     useSessions.getState().setPorts("t1", [{ port: 5173, pid: 42, name: "node" }]);

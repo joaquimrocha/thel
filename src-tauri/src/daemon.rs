@@ -20,7 +20,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, LazyLock, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -432,6 +432,9 @@ enum Event {
     Error { id: String, message: String },
     // A terminal started for `thel session`, for a GUI window to show.
     Adopt { adopt: Adopt },
+    // An adopted terminal no longer waits for a window: one opened it, or it
+    // was closed. Windows that held it back for a session on its way drop it.
+    Claimed { terminal: String },
 }
 
 /// Reply to Command::Status: tab id -> a foreground command is running.
@@ -1106,6 +1109,7 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>, peer: &Pee
                 })
             };
             if let Some((exited, shared)) = waiting {
+                daemon.broadcast(&Event::Claimed { terminal: id.clone() });
                 match shared {
                     Some(shared) => reattach(&mut shared.lock(), &id, client),
                     None => {
@@ -1142,10 +1146,16 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>, peer: &Pee
             client.enqueue(Arc::new(control_json(&reply)));
         }
         Command::Watch => {
+            // Held across the replay: what is added meanwhile is broadcast once
+            // the lock is free, so it reaches this watcher instead of falling
+            // between the replay and the registration.
+            let mut watchers = daemon.watchers.lock();
             for (adopt, _) in daemon.adopts.lock().iter().cloned() {
                 client.enqueue(Arc::new(control_json(&Event::Adopt { adopt })));
             }
-            daemon.watchers.lock().push(client.clone());
+            if !watchers.iter().any(|w| Arc::ptr_eq(w, client)) {
+                watchers.push(client.clone());
+            }
         }
         Command::Directory { window, sessions } => {
             crate::session::report(&mut daemon.directory.lock(), window, sessions);
@@ -1348,7 +1358,17 @@ impl Daemon {
         let removed = self.tabs.lock().remove(id);
         if let Some(t) = removed {
             kill_session_and_reap(&t.child);
-            self.ended_unshown(id, None);
+            // A GUI closes a terminal no window was shown when it closed the
+            // terminal's session, so none waits for it.
+            let claimed = {
+                let mut adopts = self.adopts.lock();
+                let before = adopts.len();
+                adopts.retain(|(a, _)| a.terminal != id);
+                adopts.len() < before
+            };
+            if claimed {
+                self.broadcast(&Event::Claimed { terminal: id.to_string() });
+            }
         }
         self.maybe_schedule_exit();
     }
@@ -1767,6 +1787,11 @@ fn client() -> Result<Arc<DaemonClient>, String> {
         routes,
         build,
     });
+    for cmd in SESSION_REPLAY.lock().commands() {
+        // A failed send leaves this connection broken, and the next call that
+        // uses it drops it and reconnects, which replays again.
+        let _ = c.send_frame(CONTROL, &serde_json::to_vec(&cmd).unwrap_or_default());
+    }
     *g = Some(c.clone());
     Ok(c)
 }
@@ -1911,6 +1936,65 @@ pub fn stop_listener(id: &str, pid: u32) -> Result<(), String> {
     reply.error.map_or(Ok(()), Err)
 }
 
+/// What this GUI told the daemon for `thel session`. A daemon that was
+/// restarted, or that dropped the old connection, knows none of it, so each new
+/// connection sends it again.
+#[derive(Default)]
+struct SessionReplay {
+    watching: bool,
+    /// Each window's last report. A window that left keeps its empty one, so
+    /// a daemon that missed it still drops that window's sessions.
+    directory: Directory,
+}
+
+impl SessionReplay {
+    fn commands(&self) -> Vec<Command> {
+        let mut cmds: Vec<Command> = self
+            .directory
+            .iter()
+            .map(|(window, sessions)| Command::Directory {
+                window: window.clone(),
+                sessions: sessions.clone(),
+            })
+            .collect();
+        cmds.extend(self.watching.then_some(Command::Watch));
+        cmds
+    }
+}
+
+static SESSION_REPLAY: LazyLock<Mutex<SessionReplay>> = LazyLock::new(Default::default);
+
+/// The app the GUI's connection hands terminals started for `thel session` to.
+static SESSION_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// Sends `cmd` on the GUI's connection.
+fn send_command(cmd: &Command) -> Result<(), String> {
+    let c = client()?;
+    on_client_error(c.send_frame(CONTROL, &serde_json::to_vec(cmd).unwrap_or_default()))
+}
+
+/// Has the daemon send this GUI every terminal started for `thel session`,
+/// waiting ones first, and passes each to `app`. Call once.
+pub fn watch(app: tauri::AppHandle) -> Result<(), String> {
+    // Already set by an earlier call, which keeps getting them.
+    let _ = SESSION_APP.set(app);
+    SESSION_REPLAY.lock().watching = true;
+    send_command(&Command::Watch)
+}
+
+/// Reports a window's sessions, so `thel session` can find and list them.
+pub fn report_sessions(window: String, sessions: Vec<DirSession>) -> Result<(), String> {
+    // Sent under the replay lock, so two reports reach the daemon in the order
+    // they were recorded and the last one wins on both sides. The client
+    // comes first: a reconnect takes the replay lock after the client's.
+    let c = client()?;
+    let mut replay = SESSION_REPLAY.lock();
+    replay.directory.insert(window.clone(), sessions.clone());
+    let res = c.send_frame(CONTROL, &serde_json::to_vec(&Command::Directory { window, sessions }).unwrap_or_default());
+    drop(replay);
+    on_client_error(res)
+}
+
 /// Send a `thel session` request and wait for the daemon's answer.
 pub fn session_request(req: &Request) -> Result<Reply, String> {
     query(&Command::Session { req: req.clone() })
@@ -1974,7 +2058,21 @@ fn client_read_loop(mut r: UnixStream, routes: Arc<Mutex<HashMap<String, Channel
                 Some(Event::Error { id, message }) => {
                     eprintln!("[thel] daemon error for {id}: {message}");
                 }
-                Some(Event::Adopt { .. }) | None => {}
+                Some(Event::Adopt { adopt }) => {
+                    if let Some(app) = SESSION_APP.get() {
+                        // Fails only once the app is shutting down, when no
+                        // window is left to show it; the daemon still lists it
+                        // for the next start.
+                        let _ = tauri::Emitter::emit(app, "thel-session-adopt", &adopt);
+                    }
+                }
+                Some(Event::Claimed { terminal }) => {
+                    if let Some(app) = SESSION_APP.get() {
+                        // As for an Adopt: only a GUI on its way out misses it.
+                        let _ = tauri::Emitter::emit(app, "thel-session-claimed", &terminal);
+                    }
+                }
+                None => {}
             },
             _ => break, // EOF / error: daemon gone
         }
@@ -2387,16 +2485,24 @@ mod tests {
             cols: 80,
             rows: 24,
         };
+        d.watchers.lock().push(client.clone());
         dispatch(&d, open, &client, &Peer { pid: None, sandboxed: false, tab: None });
 
-        let (ty, p) = read_frame(&mut b).unwrap();
-        assert_eq!(ty, CONTROL);
-        match parse_json::<Event>(&p) {
+        // Every window hears it is placed, so none holds it back to place again.
+        let mut next = || parse_json::<Event>(&read_frame(&mut b).unwrap().1);
+        assert!(matches!(next(), Some(Event::Claimed { terminal }) if terminal == id));
+        match next() {
             Some(Event::TabExited { id: got, code }) => assert_eq!((got, code), (id.clone(), Some(0))),
             _ => panic!("expected TabExited"),
         }
         assert!(!d.tabs.lock().contains_key(&id), "ran again");
         assert!(d.adopts.lock().is_empty());
+        // So does closing one no window opened yet.
+        let req = Request::New { name: None, cwd: "/".into(), command: vec!["sleep".into(), "10".into()] };
+        let id = d.session(&inside, req).terminal.expect("a terminal id");
+        assert!(matches!(next(), Some(Event::Adopt { .. })));
+        d.kill(&id);
+        assert!(matches!(next(), Some(Event::Claimed { terminal }) if terminal == id));
         d.kill("caller");
     }
 
@@ -2511,6 +2617,29 @@ mod tests {
         for id in ["caller".to_string(), new_id, cat] {
             d.kill(&id);
         }
+        assert!(d.adopts.lock().is_empty());
+    }
+
+    /// A new connection tells the daemon the windows' sessions, then watches
+    /// again; a GUI that never watched sends no Watch.
+    #[test]
+    fn a_new_connection_replays_what_the_gui_told_the_daemon() {
+        let mut r = SessionReplay::default();
+        assert!(r.commands().is_empty());
+        let s = DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["t1".into()] };
+        r.directory.insert("main".into(), vec![s]);
+        assert!(matches!(
+            r.commands().as_slice(),
+            [Command::Directory { window, sessions }] if window == "main" && sessions[0].id == "s1"
+        ));
+        r.watching = true;
+        assert!(matches!(r.commands().as_slice(), [Command::Directory { .. }, Command::Watch]));
+        // A window that closed for good is told again that it has nothing.
+        r.directory.insert("main".into(), vec![]);
+        assert!(matches!(
+            r.commands().as_slice(),
+            [Command::Directory { window, sessions }, Command::Watch] if window == "main" && sessions.is_empty()
+        ));
     }
 
     #[test]
