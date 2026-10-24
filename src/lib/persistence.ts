@@ -13,6 +13,7 @@ import {
   type Terminal,
 } from "@/store/sessions";
 import { useUI } from "@/store/ui";
+import { useNotes } from "@/store/notes";
 
 // Each profile keeps its own session layout. The default profile keeps the
 // original filename so existing layouts are preserved. Computed from the window
@@ -336,6 +337,7 @@ export async function moveSessionToProfile(
   });
   await store.save();
   useSessions.getState().dropSession(sessionId);
+  await useNotes.getState().releaseNote(sessionId);
   // Detached before the other window attaches, or this window's detach could
   // land after its attach and cut it off.
   await Promise.all(
