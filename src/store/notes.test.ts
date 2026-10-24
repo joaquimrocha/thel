@@ -175,6 +175,29 @@ describe("useNotes store", () => {
     expect(useNotes.getState().notes["s1"]).toBe("new");
   });
 
+  test("releaseNote saves what is pending and forgets the note, keeping its file", async () => {
+    vi.mocked(invoke).mockClear();
+    useNotes.getState().setNote("s1", "typed");
+    await useNotes.getState().releaseNote("s1");
+    expect(useNotes.getState().notes["s1"]).toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith("write_note", { sessionId: "s1", text: "typed", base: null });
+    expect(invoke).not.toHaveBeenCalledWith("write_note", { sessionId: "s1", text: "" });
+  });
+
+  test("releaseNote waits for a save already on its way", async () => {
+    vi.useFakeTimers();
+    let saved = () => {};
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise<null>((r) => (saved = () => r(null))));
+    useNotes.getState().setNote("s1", "typed");
+    vi.runAllTimers();
+    let released = false;
+    const release = useNotes.getState().releaseNote("s1").then(() => (released = true));
+    await vi.runAllTimersAsync();
+    expect(released).toBe(false);
+    saved();
+    await release;
+  });
+
   test("loadNote leaves a failed read unset so it can retry", async () => {
     await useNotes.getState().loadNote("s-error");
     expect(useNotes.getState().notes["s-error"]).toBeUndefined();

@@ -16,6 +16,10 @@ interface NotesState {
    * also goes after what the user typed but has not saved yet, which the
    * daemon never saw, and that is saved again; a replace drops it. */
   receiveNote: (sessionId: string, text: string, edit: NoteEdit) => void;
+  /** Save a pending edit and forget the note here, keeping its file: its
+   * session moved to another window, and this one must read it fresh if the
+   * session comes back. */
+  releaseNote: (sessionId: string) => Promise<void>;
   /** Read a session's note into the store, once. */
   loadNote: (sessionId: string) => Promise<void>;
 }
@@ -75,6 +79,15 @@ function overwrite(sessionId: string, base: string | undefined, now: string) {
   writerFor(sessionId).schedule(text);
 }
 
+function forget(sessionId: string) {
+  useNotes.setState((s) => {
+    if (!(sessionId in s.notes)) return s;
+    const notes = { ...s.notes };
+    delete notes[sessionId];
+    return { notes };
+  });
+}
+
 export const useNotes = create<NotesState>((set, get) => ({
   notes: {},
   setNote: (sessionId, text) => {
@@ -90,12 +103,7 @@ export const useNotes = create<NotesState>((set, get) => ({
     void invoke("write_note", { sessionId, text: "" }).catch((e) =>
       console.error("failed to delete notes", e),
     );
-    set((s) => {
-      if (!(sessionId in s.notes)) return s;
-      const notes = { ...s.notes };
-      delete notes[sessionId];
-      return { notes };
-    });
+    forget(sessionId);
   },
   receiveNote: (sessionId, text, edit) => {
     // A note read or saved after the daemon's write has its edit already.
@@ -107,6 +115,15 @@ export const useNotes = create<NotesState>((set, get) => ({
     if (merged === text) writers.get(sessionId)?.cancel();
     else writerFor(sessionId).schedule(merged);
     set((s) => ({ notes: { ...s.notes, [sessionId]: merged } }));
+  },
+  releaseNote: async (sessionId) => {
+    const writer = writers.get(sessionId);
+    const inFlight = saving.get(sessionId);
+    writers.delete(sessionId);
+    disk.delete(sessionId);
+    forget(sessionId);
+    await writer?.flush();
+    await inFlight?.catch(() => {});
   },
   loadNote: async (sessionId) => {
     if (get().notes[sessionId] !== undefined) return;
