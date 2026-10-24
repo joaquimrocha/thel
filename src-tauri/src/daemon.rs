@@ -20,7 +20,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -30,8 +30,9 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
 use crate::pty::{decode_utf8_stream, CreateOpts, TermMsg};
+use crate::session::{Adopt, DirSession, Directory, Place, Reply, Request};
 
-const PROTOCOL_VERSION: u32 = 4;
+const PROTOCOL_VERSION: u32 = 5;
 const EMPTY_GRACE: Duration = Duration::from_secs(45);
 // How often the daemon samples each tab's foreground state to push busy
 // transitions. Foreground-pgroup changes have no kernel event, so this is a
@@ -164,21 +165,46 @@ fn peer_uid_ok(_fd: RawFd) -> bool {
 }
 
 /// Who is on the other end of a connection.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Peer {
     pid: Option<u32>,
     /// The peer runs confined while the daemon does not: inside Landlock,
-    /// seccomp, bubblewrap or Flatpak. It may still post notifications and read
-    /// state, but it must not get the daemon to start, type into or stop
-    /// anything, which would run outside its sandbox.
+    /// seccomp, bubblewrap or Flatpak. It may still post notifications for and
+    /// read state of its own terminal, but it must not get the daemon to start,
+    /// type into or stop anything, which would run outside its sandbox.
     sandboxed: bool,
+    /// For a sandboxed peer, the tab it runs in, found when it connected,
+    /// while it was known to be alive. Its pid could later pass to a process
+    /// in another tab. Held as that tab's state too, since a tab that ends
+    /// can come back under its id (see own_tab).
+    tab: Option<(String, Weak<Mutex<TabShared>>)>,
 }
 
 impl Peer {
-    fn of(fd: RawFd) -> Peer {
+    fn of(fd: RawFd, daemon: &Daemon) -> Peer {
         let pid = peer_pid(fd);
         let sandboxed = peer_confined(fd, pid) && !daemon_confined();
-        Peer { pid, sandboxed }
+        // Checked alive after the walk, so a pid that passed to another
+        // process meanwhile can't name that process's tab.
+        let tab = if sandboxed {
+            let tab = pid.and_then(|p| daemon.tab_of_pid(p)).and_then(|id| {
+                let shared = Arc::downgrade(&daemon.tabs.lock().get(&id)?.shared);
+                Some((id, shared))
+            });
+            tab.filter(|_| peer_alive(fd))
+        } else {
+            None
+        };
+        Peer { pid, sandboxed, tab }
+    }
+
+    /// The id of the tab a sandboxed peer connected from, while that tab
+    /// runs. A tab that ended and came back under the same id is another
+    /// tab, so a program that outlived the first can't act for the second.
+    fn own_tab(&self, daemon: &Daemon) -> Option<String> {
+        let (id, shared) = self.tab.as_ref()?;
+        let same = daemon.tabs.lock().get(id).is_some_and(|t| std::ptr::eq(shared.as_ptr(), Arc::as_ptr(&t.shared)));
+        same.then(|| id.clone())
     }
 }
 
@@ -372,6 +398,19 @@ enum Command {
         id: String,
         pid: u32,
     },
+    /// A `thel session` request from a program in one of the tabs. The reply
+    /// is a session::Reply.
+    Session {
+        req: Request,
+    },
+    /// A GUI asks for the terminals started for `thel session`: each one comes
+    /// as an Adopt event, now for those waiting and later for new ones.
+    Watch,
+    /// A GUI window's sessions, for `thel session` to find and list them.
+    Directory {
+        window: String,
+        sessions: Vec<DirSession>,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -391,6 +430,8 @@ enum Event {
     // being idle. Also sent on attach when the tab is idle.
     TabIdle { id: String, idle: bool },
     Error { id: String, message: String },
+    // A terminal started for `thel session`, for a GUI window to show.
+    Adopt { adopt: Adopt },
 }
 
 /// Reply to Command::Status: tab id -> a foreground command is running.
@@ -557,6 +598,9 @@ struct TabShared {
     ports: Vec<crate::pty::ListenPort>,
     // Idle state as last pushed by idle_monitor, for a client that attaches.
     idle: bool,
+    // Set with the exit code once the tab has ended, so a client that attaches
+    // after that gets the exit rather than waiting for one.
+    ended: Option<Option<i32>>,
 }
 
 /// What to send a (re)attaching client: the raw scrollback, which is the normal
@@ -670,6 +714,16 @@ struct Daemon {
     tabs: Mutex<HashMap<String, Tab>>,
     clients: AtomicUsize,
     generation: AtomicU64,
+    /// GUI clients that sent Watch.
+    watchers: Mutex<Vec<Arc<Client>>>,
+    /// Terminals started for `thel session` that no GUI has opened yet,
+    /// running or ended, with the exit of those that ended. Every GUI that
+    /// watches is told about each. A GUI opening one that ended gets its
+    /// exit, not a second run of its command.
+    adopts: Mutex<Vec<(Adopt, Option<Option<i32>>)>>,
+    /// The sessions each GUI window last reported. Kept after the GUI leaves,
+    /// so a request still finds its session while no window is open.
+    directory: Mutex<Directory>,
 }
 
 pub fn run() {
@@ -708,11 +762,7 @@ pub fn run() {
         build_version()
     );
 
-    let daemon = Arc::new(Daemon {
-        tabs: Mutex::new(HashMap::new()),
-        clients: AtomicUsize::new(0),
-        generation: AtomicU64::new(0),
-    });
+    let daemon = Daemon::new();
     daemon.maybe_schedule_exit();
     if daemon_confined() {
         eprintln!(
@@ -916,7 +966,7 @@ fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
         eprintln!("[thel-daemon] rejected connection: peer uid mismatch");
         return;
     }
-    let peer = Peer::of(stream.as_raw_fd());
+    let peer = Peer::of(stream.as_raw_fd(), daemon);
     if peer.sandboxed {
         eprintln!(
             "[thel-daemon] pid {} is sandboxed: it may only notify and read state",
@@ -969,16 +1019,18 @@ fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
         match read_frame(&mut conn) {
             Ok((CONTROL, p)) => {
                 if let Some(cmd) = parse_json::<Command>(&p) {
-                    if peer.sandboxed && !cmd.harmless() {
+                    if peer.sandboxed && !cmd.harmless(peer.own_tab(daemon).as_deref()) {
                         refuse(cmd, &client);
                     } else {
-                        dispatch(daemon, cmd, &client);
+                        dispatch(daemon, cmd, &client, &peer);
                     }
                 }
             }
             Ok((INPUT, p)) if !peer.sandboxed => {
                 if let Some((id, data)) = parse_id_payload(&p) {
-                    daemon.input(&id, data);
+                    // A GUI's keystrokes to a tab that just ended go nowhere,
+                    // and the tab's exit tells it so.
+                    let _ = daemon.input(&id, data);
                 }
             }
             Ok((INPUT, _)) => {}
@@ -990,13 +1042,20 @@ fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
     for sh in shareds {
         sh.lock().subscribers.retain(|s| !Arc::ptr_eq(&s.client, &client));
     }
+    daemon.watchers.lock().retain(|w| !Arc::ptr_eq(w, &client));
 }
 
 impl Command {
-    /// Whether a sandboxed peer may send this: it neither runs, types into nor
-    /// stops anything.
-    fn harmless(&self) -> bool {
-        matches!(self, Command::Notify { .. } | Command::Cwd { .. })
+    /// Whether a sandboxed peer in tab `own` may send this: it neither runs,
+    /// types into nor stops anything, and what it names is its own terminal.
+    /// A Session request applies its own rule for sandboxed callers (see
+    /// Daemon::session).
+    fn harmless(&self, own: Option<&str>) -> bool {
+        match self {
+            Command::Notify { id, .. } | Command::Cwd { id } => own == Some(id.as_str()),
+            Command::Session { .. } => true,
+            _ => false,
+        }
     }
 }
 
@@ -1014,12 +1073,15 @@ fn refuse(cmd: Command, client: &Arc<Client>) {
         Command::Resize { .. }
         | Command::Detach { .. }
         | Command::Kill { .. }
-        | Command::Notify { .. } => return,
+        | Command::Notify { .. }
+        | Command::Session { .. }
+        | Command::Watch
+        | Command::Directory { .. } => return,
     };
     client.enqueue(Arc::new(reply));
 }
 
-fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>) {
+fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>, peer: &Peer) {
     match cmd {
         Command::Open {
             id,
@@ -1030,7 +1092,28 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>) {
             cols,
             rows,
         } => {
-            if let Err(message) = daemon.open(&id, command, args, cwd, env, cols, rows, client) {
+            // A terminal started for `thel session` runs once: a GUI opening it
+            // attaches to it, or gets its exit when it already ended. Under the
+            // adopts lock, which a tab that ends records its exit under before
+            // it leaves the tabs, so this finds the tab or its exit. A killed
+            // tab leaves first, with no exit code to find, and reads as
+            // exited with none.
+            let waiting = {
+                let mut adopts = daemon.adopts.lock();
+                adopts.iter().position(|(a, _)| a.terminal == id).map(|i| {
+                    let (_, exited) = adopts.remove(i);
+                    (exited, daemon.tabs.lock().get(&id).map(|t| t.shared.clone()))
+                })
+            };
+            if let Some((exited, shared)) = waiting {
+                match shared {
+                    Some(shared) => reattach(&mut shared.lock(), &id, client),
+                    None => {
+                        let ev = Event::TabExited { id, code: exited.flatten() };
+                        client.enqueue(Arc::new(control_json(&ev)));
+                    }
+                }
+            } else if let Err(message) = daemon.open(&id, command, args, cwd, env, cols, rows, Some(client)) {
                 client.enqueue(Arc::new(control_json(&Event::Error { id, message })));
             }
         }
@@ -1054,6 +1137,19 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>) {
             let error = daemon.stop_listener(&id, pid).err();
             client.enqueue(Arc::new(control_json(&StopReply { error })));
         }
+        Command::Session { req } => {
+            let reply = daemon.session(peer, req);
+            client.enqueue(Arc::new(control_json(&reply)));
+        }
+        Command::Watch => {
+            for (adopt, _) in daemon.adopts.lock().iter().cloned() {
+                client.enqueue(Arc::new(control_json(&Event::Adopt { adopt })));
+            }
+            daemon.watchers.lock().push(client.clone());
+        }
+        Command::Directory { window, sessions } => {
+            crate::session::report(&mut daemon.directory.lock(), window, sessions);
+        }
     }
 }
 
@@ -1062,6 +1158,11 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>) {
 /// caller's lock on `sh`, so they precede any live output (tab_reader clones
 /// the subscriber list under the same lock).
 fn reattach(sh: &mut TabShared, id: &str, client: &Arc<Client>) {
+    if let Some(code) = sh.ended {
+        let ev = Event::TabExited { id: id.to_string(), code };
+        client.enqueue(Arc::new(control_json(&ev)));
+        return;
+    }
     let snap = snapshot(sh);
     client.enqueue(Arc::new(frame_bytes(OUTPUT, &id_payload(id, &snap))));
     if !sh.ports.is_empty() {
@@ -1091,6 +1192,17 @@ fn tab_busy(t: &Tab) -> bool {
 }
 
 impl Daemon {
+    fn new() -> Arc<Daemon> {
+        Arc::new(Daemon {
+            tabs: Mutex::new(HashMap::new()),
+            clients: AtomicUsize::new(0),
+            generation: AtomicU64::new(0),
+            watchers: Mutex::new(Vec::new()),
+            adopts: Mutex::new(Vec::new()),
+            directory: Mutex::new(HashMap::new()),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn open(
         self: &Arc<Self>,
@@ -1101,15 +1213,17 @@ impl Daemon {
         env: Option<HashMap<String, String>>,
         cols: u16,
         rows: u16,
-        client: &Arc<Client>,
-    ) -> Result<(), String> {
+        client: Option<&Arc<Client>>,
+    ) -> Result<Arc<Mutex<TabShared>>, String> {
         // Already have this tab: reattach. Snapshot the current screen and
         // subscribe under one lock so the snapshot precedes any live output.
         let existing = self.tabs.lock().get(id).map(|t| t.shared.clone());
         if let Some(shared) = existing {
             eprintln!("[thel-daemon] reattach tab {id}");
-            reattach(&mut shared.lock(), id, client);
-            return Ok(());
+            if let Some(client) = client {
+                reattach(&mut shared.lock(), id, client);
+            }
+            return Ok(shared);
         }
 
         // New tab: spawn the PTY + child, wire the VTE, attach the opener. The
@@ -1133,6 +1247,7 @@ impl Daemon {
             subscribers: Vec::new(),
             ports: Vec::new(),
             idle: false,
+            ended: None,
         }));
         let child = Arc::new(Mutex::new(child));
 
@@ -1143,8 +1258,10 @@ impl Daemon {
             kill_session_and_reap(&child);
             let shared = existing_tab.shared.clone();
             drop(tabs);
-            reattach(&mut shared.lock(), id, client);
-            return Ok(());
+            if let Some(client) = client {
+                reattach(&mut shared.lock(), id, client);
+            }
+            return Ok(shared);
         }
 
         std::thread::spawn({
@@ -1153,15 +1270,8 @@ impl Daemon {
             move || tab_reader(id, reader, shared, child, daemon)
         });
 
-        {
-            let mut sh = shared.lock();
-            let snap = snapshot(&sh);
-            client.enqueue(Arc::new(frame_bytes(OUTPUT, &id_payload(id, &snap))));
-            sh.subscribers.push(Subscriber {
-                client: client.clone(),
-                count: 1,
-            });
-            drop(sh);
+        if let Some(client) = client {
+            reattach(&mut shared.lock(), id, client);
         }
         tabs.insert(
             id.to_string(),
@@ -1169,13 +1279,13 @@ impl Daemon {
                 master,
                 writer: Arc::new(Mutex::new(writer)),
                 child,
-                shared,
+                shared: shared.clone(),
             },
         );
         drop(tabs);
         self.generation.fetch_add(1, Ordering::SeqCst);
         eprintln!("[thel-daemon] spawned tab {id} ('{command}')");
-        Ok(())
+        Ok(shared)
     }
 
     fn detach(&self, id: &str, client: &Arc<Client>) {
@@ -1207,13 +1317,12 @@ impl Daemon {
         }
     }
 
-    fn input(&self, id: &str, data: &[u8]) {
+    /// Types `data` into tab `id`.
+    fn input(&self, id: &str, data: &[u8]) -> Result<(), String> {
         let writer = self.tabs.lock().get(id).map(|t| t.writer.clone());
-        if let Some(writer) = writer {
-            let mut w = writer.lock();
-            let _ = w.write_all(data);
-            let _ = w.flush();
-        }
+        let writer = writer.ok_or_else(|| format!("no terminal {id}"))?;
+        let mut w = writer.lock();
+        w.write_all(data).and_then(|()| w.flush()).map_err(|e| format!("typing into {id}: {e}"))
     }
 
     fn resize(&self, id: &str, cols: u16, rows: u16) {
@@ -1239,8 +1348,18 @@ impl Daemon {
         let removed = self.tabs.lock().remove(id);
         if let Some(t) = removed {
             kill_session_and_reap(&t.child);
+            self.ended_unshown(id, None);
         }
         self.maybe_schedule_exit();
+    }
+
+    /// Notes the exit of tab `id`, which just ended, if it waits for a GUI: it
+    /// keeps waiting, with its exit for the GUI that opens it.
+    fn ended_unshown(&self, id: &str, code: Option<i32>) {
+        // Under the adopts lock, so a GUI opening it meanwhile finds the exit.
+        if let Some((_, exit)) = self.adopts.lock().iter_mut().find(|(a, _)| a.terminal == id) {
+            exit.get_or_insert(code);
+        }
     }
 
     fn statuses(&self) -> HashMap<String, bool> {
@@ -1266,6 +1385,115 @@ impl Daemon {
     fn stop_listener(&self, id: &str, pid: u32) -> Result<(), String> {
         let root = self.tabs.lock().get(id).and_then(|t| t.child.lock().process_id());
         crate::pty::stop_tree_listener(root.ok_or("That terminal has no running process")?, pid)
+    }
+
+    /// Carries out a `thel session` request for the program behind `peer`.
+    fn session(self: &Arc<Self>, peer: &Peer, req: Request) -> Reply {
+        let fail = |e: &str| Reply { error: Some(e.to_string()), ..Reply::default() };
+        let Some(caller) = peer.pid.and_then(|p| self.tab_of_pid(p)) else {
+            return fail("thel session works only from inside a thel terminal");
+        };
+        if peer.sandboxed {
+            return fail("thel refuses this from a sandboxed process");
+        }
+        if let Err(e) = req.check() {
+            return fail(&e);
+        }
+        match self.carry_out(&caller, req) {
+            Ok(reply) => reply,
+            Err(e) => fail(&e),
+        }
+    }
+
+    /// The GUI window that shows tab `tab`.
+    fn window_of(&self, tab: &str) -> Option<String> {
+        crate::session::session_of(&self.directory.lock(), tab).map(|(w, _)| w.to_string())
+    }
+
+    fn carry_out(self: &Arc<Self>, caller: &str, req: Request) -> Result<Reply, String> {
+        match req {
+            Request::New { name, cwd, command } => {
+                let name = name.unwrap_or_else(|| crate::session::name_for_dir(&cwd));
+                // The window the caller is in, so the session shows up beside it.
+                let window = self.window_of(caller);
+                let terminal = self.start(command, cwd, Place::NewSession { name, window })?;
+                Ok(Reply { terminal: Some(terminal), ..Reply::default() })
+            }
+            Request::Terminal { session, cwd, command } => {
+                let id = {
+                    let dir = self.directory.lock();
+                    match &session {
+                        Some(key) => crate::session::find_session(&dir, key)?.1.id.clone(),
+                        None => crate::session::session_of(&dir, caller)
+                            .ok_or("this terminal's session is unknown; pass -t SESSION")?
+                            .1
+                            .id
+                            .clone(),
+                    }
+                };
+                let terminal = self.start(command, cwd, Place::Session { id })?;
+                Ok(Reply { terminal: Some(terminal), ..Reply::default() })
+            }
+            Request::List => {
+                let alive: std::collections::HashSet<String> =
+                    self.tabs.lock().keys().cloned().collect();
+                let sessions =
+                    crate::session::list(&self.directory.lock(), &alive, self.adopts.lock().iter().map(|(a, _)| a));
+                Ok(Reply { sessions, ..Reply::default() })
+            }
+            Request::SendKeys { terminal, data } => {
+                self.input(&terminal, &data)?;
+                Ok(Reply::default())
+            }
+        }
+    }
+
+    /// Starts a terminal with no GUI attached and hands it to the watching
+    /// GUIs to show at `place`. Returns its id.
+    fn start(self: &Arc<Self>, command: Vec<String>, cwd: String, place: Place) -> Result<String, String> {
+        let (command, args) = match command.split_first() {
+            Some((c, a)) => (c.clone(), a.to_vec()),
+            None => (crate::default_shell(), Vec::new()),
+        };
+        // A pty given a missing folder starts in $HOME instead.
+        if !Path::new(&cwd).is_dir() {
+            return Err(format!("no folder {cwd}"));
+        }
+        let id = new_id().map_err(|e| format!("no terminal id: {e}"))?;
+        let adopt = Adopt { terminal: id.clone(), command, args, cwd, place };
+        // The GUI resizes it to its pane when it shows it.
+        let a = &adopt;
+        let shared = self.open(&id, a.command.clone(), a.args.clone(), Some(a.cwd.clone()), None, 80, 24, None)?;
+        {
+            // Listed only once its tab exists, so no Watch replay or Open finds
+            // the entry first. A tab that ends marks itself ended before it
+            // looks for its entry under this lock, so its exit is kept either way.
+            let mut adopts = self.adopts.lock();
+            let ended = shared.lock().ended;
+            adopts.push((adopt.clone(), ended));
+        }
+        self.broadcast(&Event::Adopt { adopt });
+        Ok(id)
+    }
+
+    /// Sends `ev` to every watching GUI.
+    fn broadcast(&self, ev: &Event) {
+        let ev = Arc::new(control_json(ev));
+        for w in self.watchers.lock().iter() {
+            w.enqueue(ev.clone());
+        }
+    }
+
+    /// The tab whose processes include `pid`: by ancestry, or on Linux by the
+    /// tab's cgroup scope, which also holds processes that left its tree.
+    fn tab_of_pid(&self, pid: u32) -> Option<String> {
+        let roots: HashMap<u32, String> = self
+            .tabs
+            .lock()
+            .iter()
+            .filter_map(|(id, t)| Some((t.child.lock().process_id()?, id.clone())))
+            .collect();
+        crate::session::tab_of(pid, &roots, parent_pid).or_else(|| tab_by_scope(pid, &roots))
     }
 
     /// Where one tab's shell is now, for opening a new terminal alongside it.
@@ -1294,6 +1522,64 @@ impl Daemon {
             }
         });
     }
+}
+
+/// A fresh terminal id: 128 random bits in hex.
+fn new_id() -> std::io::Result<String> {
+    Ok(urandom::<16>()?.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+fn urandom<const N: usize>() -> std::io::Result<[u8; N]> {
+    let mut b = [0u8; N];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+    Ok(b)
+}
+
+/// The tab, among `roots` (root pid to tab id), whose cgroup scope holds
+/// `pid`. A scope the daemon shares (it runs in a thel terminal, and tabs that
+/// got no scope of their own inherit it) says nothing about which tab.
+#[cfg(target_os = "linux")]
+fn tab_by_scope(pid: u32, roots: &HashMap<u32, String>) -> Option<String> {
+    let scope = crate::cgroup::scope_of(pid)
+        .filter(|s| crate::cgroup::scope_of(std::process::id()).as_ref() != Some(s))?;
+    roots
+        .iter()
+        .find(|(&root, _)| crate::cgroup::scope_of(root).as_ref() == Some(&scope))
+        .map(|(_, id)| id.clone())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn tab_by_scope(_pid: u32, _roots: &HashMap<u32, String>) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn parent_pid(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    crate::pty::stat_fields(&stat)?.get(1)?.parse().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn parent_pid(pid: u32) -> Option<u32> {
+    // SAFETY: proc_bsdinfo is plain data, so all zeroes is a valid value.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: info is valid for writes of `size` bytes.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    (n == size).then_some(info.pbi_ppid)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn parent_pid(_pid: u32) -> Option<u32> {
+    None
 }
 
 /// SIGKILL every process in the shell's session -- foreground and background
@@ -1381,6 +1667,13 @@ fn all_pids() -> Vec<i32> {
 /// that exited while a grandchild held the pts, and an explicit Kill -- can all
 /// call it and only the first wins.
 fn finish_tab(daemon: &Arc<Daemon>, id: &str, code: Option<i32>) {
+    // Before keep_exit, for a terminal `start` lists meanwhile.
+    if let Some(t) = daemon.tabs.lock().get(id) {
+        t.shared.lock().ended.get_or_insert(code);
+    }
+    // Before the tab goes, so a GUI opening it meanwhile finds either the tab
+    // or its exit.
+    daemon.ended_unshown(id, code);
     let removed = daemon.tabs.lock().remove(id);
     let Some(t) = removed else {
         return; // already finished by another path
@@ -1551,37 +1844,40 @@ pub fn kill(id: &str) -> Result<(), String> {
 
 /// Connect, handshake, send one command. A short-lived connection of its own
 /// (like probe_existing) so a reply doesn't have to be correlated against the
-/// long-lived client's multiplexed output stream. `None` on any failure: the
-/// callers all degrade to "no answer" rather than surfacing an error.
-fn query_send(cmd: &Command) -> Option<UnixStream> {
-    let mut stream = UnixStream::connect(socket_path()).ok()?;
+/// long-lived client's multiplexed output stream. Errors carry a message for
+/// the user.
+fn query_send(cmd: &Command) -> Result<UnixStream, String> {
+    let hung_up = |_| "the thel daemon hung up".to_string();
+    let mut stream =
+        UnixStream::connect(socket_path()).map_err(|_| "no thel daemon to talk to; is thel running?")?;
     let hello = serde_json::to_vec(&Hello {
         protocol: PROTOCOL_VERSION,
         build: build_version(),
     })
     .unwrap_or_default();
-    write_frame(&mut stream, CONTROL, &hello).ok()?;
+    write_frame(&mut stream, CONTROL, &hello).map_err(hung_up)?;
     match read_frame(&mut stream) {
         // A daemon speaking another protocol rejects the hello, so this returns
         // rather than waiting on a reply it would never send. The GUI's skew
         // prompt is what resolves that.
         Ok((CONTROL, p)) => match parse_json::<HelloReply>(&p) {
             Some(r) if r.ok => {}
-            _ => return None,
+            Some(HelloReply { error: Some(e), .. }) => return Err(format!("{e}; restart thel to update its daemon")),
+            _ => return Err("the thel daemon refused the connection".into()),
         },
-        _ => return None,
+        _ => return Err("the thel daemon hung up".into()),
     }
     let payload = serde_json::to_vec(cmd).unwrap_or_default();
-    write_frame(&mut stream, CONTROL, &payload).ok()?;
-    Some(stream)
+    write_frame(&mut stream, CONTROL, &payload).map_err(hung_up)?;
+    Ok(stream)
 }
 
 /// Ask the daemon one command and decode the reply it sends back.
-fn query<T: DeserializeOwned>(cmd: &Command) -> Option<T> {
+fn query<T: DeserializeOwned>(cmd: &Command) -> Result<T, String> {
     let mut stream = query_send(cmd)?;
     match read_frame(&mut stream) {
-        Ok((CONTROL, p)) => parse_json::<T>(&p),
-        _ => None,
+        Ok((CONTROL, p)) => parse_json::<T>(&p).ok_or_else(|| "garbled reply".into()),
+        _ => Err("the thel daemon hung up".into()),
     }
 }
 
@@ -1604,15 +1900,20 @@ pub fn usages() -> std::collections::HashMap<String, crate::pty::Usage> {
 
 /// Where a daemon-owned tab's shell currently is.
 pub fn cwd(id: &str) -> Option<String> {
-    query::<CwdReply>(&Command::Cwd { id: id.to_string() })?.cwd
+    query::<CwdReply>(&Command::Cwd { id: id.to_string() }).ok()?.cwd
 }
 
 /// Stops (SIGTERM) `pid` if it listens on a port in tab `id`'s process tree.
 /// Errors carry a message for the user.
 pub fn stop_listener(id: &str, pid: u32) -> Result<(), String> {
     let cmd = Command::StopListener { id: id.to_string(), pid };
-    let reply = query::<StopReply>(&cmd).ok_or("The terminal daemon did not answer")?;
+    let reply = query::<StopReply>(&cmd).map_err(|_| "The terminal daemon did not answer")?;
     reply.error.map_or(Ok(()), Err)
+}
+
+/// Send a `thel session` request and wait for the daemon's answer.
+pub fn session_request(req: &Request) -> Result<Reply, String> {
+    query(&Command::Session { req: req.clone() })
 }
 
 /// Post a notification for `id` through the daemon (out-of-band, no tty needed).
@@ -1623,7 +1924,7 @@ pub fn send_notify(id: &str, message: &str) -> bool {
         id: id.to_string(),
         message: message.to_string(),
     })
-    .is_some()
+    .is_ok()
 }
 
 fn client_read_loop(mut r: UnixStream, routes: Arc<Mutex<HashMap<String, Channel<TermMsg>>>>) {
@@ -1673,7 +1974,7 @@ fn client_read_loop(mut r: UnixStream, routes: Arc<Mutex<HashMap<String, Channel
                 Some(Event::Error { id, message }) => {
                     eprintln!("[thel] daemon error for {id}: {message}");
                 }
-                None => {}
+                Some(Event::Adopt { .. }) | None => {}
             },
             _ => break, // EOF / error: daemon gone
         }
@@ -1960,14 +2261,19 @@ mod tests {
         assert_eq!(strip_queries(&osc_title), osc_title);
     }
 
-    fn tab_with(normal: &[u8], alt: &[u8]) -> TabShared {
-        let mut sh = TabShared {
+    fn blank_tab() -> TabShared {
+        TabShared {
             parser: vt100::Parser::new(24, 80, 100),
             scrollback: VecDeque::new(),
             subscribers: Vec::new(),
             ports: Vec::new(),
             idle: false,
-        };
+            ended: None,
+        }
+    }
+
+    fn tab_with(normal: &[u8], alt: &[u8]) -> TabShared {
+        let mut sh = blank_tab();
         sh.parser.process(normal);
         sh.scrollback.extend(normal.iter().copied());
         // Alt-screen output is deliberately kept out of the scrollback, as the
@@ -2012,13 +2318,7 @@ mod tests {
         let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
         let client = Client::spawn(&a).unwrap();
 
-        let mut sh = TabShared {
-            parser: vt100::Parser::new(24, 80, 100),
-            scrollback: VecDeque::new(),
-            subscribers: Vec::new(),
-            ports: Vec::new(),
-            idle: false,
-        };
+        let mut sh = blank_tab();
 
         // Attach from background listener (count 1).
         sh.subscribers.push(Subscriber {
@@ -2055,19 +2355,75 @@ mod tests {
         assert_eq!(sh.subscribers.len(), 0);
     }
 
+    /// A terminal started for `thel session` that ends before any GUI shows it
+    /// stays on the waiting list, and the GUI opening it later gets its exit
+    /// instead of a second run.
+    #[test]
+    fn an_unshown_terminal_that_ended_is_not_run_again() {
+        let d = Daemon::new();
+        d.open("caller", "sh".into(), vec![], Some("/".into()), None, 80, 24, None)
+            .unwrap();
+        let pid = d.tabs.lock()["caller"].child.lock().process_id().unwrap();
+        let inside = Peer { pid: Some(pid), sandboxed: false, tab: None };
+        let req = Request::New { name: None, cwd: "/".into(), command: vec!["true".into()] };
+        let id = d.session(&inside, req).terminal.expect("a terminal id");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // The exit is kept before the tab goes, so wait for both.
+        while d.adopts.lock().iter().all(|(_, exit)| exit.is_none()) || d.tabs.lock().contains_key(&id) {
+            assert!(std::time::Instant::now() < deadline, "the terminal never ended");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(d.adopts.lock().iter().any(|(a, _)| a.terminal == id));
+
+        let (a, mut b) = std::os::unix::net::UnixStream::pair().unwrap();
+        b.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let client = Client::spawn(&a).unwrap();
+        let open = Command::Open {
+            id: id.clone(),
+            command: "true".into(),
+            args: vec![],
+            cwd: None,
+            env: None,
+            cols: 80,
+            rows: 24,
+        };
+        dispatch(&d, open, &client, &Peer { pid: None, sandboxed: false, tab: None });
+
+        let (ty, p) = read_frame(&mut b).unwrap();
+        assert_eq!(ty, CONTROL);
+        match parse_json::<Event>(&p) {
+            Some(Event::TabExited { id: got, code }) => assert_eq!((got, code), (id.clone(), Some(0))),
+            _ => panic!("expected TabExited"),
+        }
+        assert!(!d.tabs.lock().contains_key(&id), "ran again");
+        assert!(d.adopts.lock().is_empty());
+        d.kill("caller");
+    }
+
+    /// A client attaching to a tab that already ended gets its exit at once.
+    #[test]
+    fn reattach_to_an_ended_tab_gets_its_exit() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        b.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let client = Client::spawn(&a).unwrap();
+        let mut sh = TabShared { ended: Some(Some(3)), ..blank_tab() };
+        reattach(&mut sh, "t1", &client);
+        let (ty, p) = read_frame(&mut b).unwrap();
+        assert_eq!(ty, CONTROL);
+        assert!(matches!(
+            parse_json::<Event>(&p),
+            Some(Event::TabExited { id, code: Some(3) }) if id == "t1"
+        ));
+        assert!(sh.subscribers.is_empty());
+    }
+
     #[test]
     fn reattach_queues_the_ports_after_the_snapshot() {
         let (a, mut b) = std::os::unix::net::UnixStream::pair().unwrap();
         b.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let client = Client::spawn(&a).unwrap();
         let port = crate::pty::ListenPort { port: 5173, pid: 42, name: "node".into() };
-        let mut sh = TabShared {
-            parser: vt100::Parser::new(24, 80, 100),
-            scrollback: VecDeque::new(),
-            subscribers: Vec::new(),
-            ports: vec![port.clone()],
-            idle: false,
-        };
+        let mut sh = TabShared { ports: vec![port.clone()], ..blank_tab() };
 
         reattach(&mut sh, "t1", &client);
 
@@ -2105,6 +2461,58 @@ mod tests {
         assert_eq!(parse_json::<CwdReply>(&p).unwrap().cwd, None);
     }
 
+    /// A program in one tab opens a session and a terminal, lists them and
+    /// types into one; the same requests from outside any tab, or from a
+    /// sandboxed program, are refused.
+    #[test]
+    fn a_program_in_a_tab_drives_sessions() {
+        let d = Daemon::new();
+        d.open("caller", "sh".into(), vec![], Some("/".into()), None, 80, 24, None)
+            .unwrap();
+        let pid = d.tabs.lock()["caller"].child.lock().process_id().unwrap();
+        d.directory.lock().insert(
+            "main".into(),
+            vec![DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["caller".into()] }],
+        );
+        let inside = Peer { pid: Some(pid), sandboxed: false, tab: None };
+        let ask = |peer: &Peer, req: Request| d.session(peer, req);
+
+        let new = ask(&inside, Request::New { name: None, cwd: "/tmp".into(), command: vec![] });
+        let new_id = new.terminal.expect("a terminal id");
+        let term = ask(&inside, Request::Terminal { session: None, cwd: "/".into(), command: vec!["cat".into()] });
+        let cat = term.terminal.expect("a terminal id");
+        assert_eq!(
+            d.adopts.lock().iter().map(|(a, _)| a.place.clone()).collect::<Vec<_>>(),
+            [
+                Place::NewSession { name: "tmp".into(), window: Some("main".into()) },
+                Place::Session { id: "s1".into() },
+            ]
+        );
+
+        let listed = ask(&inside, Request::List).sessions;
+        assert!(listed.iter().any(|l| l.id.as_deref() == Some("s1")
+            && l.terminals.iter().any(|t| t.id == cat && t.state == crate::session::TerminalState::Starting)));
+        assert!(ask(&inside, Request::SendKeys { terminal: cat.clone(), data: b"hi\r".to_vec() })
+            .error
+            .is_none());
+        let err = |r: Reply| r.error.unwrap_or_default();
+        assert_eq!(
+            err(ask(&inside, Request::SendKeys { terminal: "nope".into(), data: vec![] })),
+            "no terminal nope"
+        );
+        let nope = Request::Terminal { session: Some("nope".into()), cwd: "/".into(), command: vec![] };
+        assert!(err(ask(&inside, nope)).contains("no session named or with id \"nope\""));
+
+        let outside = Peer { pid: Some(std::process::id()), sandboxed: false, tab: None };
+        assert!(ask(&outside, Request::List).error.unwrap().contains("inside a thel terminal"));
+        let sandboxed = Peer { pid: Some(pid), sandboxed: true, tab: Some(("caller".into(), Arc::downgrade(&d.tabs.lock()["caller"].shared))) };
+        assert!(ask(&sandboxed, Request::List).error.unwrap().contains("sandboxed"));
+
+        for id in ["caller".to_string(), new_id, cat] {
+            d.kill(&id);
+        }
+    }
+
     #[test]
     fn reads_no_new_privs_from_proc_status() {
         assert!(status_no_new_privs("Name:\tsh\nNoNewPrivs:\t1\nSeccomp:\t0\n"));
@@ -2115,13 +2523,18 @@ mod tests {
     #[test]
     fn a_sandboxed_peer_may_only_notify_and_read() {
         let id = || "t".to_string();
-        assert!(Command::Notify { id: id(), message: "m".into() }.harmless());
-        assert!(Command::Cwd { id: id() }.harmless());
-        assert!(!Command::Kill { id: id() }.harmless());
+        let own = Some("t");
+        assert!(Command::Notify { id: id(), message: "m".into() }.harmless(own));
+        assert!(Command::Cwd { id: id() }.harmless(own));
+        // Only for its own terminal.
+        assert!(!Command::Notify { id: "u".into(), message: "m".into() }.harmless(own));
+        assert!(!Command::Cwd { id: "u".into() }.harmless(own));
+        assert!(!Command::Cwd { id: id() }.harmless(None));
+        assert!(!Command::Kill { id: id() }.harmless(own));
         // They show every terminal's activity.
-        assert!(!Command::Status.harmless() && !Command::Usage.harmless());
-        assert!(!Command::Detach { id: id() }.harmless());
-        assert!(!Command::Resize { id: id(), cols: 1, rows: 1 }.harmless());
+        assert!(!Command::Status.harmless(own) && !Command::Usage.harmless(own));
+        assert!(!Command::Detach { id: id() }.harmless(own));
+        assert!(!Command::Resize { id: id(), cols: 1, rows: 1 }.harmless(own));
         let open = Command::Open {
             id: id(),
             command: "sh".into(),
@@ -2131,7 +2544,7 @@ mod tests {
             cols: 80,
             rows: 24,
         };
-        assert!(!open.harmless());
+        assert!(!open.harmless(own));
     }
 
     /// The abstract socket address `name`, for a forked child to connect to

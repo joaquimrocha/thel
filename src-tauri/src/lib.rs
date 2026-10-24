@@ -6,6 +6,7 @@ mod git;
 mod menu;
 mod notify_cmd;
 mod pty;
+mod session;
 
 use pty::{CreateOpts, TermMsg, TermStatus};
 use tauri::ipc::Channel;
@@ -613,6 +614,9 @@ Usage:
   thel                Launch the app
   thel notify [MSG]   Post a desktop notification for the current terminal
                       (run from inside a thel terminal; MSG is optional)
+  thel session CMD    Open, list and type into sessions from inside a thel
+                      terminal, e.g. from an agent
+                      (see `thel session --help`)
 
 Options:
   -h, --help          Show this help and exit
@@ -702,6 +706,8 @@ pub fn run() {
             notify_cmd::run(&argv[2..]);
             return;
         }
+        // `thel session ...`: open, list and type into sessions from a terminal.
+        Some("session") => std::process::exit(session::run(&argv[2..])),
         Some("-h" | "--help") => {
             print_help();
             return;
