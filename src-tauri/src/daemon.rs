@@ -117,6 +117,15 @@ fn dir_is_safe(dir: &Path) -> bool {
 /// peer-cred syscall the 0700 dir + 0600 socket are the only guard.
 #[cfg(target_os = "linux")]
 fn peer_uid_ok(fd: RawFd) -> bool {
+    // SAFETY: geteuid has no preconditions.
+    peer_cred(fd).is_some_and(|c| c.uid == unsafe { libc::geteuid() })
+}
+
+/// The peer's credentials as of its connect (SO_PEERCRED).
+#[cfg(target_os = "linux")]
+fn peer_cred(fd: RawFd) -> Option<libc::ucred> {
+    // SAFETY: ucred is plain data, so zeroed is a valid value, and cred and
+    // len are valid for writes of the size passed.
     unsafe {
         let mut cred: libc::ucred = std::mem::zeroed();
         let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -127,7 +136,7 @@ fn peer_uid_ok(fd: RawFd) -> bool {
             &mut cred as *mut _ as *mut libc::c_void,
             &mut len,
         );
-        ret == 0 && cred.uid == libc::geteuid()
+        (ret == 0).then_some(cred)
     }
 }
 
@@ -152,6 +161,150 @@ fn peer_uid_ok(fd: RawFd) -> bool {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn peer_uid_ok(_fd: RawFd) -> bool {
     true
+}
+
+/// Who is on the other end of a connection.
+#[derive(Clone, Copy)]
+struct Peer {
+    pid: Option<u32>,
+    /// The peer runs confined while the daemon does not: inside Landlock,
+    /// seccomp, bubblewrap or Flatpak. It may still post notifications and read
+    /// state, but it must not get the daemon to start, type into or stop
+    /// anything, which would run outside its sandbox.
+    sandboxed: bool,
+}
+
+impl Peer {
+    fn of(fd: RawFd) -> Peer {
+        let pid = peer_pid(fd);
+        let sandboxed = peer_confined(fd, pid) && !daemon_confined();
+        Peer { pid, sandboxed }
+    }
+}
+
+/// Whether the daemon itself runs with no_new_privs. Read once: nothing in
+/// the daemon sets the flag, and nothing can clear it.
+fn daemon_confined() -> bool {
+    static C: OnceLock<bool> = OnceLock::new();
+    *C.get_or_init(|| no_new_privs(std::process::id()) == Some(true))
+}
+
+/// Whether the peer on `fd` runs with no_new_privs. On Linux a peer that
+/// can't be checked counts as confined: one that exited right after
+/// connecting has no status left to read, and must not pass for unconfined.
+/// Elsewhere there is no flag to check.
+fn peer_confined(fd: RawFd, pid: Option<u32>) -> bool {
+    let Some(pid) = pid else { return cfg!(target_os = "linux") };
+    // The status read was the peer's only if the peer outlived it: once
+    // reaped, its pid can go to another process.
+    no_new_privs(pid) != Some(false) || !peer_alive(fd)
+}
+
+/// Whether the process that connected on `fd` still runs. The kernel keeps
+/// the peer from connect time, so this can't mistake a process that got its
+/// pid later for it. Kernels before 6.5 have no peer pidfd, and there a
+/// reused pid goes unnoticed.
+#[cfg(target_os = "linux")]
+fn peer_alive(fd: RawFd) -> bool {
+    match peer_pidfd(fd) {
+        Ok(pidfd) => pidfd_alive(&pidfd),
+        Err(errno) => errno == libc::ENOPROTOOPT,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn peer_alive(_fd: RawFd) -> bool {
+    true
+}
+
+/// A pidfd for the process that connected on `fd`, or the errno.
+#[cfg(target_os = "linux")]
+fn peer_pidfd(fd: RawFd) -> Result<std::os::fd::OwnedFd, i32> {
+    use std::os::fd::FromRawFd;
+    let mut pidfd: libc::c_int = -1;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: pidfd and len are valid for writes of the size passed.
+    let ret = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERPIDFD,
+            &mut pidfd as *mut _ as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+    }
+    // SAFETY: the kernel just opened this fd for us and nothing else owns it.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(pidfd) })
+}
+
+#[cfg(target_os = "linux")]
+fn pidfd_alive(pidfd: &std::os::fd::OwnedFd) -> bool {
+    use std::os::fd::AsRawFd;
+    // SAFETY: signal 0 only checks that the process exists; a null siginfo is
+    // allowed.
+    unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            0,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        ) == 0
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn peer_pid(fd: RawFd) -> Option<u32> {
+    peer_cred(fd).filter(|c| c.pid > 0).map(|c| c.pid as u32)
+}
+
+#[cfg(target_os = "macos")]
+fn peer_pid(fd: RawFd) -> Option<u32> {
+    // SAFETY: pid and len are valid for writes of the size passed.
+    unsafe {
+        let mut pid: libc::pid_t = 0;
+        let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+        let ret = libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            &mut pid as *mut _ as *mut libc::c_void,
+            &mut len,
+        );
+        (ret == 0 && pid > 0).then_some(pid as u32)
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn peer_pid(_fd: RawFd) -> Option<u32> {
+    None
+}
+
+/// Whether `pid` runs with no_new_privs, which Landlock and seccomp require
+/// and bubblewrap and Flatpak set. Confinement that doesn't set it (AppArmor,
+/// a container without no-new-privileges) goes unseen. macOS has no such flag,
+/// so nothing reads as confined there.
+#[cfg(target_os = "linux")]
+fn no_new_privs(pid: u32) -> Option<bool> {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()
+        .map(|s| status_no_new_privs(&s))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn no_new_privs(_pid: u32) -> Option<bool> {
+    Some(false)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn status_no_new_privs(status: &str) -> bool {
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("NoNewPrivs:"))
+        .is_some_and(|v| v.trim() == "1")
 }
 
 // ---- wire protocol --------------------------------------------------------
@@ -561,6 +714,12 @@ pub fn run() {
         generation: AtomicU64::new(0),
     });
     daemon.maybe_schedule_exit();
+    if daemon_confined() {
+        eprintln!(
+            "[thel-daemon] running with no_new_privs, as a sandboxed program would: \
+             no caller can be told apart as sandboxed, so none is refused"
+        );
+    }
 
     std::thread::spawn({
         let daemon = daemon.clone();
@@ -757,6 +916,13 @@ fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
         eprintln!("[thel-daemon] rejected connection: peer uid mismatch");
         return;
     }
+    let peer = Peer::of(stream.as_raw_fd());
+    if peer.sandboxed {
+        eprintln!(
+            "[thel-daemon] pid {} is sandboxed: it may only notify and read state",
+            peer.pid.unwrap_or(0)
+        );
+    }
     // This thread reads commands from `conn`; the handshake replies are written
     // directly here, before the Client's writer thread takes over the write side.
     let mut conn = stream;
@@ -803,14 +969,19 @@ fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
         match read_frame(&mut conn) {
             Ok((CONTROL, p)) => {
                 if let Some(cmd) = parse_json::<Command>(&p) {
-                    dispatch(daemon, cmd, &client);
+                    if peer.sandboxed && !cmd.harmless() {
+                        refuse(cmd, &client);
+                    } else {
+                        dispatch(daemon, cmd, &client);
+                    }
                 }
             }
-            Ok((INPUT, p)) => {
+            Ok((INPUT, p)) if !peer.sandboxed => {
                 if let Some((id, data)) = parse_id_payload(&p) {
                     daemon.input(&id, data);
                 }
             }
+            Ok((INPUT, _)) => {}
             _ => break,
         }
     }
@@ -819,6 +990,33 @@ fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
     for sh in shareds {
         sh.lock().subscribers.retain(|s| !Arc::ptr_eq(&s.client, &client));
     }
+}
+
+impl Command {
+    /// Whether a sandboxed peer may send this: it neither runs, types into nor
+    /// stops anything.
+    fn harmless(&self) -> bool {
+        matches!(self, Command::Notify { .. } | Command::Cwd { .. })
+    }
+}
+
+/// Answers a sandboxed peer's refused command, so a client waiting on a reply
+/// gets an error instead of hanging. Every command is named, so a new one that
+/// waits for a reply can't be missed here.
+fn refuse(cmd: Command, client: &Arc<Client>) {
+    let message = "thel refuses this from a sandboxed process".to_string();
+    let reply = match cmd {
+        Command::Open { id, .. } => control_json(&Event::Error { id, message }),
+        Command::StopListener { .. } => control_json(&StopReply { error: Some(message) }),
+        Command::Cwd { .. } => control_json(&CwdReply { cwd: None }),
+        Command::Status => control_json(&StatusReply { busy: HashMap::new() }),
+        Command::Usage => control_json(&UsageReply { usage: HashMap::new() }),
+        Command::Resize { .. }
+        | Command::Detach { .. }
+        | Command::Kill { .. }
+        | Command::Notify { .. } => return,
+    };
+    client.enqueue(Arc::new(reply));
 }
 
 fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>) {
@@ -1890,6 +2088,141 @@ mod tests {
         kill_session(-1);
         kill_session(0);
         kill_session(1);
+    }
+
+    /// A refused command that waits for a reply gets one.
+    #[test]
+    fn refused_commands_that_wait_get_an_answer() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        b.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let client = Client::spawn(&a).unwrap();
+        refuse(Command::StopListener { id: "t".into(), pid: 1 }, &client);
+        let (_, p) = read_frame(&mut b).unwrap();
+        let reply = parse_json::<StopReply>(&p).unwrap();
+        assert!(reply.error.unwrap().contains("sandboxed"));
+        refuse(Command::Cwd { id: "t".into() }, &client);
+        let (_, p) = read_frame(&mut b).unwrap();
+        assert_eq!(parse_json::<CwdReply>(&p).unwrap().cwd, None);
+    }
+
+    #[test]
+    fn reads_no_new_privs_from_proc_status() {
+        assert!(status_no_new_privs("Name:\tsh\nNoNewPrivs:\t1\nSeccomp:\t0\n"));
+        assert!(!status_no_new_privs("Name:\tsh\nNoNewPrivs:\t0\n"));
+        assert!(!status_no_new_privs("Name:\tsh\n"), "older kernels lack the line");
+    }
+
+    #[test]
+    fn a_sandboxed_peer_may_only_notify_and_read() {
+        let id = || "t".to_string();
+        assert!(Command::Notify { id: id(), message: "m".into() }.harmless());
+        assert!(Command::Cwd { id: id() }.harmless());
+        assert!(!Command::Kill { id: id() }.harmless());
+        // They show every terminal's activity.
+        assert!(!Command::Status.harmless() && !Command::Usage.harmless());
+        assert!(!Command::Detach { id: id() }.harmless());
+        assert!(!Command::Resize { id: id(), cols: 1, rows: 1 }.harmless());
+        let open = Command::Open {
+            id: id(),
+            command: "sh".into(),
+            args: vec![],
+            cwd: None,
+            env: None,
+            cols: 80,
+            rows: 24,
+        };
+        assert!(!open.harmless());
+    }
+
+    /// The abstract socket address `name`, for a forked child to connect to
+    /// with async-signal-safe calls only.
+    #[cfg(target_os = "linux")]
+    fn raw_abstract_addr(name: &str) -> (libc::sockaddr_un, libc::socklen_t) {
+        // SAFETY: sockaddr_un is plain data, so all zeroes is a valid value.
+        let mut sa: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        for (d, s) in sa.sun_path[1..].iter_mut().zip(name.bytes()) {
+            *d = s as libc::c_char;
+        }
+        let len = (std::mem::size_of::<libc::sa_family_t>() + 1 + name.len()) as libc::socklen_t;
+        (sa, len)
+    }
+
+    /// A peer that connects and is gone before the daemon looks at it reads as
+    /// confined; a live one reads as what it is.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_peer_gone_before_the_check_reads_as_confined() {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::{SocketAddr, UnixListener};
+        let name = format!("thel-test-peer-{}", std::process::id());
+        let addr = || SocketAddr::from_abstract_name(&name).unwrap();
+        let listener = UnixListener::bind_addr(&addr()).unwrap();
+
+        let live = UnixStream::connect_addr(&addr()).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        let me = no_new_privs(std::process::id()) == Some(true);
+        assert_eq!(peer_confined(accepted.as_raw_fd(), peer_pid(accepted.as_raw_fd())), me);
+        assert!(peer_alive(accepted.as_raw_fd()));
+        drop(live);
+
+        let (sa, len) = raw_abstract_addr(&name);
+        // SAFETY: the child makes only async-signal-safe calls, then exits.
+        unsafe {
+            let child = libc::fork();
+            if child == 0 {
+                let s = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+                libc::connect(s, &sa as *const _ as *const libc::sockaddr, len);
+                libc::_exit(0);
+            }
+            libc::waitpid(child, std::ptr::null_mut(), 0);
+        }
+        let (accepted, _) = listener.accept().unwrap();
+        assert!(peer_confined(accepted.as_raw_fd(), peer_pid(accepted.as_raw_fd())));
+        let fd = accepted.as_raw_fd();
+        assert!(!peer_alive(fd) || matches!(peer_pidfd(fd), Err(libc::ENOPROTOOPT)));
+    }
+
+    /// A live no_new_privs peer of an unconfined daemon reads as confined.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_no_new_privs_peer_reads_as_confined() {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::{SocketAddr, UnixListener};
+        if no_new_privs(std::process::id()) == Some(true) {
+            eprintln!("the tests themselves run sandboxed; skipping");
+            return;
+        }
+        let name = format!("thel-test-nnp-{}", std::process::id());
+        let listener = UnixListener::bind_addr(&SocketAddr::from_abstract_name(&name).unwrap()).unwrap();
+        let (sa, len) = raw_abstract_addr(&name);
+        let mut hold = [0; 2];
+        // SAFETY: hold has room for the two fds pipe writes.
+        assert_eq!(unsafe { libc::pipe(hold.as_mut_ptr()) }, 0);
+        // SAFETY: the child makes only async-signal-safe calls: it sets
+        // no_new_privs, connects, then waits for the pipe to close and exits.
+        let child = unsafe {
+            let child = libc::fork();
+            if child == 0 {
+                libc::close(hold[1]);
+                libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+                let s = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+                libc::connect(s, &sa as *const _ as *const libc::sockaddr, len);
+                let mut b = 0u8;
+                libc::read(hold[0], &mut b as *mut u8 as *mut libc::c_void, 1);
+                libc::_exit(0);
+            }
+            libc::close(hold[0]);
+            child
+        };
+        let (accepted, _) = listener.accept().unwrap();
+        let confined = peer_confined(accepted.as_raw_fd(), peer_pid(accepted.as_raw_fd()));
+        // SAFETY: closing our end lets the child exit; then it is reaped.
+        unsafe {
+            libc::close(hold[1]);
+            libc::waitpid(child, std::ptr::null_mut(), 0);
+        }
+        assert!(confined);
     }
 
     // ---- wire protocol framing: [u8 type][u32 LE len][payload] ----
