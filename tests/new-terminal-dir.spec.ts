@@ -1,13 +1,5 @@
-import { test, gotoApp, expect } from "./app";
+import { test, gotoApp, expect, createSession } from "./app";
 import type { Page } from "@playwright/test";
-
-async function createSession(page: Page) {
-  await page.keyboard.press("Control+Shift+N");
-  const create = page.getByRole("button", { name: "Create session" });
-  await expect(create).toBeEnabled();
-  await create.click();
-  await expect(page.locator(".xterm").first()).toBeVisible();
-}
 
 /** Put the newest terminal's shell in `dir`, as the OS would report it. */
 async function shellMovesTo(page: Page, dir: string) {

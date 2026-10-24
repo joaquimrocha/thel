@@ -1,4 +1,4 @@
-import { test, gotoApp, expect } from "./app";
+import { test, gotoApp, expect, createSession } from "./app";
 import type { Page, CDPSession } from "@playwright/test";
 
 // Frontend memory-leak probes. Each scenario measures the JS heap (after a
@@ -37,14 +37,6 @@ function pump(page: Page, kb: number) {
       if (i % 64 === 0) await new Promise((r) => setTimeout(r, 0));
     }
   }, kb);
-}
-
-async function createSession(page: Page) {
-  await page.keyboard.press("Control+Shift+N");
-  const create = page.getByRole("button", { name: "Create session" });
-  await expect(create).toBeEnabled();
-  await create.click();
-  await expect(page.locator(".xterm").first()).toBeVisible();
 }
 
 const tabs = (page: Page) => page.getByTestId("terminal-tab");

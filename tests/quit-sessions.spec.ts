@@ -1,4 +1,4 @@
-import { test, gotoApp, expect } from "./app";
+import { test, gotoApp, expect, createSession } from "./app";
 import type { Page } from "@playwright/test";
 
 type QuitMock = { killed?: string[]; destroyed?: boolean };
@@ -20,19 +20,6 @@ async function seedOnClose(page: Page, mode: keyof typeof STORED) {
 
 // Creates a session and returns the id of the terminal that came with it, so a
 // test can name what it expects to be killed rather than counting.
-async function createSession(page: Page): Promise<string> {
-  await page.keyboard.press("Control+Shift+N");
-  const create = page.getByRole("button", { name: "Create session" });
-  await expect(create).toBeEnabled();
-  await create.click();
-  await expect(page.getByText("No sessions open.")).toBeHidden();
-  const pane = page.locator("[data-terminal-pane]").first();
-  await expect(pane).toBeVisible();
-  const id = await pane.getAttribute("data-terminal-pane");
-  expect(id).toBeTruthy();
-  return id ?? "";
-}
-
 async function closeRequestedReady(page: Page) {
   await expect
     .poll(() =>

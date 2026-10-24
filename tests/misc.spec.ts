@@ -1,5 +1,5 @@
 import { test } from "./app";
-import { gotoApp, expect } from "./app";
+import { gotoApp, expect, createSession } from "./app";
 
 test("empty state points to the new-session shortcut, not Ctrl+K", async ({
   page,
@@ -49,8 +49,7 @@ test("sidebar resize handle works with arrow keys", async ({ page }) => {
 
 test("sidebar resize handle sits between the session list and the pane's +", async ({ page }) => {
   await gotoApp(page);
-  await page.keyboard.press("Control+Shift+N");
-  await page.getByRole("button", { name: "Create session" }).click();
+  await createSession(page);
   const sep = page.getByRole("separator", { name: "Resize sidebar" });
   const handle = await sep.boundingBox();
   const list = await page.locator("[data-session-list]").boundingBox();

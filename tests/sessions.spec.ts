@@ -1,14 +1,6 @@
-import { test } from "./app";
+import { test, createSession } from "./app";
 import { gotoApp, expect } from "./app";
 import type { Page } from "@playwright/test";
-
-async function createSession(page: Page) {
-  await page.keyboard.press("Control+Shift+N");
-  const create = page.getByRole("button", { name: "Create session" });
-  await expect(create).toBeEnabled(); // home dir resolves and gets selected
-  await create.click();
-  await expect(page.getByText("No sessions open.")).toBeHidden();
-}
 
 const hasTerminalChannel = (page: Page, id: string) =>
   page.evaluate(

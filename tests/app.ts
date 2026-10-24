@@ -15,4 +15,18 @@ export function appMenuButton(page: Page) {
   return page.getByTestId("app-menu");
 }
 
+/**
+ * Creates a session in the home folder through the New Session dialog and
+ * waits for its terminal. Returns that terminal's id.
+ */
+export async function createSession(page: Page): Promise<string> {
+  await page.keyboard.press("Control+Shift+N");
+  const create = page.getByRole("button", { name: "Create session" });
+  await expect(create).toBeEnabled();
+  await create.click();
+  const pane = page.locator("[data-terminal-pane]").first();
+  await expect(pane.locator(".xterm")).toBeVisible();
+  return (await pane.getAttribute("data-terminal-pane")) ?? "";
+}
+
 export { expect, test };

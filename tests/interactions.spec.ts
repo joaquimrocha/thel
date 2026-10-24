@@ -1,13 +1,5 @@
-import { test, gotoApp, expect } from "./app";
+import { test, gotoApp, expect, createSession } from "./app";
 import type { Page } from "@playwright/test";
-
-async function createSession(page: Page) {
-  await page.keyboard.press("Control+Shift+N");
-  const c = page.getByRole("button", { name: "Create session" });
-  await expect(c).toBeEnabled();
-  await c.click();
-  await expect(page.getByText("No sessions open.")).toBeHidden();
-}
 
 async function rename(page: Page, name: string) {
   // The newest (active) session is the last row; double-click opens its settings.

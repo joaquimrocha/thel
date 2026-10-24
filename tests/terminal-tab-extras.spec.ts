@@ -1,15 +1,8 @@
-import { test, gotoApp, expect } from "./app";
+import { test, gotoApp, expect, createSession } from "./app";
 import type { Page } from "@playwright/test";
 
 // Find bar, per-terminal mute, and the OSC progress bar: all three hang off a
 // terminal's tab, so they share a spec.
-
-async function createSession(page: Page) {
-  await page.keyboard.press("Control+Shift+N");
-  const create = page.getByRole("button", { name: "Create session" });
-  await expect(create).toBeEnabled();
-  await create.click();
-}
 
 const emitTerminal = (page: Page, id: string, data: string) =>
   page.evaluate(
