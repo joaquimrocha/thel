@@ -69,6 +69,8 @@ const DENY_PAUSE_MAX: Duration = Duration::from_secs(30 * 60);
 type AnswerTx = SyncSender<(bool, bool)>;
 // How often a waiting approval checks whether its caller hung up.
 const HANGUP_POLL: Duration = Duration::from_millis(250);
+// How often a tab whose terminal closed checks whether its process ended.
+const EXIT_POLL: Duration = Duration::from_millis(100);
 // The longest request the approval prompt shows, in bytes of its summary. A
 // longer one is refused rather than cut, so the user sees all of what they
 // allow.
@@ -651,6 +653,10 @@ fn parse_id_payload(p: &[u8]) -> Option<(String, &[u8])> {
 // reattach snapshot is one larger frame that still fits.
 const CLIENT_QUEUE_CAP: usize = 512;
 
+// What a tab may have waiting to be typed into it, in bytes. A program that
+// stops reading would otherwise let send-keys grow the daemon without end.
+const MAX_QUEUED_KEYS: usize = 1024 * 1024;
+
 /// A connected GUI client. Output is pushed to a bounded queue drained by a
 /// dedicated writer thread, so a slow client can't stall the PTY reader
 /// (head-of-line blocking): the reader enqueues and moves on. If the client
@@ -834,9 +840,16 @@ fn strip_queries(input: &[u8]) -> Vec<u8> {
     out
 }
 
+/// To a tab's own typing thread, so a program that reads nothing blocks only
+/// that thread, with how many bytes wait there.
+struct Keys {
+    tx: std::sync::mpsc::Sender<Vec<u8>>,
+    queued: Arc<AtomicUsize>,
+}
+
 struct Tab {
     master: Box<dyn MasterPty + Send>,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    keys: Keys,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     shared: Arc<Mutex<TabShared>>,
 }
@@ -1176,7 +1189,8 @@ fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
             Ok((INPUT, p)) if !peer.sandboxed => {
                 if let Some((id, data)) = parse_id_payload(&p) {
                     // A GUI's keystrokes to a tab that just ended go nowhere,
-                    // and the tab's exit tells it so.
+                    // and the tab's exit tells it so. Those to a tab that reads
+                    // nothing are dropped once it has MAX_QUEUED_KEYS waiting.
                     let _ = daemon.input(&id, data);
                 }
             }
@@ -1435,6 +1449,20 @@ impl Daemon {
                 (id.to_string(), shared.clone(), child.clone(), self.clone());
             move || tab_reader(id, reader, shared, child, daemon)
         });
+        let (tx, typed) = std::sync::mpsc::channel::<Vec<u8>>();
+        let keys = Keys { tx, queued: Arc::new(AtomicUsize::new(0)) };
+        std::thread::spawn({
+            let queued = keys.queued.clone();
+            move || {
+                let mut writer = writer;
+                for data in typed {
+                    if writer.write_all(&data).and_then(|()| writer.flush()).is_err() {
+                        break;
+                    }
+                    queued.fetch_sub(data.len(), Ordering::SeqCst);
+                }
+            }
+        });
 
         if let Some(client) = client {
             reattach(&mut shared.lock(), id, client);
@@ -1443,7 +1471,7 @@ impl Daemon {
             id.to_string(),
             Tab {
                 master,
-                writer: Arc::new(Mutex::new(writer)),
+                keys,
                 child,
                 shared: shared.clone(),
             },
@@ -1484,11 +1512,19 @@ impl Daemon {
     }
 
     /// Types `data` into tab `id`.
+    /// Queues `data` for tab `id` to read. Fails, without waiting, when the
+    /// tab already holds MAX_QUEUED_KEYS it hasn't read.
     fn input(&self, id: &str, data: &[u8]) -> Result<(), String> {
-        let writer = self.tabs.lock().get(id).map(|t| t.writer.clone());
-        let writer = writer.ok_or_else(|| format!("no terminal {id}"))?;
-        let mut w = writer.lock();
-        w.write_all(data).and_then(|()| w.flush()).map_err(|e| format!("typing into {id}: {e}"))
+        let tabs = self.tabs.lock();
+        let keys = &tabs.get(id).ok_or_else(|| format!("no terminal {id}"))?.keys;
+        let before = keys.queued.fetch_add(data.len(), Ordering::SeqCst);
+        // Against what waits already, so a long paste still reaches a tab
+        // that reads.
+        if before > 0 && before + data.len() > MAX_QUEUED_KEYS {
+            keys.queued.fetch_sub(data.len(), Ordering::SeqCst);
+            return Err(format!("terminal {id} is not reading what is typed into it"));
+        }
+        keys.tx.send(data.to_vec()).map_err(|_| format!("no terminal {id}"))
     }
 
     fn resize(&self, id: &str, cols: u16, rows: u16) {
@@ -2190,7 +2226,15 @@ fn tab_reader(
             }
         }
     }
-    let code = child.lock().wait().ok().map(|s| s.exit_code() as i32);
+    // Polled: wait() would hold the child's lock, which busy_monitor takes
+    // under the tabs lock, while a process that closed its terminal runs on.
+    let code = loop {
+        match child.lock().try_wait() {
+            Ok(Some(status)) => break Some(status.exit_code() as i32),
+            Ok(None) => std::thread::sleep(EXIT_POLL),
+            Err(_) => break None,
+        }
+    };
     eprintln!("[thel-daemon] tab {id} exited (code {code:?})");
     finish_tab(&daemon, &id, code);
 }
@@ -2992,6 +3036,39 @@ mod tests {
         kill_session(-1);
         kill_session(0);
         kill_session(1);
+    }
+
+    /// A tab whose program reads nothing, or closed its terminal and runs on,
+    /// holds up no other tab, and gets no more than it can hold.
+    #[cfg(unix)]
+    #[test]
+    fn a_stuck_tab_stalls_no_other() {
+        let d = Daemon::new();
+        let sh = |script: &str| vec!["-c".to_string(), script.to_string()];
+        d.open("quiet", "sh".into(), sh("sleep 10"), None, None, 80, 24, None).unwrap();
+        d.open("gone", "sh".into(), sh("echo ready; exec </dev/null >/dev/null 2>&1; sleep 10"), None, None, 80, 24, None)
+            .unwrap();
+        let gone = d.tabs.lock()["gone"].shared.clone();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !gone.lock().scrollback.iter().copied().collect::<Vec<u8>>().ends_with(b"ready\r\n") {
+            assert!(std::time::Instant::now() < deadline, "the second tab never closed its terminal");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let start = std::time::Instant::now();
+        d.input("quiet", &vec![b'x'; 1 << 20]).unwrap();
+        // What it doesn't read waits up to a limit, then typing fails at once.
+        let more = d.input("quiet", &vec![b'y'; 1 << 20]).unwrap_err();
+        assert!(more.contains("not reading"), "{more}");
+        assert!(start.elapsed() < Duration::from_millis(500));
+        // Its reader finds the terminal closed right after; one stuck on the
+        // tab's exit would hold up every look at the tabs from then on.
+        while start.elapsed() < Duration::from_secs(1) {
+            let at = std::time::Instant::now();
+            assert_eq!(d.roots().len(), 2);
+            assert!(at.elapsed() < Duration::from_millis(500), "took {:?}", at.elapsed());
+        }
+        d.kill("quiet");
+        d.kill("gone");
     }
 
     /// A program in one tab opens a session and a terminal, lists them and
