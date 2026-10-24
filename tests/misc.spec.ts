@@ -47,6 +47,25 @@ test("sidebar resize handle works with arrow keys", async ({ page }) => {
   await expect(handle).toHaveAttribute("aria-valuenow", String(before));
 });
 
+test("sidebar resize handle sits between the session list and the pane's +", async ({ page }) => {
+  await gotoApp(page);
+  await page.keyboard.press("Control+Shift+N");
+  await page.getByRole("button", { name: "Create session" }).click();
+  const sep = page.getByRole("separator", { name: "Resize sidebar" });
+  const handle = await sep.boundingBox();
+  const list = await page.locator("[data-session-list]").boundingBox();
+  const plus = await page.getByRole("button", { name: "New terminal in this pane" }).first().boundingBox();
+  expect(handle).not.toBeNull();
+  expect(list).not.toBeNull();
+  expect(plus).not.toBeNull();
+  if (handle && list && plus) {
+    expect(handle.x).toBeGreaterThanOrEqual(list.x + list.width);
+    expect(plus.x).toBeGreaterThanOrEqual(handle.x + handle.width);
+  }
+  // Still on top of the terminal area it now overlaps.
+  await sep.hover();
+});
+
 test("Ctrl+B toggles the sidebar's session list", async ({ page }) => {
   await gotoApp(page);
   await expect(page.locator("[data-session-list]")).toBeVisible();

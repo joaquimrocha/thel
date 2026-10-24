@@ -431,7 +431,7 @@ export function SessionSidebar() {
         onDragOver={(e) => e.preventDefault()}
         // `relative` makes this the rows' offset parent, which is what the FLIP
         // pass measures against (the tab strip does the same).
-        className="relative flex-1 space-y-0.5 overflow-y-auto px-2 pb-2 pt-1 outline-none"
+        className="thin-scrollbar relative flex-1 space-y-0.5 overflow-y-auto px-2 pb-2 pt-1 outline-none"
       >
         {sessions.length === 0 && (
           <p className="px-2 py-3 text-xs text-muted-foreground">
@@ -514,7 +514,9 @@ export function SessionSidebar() {
               setSidebarWidth(width + (e.key === "ArrowRight" ? 16 : -16));
             }
           }}
-          className="absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize outline-none hover:bg-border focus-visible:bg-ring"
+          // Outside the sidebar, over the terminal's padding, so it stays clear
+          // of the session list's scrollbar.
+          className="absolute -right-2 top-0 z-10 h-full w-2 cursor-col-resize outline-none hover:bg-border focus-visible:bg-ring"
         />
       </aside>
     );
@@ -552,7 +554,7 @@ export function SessionSidebar() {
       </div>
       <div
         data-session-rail
-        className="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1"
+        className="thin-scrollbar flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1"
       >
         {railChunks.map((chunk, i) => (
           <Fragment key={chunk[0].id}>

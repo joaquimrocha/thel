@@ -82,4 +82,23 @@
   .no-scrollbar::-webkit-scrollbar {
     display: none;
   }
+
+  /* A thin scrollbar that takes its own space. The OS overlay scrollbar
+     widens on hover and covers the buttons at the list's right edge.
+     Styling the pseudo-elements turns WebKit's overlay scrollbar into a
+     classic one. scrollbar-width stays unset: Chromium ignores these
+     pseudo-elements when it is set. */
+  .thin-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+  .thin-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .thin-scrollbar::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.35);
+    border-radius: 3px;
+  }
+  .thin-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.6);
+  }
 }
