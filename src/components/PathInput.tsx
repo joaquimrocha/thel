@@ -100,7 +100,7 @@ export function PathInput({
         className="w-full rounded-md border border-input bg-transparent px-2 py-1.5 font-mono text-sm outline-none focus:ring-1 focus:ring-ring"
       />
       {open && items.length > 0 && (
-        <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md">
+        <div className="thin-scrollbar absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md">
           {items.map((abs, i) => (
             <button
               key={abs}

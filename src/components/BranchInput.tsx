@@ -64,7 +64,7 @@ export function BranchInput({
         className={inputClass}
       />
       {open && suggestions.length > 0 && (
-        <div className="absolute z-10 mt-1 max-h-40 w-full overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md">
+        <div className="thin-scrollbar absolute z-10 mt-1 max-h-40 w-full overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md">
           {suggestions.map((o, i) => (
             <button
               key={o}

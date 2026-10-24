@@ -44,7 +44,7 @@ export function LaunchersDialog() {
               the row-level truncation can do its job. */}
           <div className="min-w-0 space-y-2">
             {/* Scrolls internally once there are more launchers than fit. */}
-            <div className="max-h-[55vh] space-y-1 overflow-y-auto">
+            <div className="thin-scrollbar max-h-[55vh] space-y-1 overflow-y-auto">
               {launchers.map((l) => {
                 const isDefault = l.id === defaultLauncherId;
                 return (

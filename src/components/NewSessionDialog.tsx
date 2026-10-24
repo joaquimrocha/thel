@@ -488,7 +488,7 @@ export function NewSessionDialog() {
                 </TabsContent>
 
                 <TabsContent value="use">
-                  <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border border-border p-1">
+                  <div className="thin-scrollbar max-h-40 space-y-1 overflow-y-auto rounded-md border border-border p-1">
                     {!folderIsWorktree && cwd && (
                       <SelectRow
                         selected={selected === cwd}

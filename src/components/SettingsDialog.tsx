@@ -129,7 +129,7 @@ export function SettingsDialog() {
 
           <div
             data-testid="settings-tab-content"
-            className="min-h-[16rem] max-h-[60vh] flex-1 overflow-y-auto"
+            className="thin-scrollbar min-h-[16rem] max-h-[60vh] flex-1 overflow-y-auto"
           >
             <TabsContent value="appearance" className="mt-0 space-y-3">
               <div className="flex gap-1">

@@ -71,7 +71,7 @@ export function NotificationsDialog() {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-80 space-y-1 overflow-y-auto">
+        <div className="thin-scrollbar max-h-80 space-y-1 overflow-y-auto">
           {items.length === 0 && (
             <p className="py-6 text-center text-sm text-muted-foreground">
               No notifications.

@@ -85,7 +85,7 @@ export function ShortcutsDialog() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-2 py-2">
+        <div className="thin-scrollbar flex-1 overflow-y-auto px-2 py-2">
           {filteredShortcuts.map((s) => {
             const combo = effectiveCombo(s.id)!;
             const str = comboToString(combo);

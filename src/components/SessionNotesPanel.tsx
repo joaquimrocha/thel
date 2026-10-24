@@ -188,7 +188,7 @@ export function SessionNotesPanel() {
             onKeyDown={onEditorKeyDown}
             placeholder={"# Plan\n\n- [ ] first step\n- [x] done step"}
             spellCheck={false}
-            className="flex-1 resize-none bg-transparent px-4 py-3 font-mono text-xs leading-relaxed outline-none placeholder:text-muted-foreground"
+            className="thin-scrollbar flex-1 resize-none bg-transparent px-4 py-3 font-mono text-xs leading-relaxed outline-none placeholder:text-muted-foreground"
           />
         ) : (
           <div
@@ -204,7 +204,7 @@ export function SessionNotesPanel() {
               }
             }}
             title={`${EDIT_KEYS} to edit`}
-            className="flex-1 overflow-y-auto px-4 py-3 text-sm outline-none"
+            className="thin-scrollbar flex-1 overflow-y-auto px-4 py-3 text-sm outline-none"
           >
             <Rendered
               source={text}
