@@ -4,7 +4,8 @@ import { homeDir } from "./pty";
 let home: string | null = null;
 void homeDir()
   .then((h) => {
-    home = h;
+    // As the backend compares it: "/home/u/" is "/home/u".
+    home = h && h.length > 1 ? h.replace(/\/+$/, "") : h;
   })
   .catch(() => {});
 

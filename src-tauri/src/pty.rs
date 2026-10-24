@@ -647,13 +647,9 @@ fn walk_process_trees(roots: &[(String, u32)]) -> Vec<(String, Usage, HashSet<u3
         let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
             continue;
         };
-        // comm (field 2) is parenthesised and may itself contain spaces and
-        // parens, so fields are counted from its *last* closing paren onwards,
-        // where index 0 is field 3.
-        let Some((_, rest)) = stat.rsplit_once(')') else {
+        let Some(f) = stat_fields(&stat) else {
             continue;
         };
-        let f: Vec<&str> = rest.split_ascii_whitespace().collect();
         let at = |i: usize| f.get(i).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
         // 1-based ppid=4, utime=14, stime=15, all shifted down by 3.
         procs.insert(pid, (at(1) as u32, at(11) + at(12), rss_pages(&entry.path())));
@@ -877,6 +873,13 @@ pub(crate) fn decode_utf8_stream(carry: &mut Vec<u8>, chunk: &[u8]) -> String {
             }
         }
     }
+}
+
+/// The fields of a `/proc/<pid>/stat` line after comm, so index 0 is field 3
+/// (state) and index 1 is the ppid. comm (field 2) is parenthesised and may
+/// itself hold spaces and parens, so fields count from its last closing paren.
+pub(crate) fn stat_fields(stat: &str) -> Option<Vec<&str>> {
+    Some(stat.rsplit_once(')')?.1.split_ascii_whitespace().collect())
 }
 
 #[cfg(test)]

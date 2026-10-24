@@ -2,6 +2,7 @@ import { defaultShell, programExists, spawnDetached, terminalCwd } from "./pty";
 import { toast } from "sonner";
 import { gitInfo, worktreeInfo } from "./git";
 import { abbreviatePath } from "./paths";
+import { isWindows } from "./platform";
 import {
   useSessions,
   type Session,
@@ -12,15 +13,18 @@ import { usePrefs } from "@/store/prefs";
 import { useUI } from "@/store/ui";
 import { type Launcher, getDefaultLauncher } from "@/store/launchers";
 
+/** A path's last part. `\` separates parts on Windows only: elsewhere a
+ * folder name can hold it. */
 export function basename(p: string): string {
-  const parts = p.replace(/[/\\]+$/, "").split(/[/\\]/);
-  return parts[parts.length - 1] || p;
+  const parts = p.split(isWindows ? /[/\\]/ : /\//).filter(Boolean);
+  return parts[parts.length - 1] ?? p;
 }
 
 // Default label for a session anchored to a directory. $HOME shows as "~"
-// rather than the home folder's basename.
+// rather than the home folder's basename. The same rule as name_for_dir in
+// session.rs, which names a session `thel session new` opens.
 export function sessionNameForDir(cwd: string): string {
-  return abbreviatePath(cwd) === "~" ? "~" : basename(cwd);
+  return abbreviatePath(cwd.replace(/\/+$/, "")) === "~" ? "~" : basename(cwd);
 }
 
 // The session values a launcher command can reference.
