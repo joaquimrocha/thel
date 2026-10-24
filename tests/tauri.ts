@@ -342,9 +342,6 @@ function install(config: MockConfig) {
           localStorage.setItem("__note__" + args.sessionId, String(args.text));
         else localStorage.removeItem("__note__" + args.sessionId);
         return null;
-      case "delete_note":
-        localStorage.removeItem("__note__" + args.sessionId);
-        return null;
       case "check_daemon":
         return m.daemonHealth ?? "none";
       case "restart_daemon":

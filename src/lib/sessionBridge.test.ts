@@ -13,10 +13,11 @@ vi.mock("@/lib/pty", async (original) => ({
   killTerminalWindow: vi.fn(async () => {}),
 }));
 
-import { adopt, forgetClaimed, quoted, type Adopt } from "./sessionBridge";
+import { adopt, forgetClaimed, quoted, takeNote, type Adopt } from "./sessionBridge";
 import { refreshSessionGit } from "@/lib/launch";
 import { killTerminalWindow } from "@/lib/pty";
 import { useSessions, sessionTerminals } from "@/store/sessions";
+import { useNotes } from "@/store/notes";
 
 function started(a: Partial<Adopt> = {}): Adopt {
   return {
@@ -96,4 +97,17 @@ test("a terminal for a session closed here is closed too", async () => {
   await adopt(started({ terminal: "t2", place: { kind: "session", id: closing.id } }), "main");
   expect(killTerminalWindow).toHaveBeenCalledWith("t2");
   expect(useSessions.getState().sessions).toEqual([]);
+});
+
+test("a notes change for a session this window doesn't show leaves its notes alone", async () => {
+  useSessions.setState({ sessions: [], activeSessionId: undefined });
+  // A note loaded for a session this window doesn't show stays as it was.
+  useNotes.setState({ notes: { s1: "stale" } });
+  takeNote({ session: "s1", text: "new\n", edit: { kind: "append", text: "new" } });
+  expect(useNotes.getState().notes.s1).toBe("stale");
+
+  await adopt(started(), "main");
+  const [shown] = useSessions.getState().sessions;
+  takeNote({ session: shown.id, text: "new\n", edit: { kind: "set", text: "new\n" } });
+  expect(useNotes.getState().notes[shown.id]).toBe("new\n");
 });

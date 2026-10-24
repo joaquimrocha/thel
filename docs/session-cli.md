@@ -1,15 +1,17 @@
 # `thel session`
 
 `thel session` lets a program running in a thel terminal open sessions and
-terminals, list them and type into them. It is meant for coding agents and
-scripts: an agent can start a dev server in its own session, or a test watcher
-beside itself, and you see it in the sidebar like any other session.
+terminals, list them, type into them and edit their notes. It is meant for
+coding agents and scripts: an agent can start a dev server in its own session,
+or a test watcher beside itself, and you see it in the sidebar like any other
+session.
 
 ```
 thel session new [-n NAME] [-c DIR] [-- CMD [ARG...]]
 thel session terminal [-t SESSION] [-c DIR] [-- CMD [ARG...]]
 thel session list [-a] [--json]
 thel session send-keys -t TERMINAL [-l] KEY...
+thel session note [-t SESSION] [-w | -a [TEXT...]]
 ```
 
 | Command | Does |
@@ -18,12 +20,23 @@ thel session send-keys -t TERMINAL [-l] KEY...
 | `terminal` | Opens a terminal in SESSION, given as an id or a unique name. Without `-t`, the caller's own session. Prints the terminal's id. |
 | `list` | Lists sessions and their terminals: `running`, `exited`, or `starting` (no window has shown it yet). `-a` shows every session to a sandboxed caller, which otherwise sees only its own session and those it started. `--json` for scripts. |
 | `send-keys` | Types into a terminal. Each KEY is text or a key name: `Enter`, `Tab`, `Escape`, `BSpace`, `Space`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `C-<letter>`, `M-<char>`. |
+| `note` | Prints the notes of SESSION (an id or a unique name; without `-t`, the caller's own session). `-w` replaces them with stdin, and an empty stdin clears them. `-a` adds TEXT, or stdin when there is no TEXT, as new lines at the end. |
 
 `send-keys` drops control characters from text, so an argument can't carry its
 own escape sequences. `-l` sends every KEY as it is and turns key names off.
 
 New terminals open in the background: the window adds them without switching
 away from what you are looking at.
+
+A note change shows up at once in an open notes panel. If you were typing in
+that panel in the same moment, `-w` replaces what you typed, and `-a` adds
+its lines after it.
+
+```sh
+thel session note -a "- [ ] fix the flaky login test"
+thel session note -t api > api-notes.md
+thel session note -t api -w < api-notes.md
+```
 
 ## How it works
 
@@ -33,7 +46,10 @@ thel window is open; the next window to open shows it. Sessions belong to the
 windows, so each window reports its sessions to the daemon, and the daemon asks
 the right window to show a terminal it started. A window you close takes its
 sessions out of reach, except the last one, whose sessions the next launch
-reopens.
+reopens. The daemon also edits note files itself, in the folder a thel window
+told it about, and tells the windows what changed. It and the windows lock
+that folder around each edit, so neither saves over a change the other just
+made.
 
 Run one copy of the thel app at a time. A second copy reports its windows to
 the same daemon under the same names, so `thel session` may list or open
@@ -63,7 +79,8 @@ and a check of the caller's uid). On top of that, `thel session`:
   sandboxed program in the same terminal asks again. A terminal started
   this way comes back as a plain shell when thel restores it, so a yes runs
   the command once. A sandboxed caller's list shows its own session and those
-  it started without asking; `list -a`, for the rest, asks.
+  it started without asking; `list -a`, for the rest, asks. Reading notes
+  asks too, since they can hold anything you wrote.
 - **Keeps the prompt honest.** A terminal gets one question at a time; a
   second request fails while the first waits. After you deny one, that
   terminal's requests fail without asking for 30 seconds, twice as long

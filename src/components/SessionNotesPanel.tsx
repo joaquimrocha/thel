@@ -149,10 +149,22 @@ export function SessionNotesPanel() {
   // new text is in the DOM. Before paint, not in a frame callback: a keystroke
   // landing between the two would be inserted at the stale caret.
   useLayoutEffect(() => {
-    if (caret.current === null) return;
+    if (caret.current === null) {
+      if (kept) editor.current?.setSelectionRange(kept.start, kept.end, kept.direction);
+      return;
+    }
     editor.current?.setSelectionRange(caret.current, caret.current);
     caret.current = null;
   });
+
+  // A note changed from outside (`thel session note`) reaches the editor as a
+  // new value, which moves a textarea's caret to the end. Read before React
+  // commits it, so the effect above can put the caret back.
+  const el = editor.current;
+  const kept =
+    el && document.activeElement === el && el.value !== text
+      ? { start: el.selectionStart, end: el.selectionEnd, direction: el.selectionDirection }
+      : null;
 
   return (
     <Dialog open={!!sessionId} modal={false} onOpenChange={(o) => !o && close()}>
