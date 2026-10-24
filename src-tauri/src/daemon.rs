@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
 use crate::pty::{decode_utf8_stream, CreateOpts, TermMsg};
-use crate::session::{Adopt, Approval, DirSession, Directory, Place, Reply, Request};
+use crate::session::{Adopt, Approval, DirSession, Directory, NoteChange, Place, Reply, Request};
 
 const PROTOCOL_VERSION: u32 = 5;
 const EMPTY_GRACE: Duration = Duration::from_secs(45);
@@ -516,8 +516,11 @@ enum Command {
         req: Request,
     },
     /// A GUI asks for the terminals started for `thel session`: each one comes
-    /// as an Adopt event, now for those waiting and later for new ones.
-    Watch,
+    /// as an Adopt event, now for those waiting and later for new ones. It
+    /// also says where session notes live, for `thel session note`.
+    Watch {
+        notes_dir: PathBuf,
+    },
     /// A GUI window's sessions, for `thel session` to find and list them.
     Directory {
         window: String,
@@ -558,6 +561,8 @@ enum Event {
     Approve { approval: Approval },
     // An Approval was answered or timed out; windows still showing it close it.
     Resolved { req: u64 },
+    // `thel session note` changed a session's notes to `text` by `edit`.
+    Note(NoteChange),
 }
 
 /// Reply to Command::Status: tab id -> a foreground command is running.
@@ -864,6 +869,8 @@ struct Daemon {
     started: Mutex<HashMap<String, String>>,
     /// How long a sandboxed caller's request waits for the user's answer.
     approval_timeout: Duration,
+    /// Where session notes live, as the last watching GUI said.
+    notes_dir: Mutex<Option<PathBuf>>,
 }
 
 pub fn run() {
@@ -1215,7 +1222,7 @@ fn refuse(cmd: Command, client: &Arc<Client>) {
         | Command::Kill { .. }
         | Command::Notify { .. }
         | Command::Session { .. }
-        | Command::Watch
+        | Command::Watch { .. }
         | Command::Directory { .. }
         | Command::Answer { .. } => return,
     };
@@ -1283,7 +1290,8 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>, peer: &Pee
             let reply = daemon.session(peer, req);
             client.enqueue(Arc::new(control_json(&reply)));
         }
-        Command::Watch => {
+        Command::Watch { notes_dir } => {
+            *daemon.notes_dir.lock() = Some(notes_dir);
             // Held across the replay: what is added meanwhile is broadcast once
             // the lock is free, so it reaches this watcher instead of falling
             // between the replay and the registration.
@@ -1357,6 +1365,7 @@ impl Daemon {
             trusted: Mutex::new(HashMap::new()),
             started: Mutex::new(HashMap::new()),
             approval_timeout: APPROVAL_TIMEOUT,
+            notes_dir: Mutex::new(None),
         })
     }
 
@@ -1679,6 +1688,23 @@ impl Daemon {
                 self.input(&terminal, &data)?;
                 Ok(Reply::default())
             }
+            Request::Note { session, edit } => {
+                let (id, _) = self.session_id(caller, session.as_deref(), pinned)?;
+                // Held to the end, so edits from programs running at once
+                // apply one after another and the GUIs hear them in order.
+                let dir = self.notes_dir.lock();
+                let dir = dir.as_ref().ok_or("no thel window has opened yet")?;
+                let path = crate::session::note_file(dir, &id)?;
+                let _lock = crate::session::lock_notes(dir)?;
+                let text = crate::session::read_note(&path)?;
+                // An edit's reply leaves the notes out: a yes to an edit is
+                // not a yes to reading them.
+                let Some(edit) = edit else { return Ok(Reply { note: Some(text), ..Reply::default() }) };
+                let text = edit.apply(&text);
+                crate::session::write_note(&path, &text)?;
+                self.broadcast(&Event::Note(NoteChange { session: id, text, edit }));
+                Ok(Reply::default())
+            }
         }
     }
 
@@ -1704,6 +1730,10 @@ impl Daemon {
             Request::Terminal { session, cwd, command } => {
                 let (id, label) = self.pinned(caller, session.as_deref())?;
                 (Request::Terminal { session: Some(id), cwd, command }, Some(label))
+            }
+            Request::Note { session, edit } => {
+                let (id, label) = self.pinned(caller, session.as_deref())?;
+                (Request::Note { session: Some(id), edit }, Some(label))
             }
             other => (other, None),
         })
@@ -2354,7 +2384,7 @@ pub fn stop_listener(id: &str, pid: u32) -> Result<(), String> {
 /// connection sends it again.
 #[derive(Default)]
 struct SessionReplay {
-    watching: bool,
+    notes_dir: Option<PathBuf>,
     /// Each window's last report. A window that left keeps its empty one, so
     /// a daemon that missed it still drops that window's sessions.
     directory: Directory,
@@ -2370,7 +2400,7 @@ impl SessionReplay {
                 sessions: sessions.clone(),
             })
             .collect();
-        cmds.extend(self.watching.then_some(Command::Watch));
+        cmds.extend(self.notes_dir.clone().map(|notes_dir| Command::Watch { notes_dir }));
         cmds
     }
 }
@@ -2395,13 +2425,14 @@ fn send_command(cmd: &Command) -> Result<(), String> {
 }
 
 /// Has the daemon send this GUI `thel session` events: every terminal started
-/// for it and every approval to ask, the waiting ones first. The first call's
+/// for it, every approval to ask (the waiting ones first) and every notes
+/// change. `notes_dir` is where the GUI keeps session notes. The first call's
 /// `app` gets them all; later calls just replay what is waiting.
-pub fn watch(app: tauri::AppHandle) -> Result<(), String> {
+pub fn watch(notes_dir: PathBuf, app: tauri::AppHandle) -> Result<(), String> {
     // Already set by an earlier call, which keeps getting them.
     let _ = SESSION_APP.set(app);
-    SESSION_REPLAY.lock().watching = true;
-    send_command(&Command::Watch)
+    SESSION_REPLAY.lock().notes_dir = Some(notes_dir.clone());
+    send_command(&Command::Watch { notes_dir })
 }
 
 /// Passes on the user's answer to a sandboxed caller's request.
@@ -2489,6 +2520,7 @@ fn client_read_loop(mut r: UnixStream, routes: Arc<Mutex<HashMap<String, Channel
                 Some(Event::Claimed { terminal }) => session_event("thel-session-claimed", terminal),
                 Some(Event::Approve { approval }) => session_event("thel-session-approve", approval),
                 Some(Event::Resolved { req }) => session_event("thel-session-resolved", req),
+                Some(Event::Note(change)) => session_event("thel-session-note", change),
                 None => {}
             },
             _ => break, // EOF / error: daemon gone
@@ -2933,23 +2965,6 @@ mod tests {
         d.kill("caller");
     }
 
-    /// A client attaching to a tab that already ended gets its exit at once.
-    #[test]
-    fn reattach_to_an_ended_tab_gets_its_exit() {
-        let (a, mut b) = UnixStream::pair().unwrap();
-        b.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let client = Client::spawn(&a).unwrap();
-        let mut sh = TabShared { ended: Some(Some(3)), ..blank_tab() };
-        reattach(&mut sh, "t1", &client);
-        let (ty, p) = read_frame(&mut b).unwrap();
-        assert_eq!(ty, CONTROL);
-        assert!(matches!(
-            parse_json::<Event>(&p),
-            Some(Event::TabExited { id, code: Some(3) }) if id == "t1"
-        ));
-        assert!(sh.subscribers.is_empty());
-    }
-
     #[test]
     fn reattach_queues_the_ports_after_the_snapshot() {
         let (a, mut b) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -2977,21 +2992,6 @@ mod tests {
         kill_session(-1);
         kill_session(0);
         kill_session(1);
-    }
-
-    /// A refused command that waits for a reply gets one.
-    #[test]
-    fn refused_commands_that_wait_get_an_answer() {
-        let (a, mut b) = UnixStream::pair().unwrap();
-        b.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let client = Client::spawn(&a).unwrap();
-        refuse(Command::StopListener { id: "t".into(), pid: 1 }, &client);
-        let (_, p) = read_frame(&mut b).unwrap();
-        let reply = parse_json::<StopReply>(&p).unwrap();
-        assert!(reply.error.unwrap().contains("sandboxed"));
-        refuse(Command::Cwd { id: "t".into() }, &client);
-        let (_, p) = read_frame(&mut b).unwrap();
-        assert_eq!(parse_json::<CwdReply>(&p).unwrap().cwd, None);
     }
 
     /// A program in one tab opens a session and a terminal, lists them and
@@ -3048,26 +3048,56 @@ mod tests {
         assert!(d.adopts.lock().is_empty());
     }
 
-    /// A new connection tells the daemon the windows' sessions, then watches
-    /// again; a GUI that never watched sends no Watch.
+    /// `thel session note` reads and edits the caller's session notes, or
+    /// another's by name, and tells the watching GUIs what changed.
     #[test]
-    fn a_new_connection_replays_what_the_gui_told_the_daemon() {
-        let mut r = SessionReplay::default();
-        assert!(r.commands().is_empty());
-        let s = DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["t1".into()] };
-        r.directory.insert("main".into(), vec![s]);
-        assert!(matches!(
-            r.commands().as_slice(),
-            [Command::Directory { window, sessions }] if window == "main" && sessions[0].id == "s1"
-        ));
-        r.watching = true;
-        assert!(matches!(r.commands().as_slice(), [Command::Directory { .. }, Command::Watch]));
-        // A window that closed for good is told again that it has nothing.
-        r.directory.insert("main".into(), vec![]);
-        assert!(matches!(
-            r.commands().as_slice(),
-            [Command::Directory { window, sessions }, Command::Watch] if window == "main" && sessions.is_empty()
-        ));
+    fn a_program_in_a_tab_edits_session_notes() {
+        use crate::session::NoteEdit;
+        let d = Daemon::new();
+        let pid = caller_tab(&d);
+        d.directory.lock().insert(
+            "main".into(),
+            vec![
+                DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["caller".into()] },
+                DirSession { id: "s2".into(), name: "web".into(), terminals: vec![] },
+            ],
+        );
+        let inside = peer(&d, Some(pid), false);
+        let note = |session: Option<&str>, edit: Option<NoteEdit>| {
+            d.session(&inside, Request::Note { session: session.map(Into::into), edit })
+        };
+
+        assert!(note(None, None).error.unwrap().contains("no thel window"));
+        let tmp = crate::session::TestDir::new("thel-notes");
+        let dir = tmp.0.clone();
+        *d.notes_dir.lock() = Some(dir.clone());
+
+        assert_eq!(note(None, None).note.as_deref(), Some(""));
+        let add = |t: &str| Some(NoteEdit::Append { text: t.into() });
+        note(None, add("one"));
+        assert_eq!(note(None, add("two")).note, None, "an edit doesn't read the notes back");
+        assert_eq!(note(None, None).note.as_deref(), Some("one\ntwo\n"));
+        assert_eq!(std::fs::read_to_string(dir.join("s1.md")).unwrap(), "one\ntwo\n");
+        note(Some("web"), Some(NoteEdit::Set { text: "w".into() }));
+        assert_eq!(note(Some("s2"), None).note.as_deref(), Some("w"));
+        note(Some("web"), Some(NoteEdit::Set { text: String::new() }));
+        assert!(!dir.join("s2.md").exists(), "cleared notes leave no file");
+        assert!(note(Some("nope"), None).error.is_some());
+
+        // Appends from programs running at once all land.
+        std::thread::scope(|s| {
+            for i in 0..8 {
+                let note = &note;
+                s.spawn(move || {
+                    for j in 0..10 {
+                        note(Some("web"), add(&format!("{i}.{j}")));
+                    }
+                });
+            }
+        });
+        assert_eq!(note(Some("web"), None).note.unwrap().lines().count(), 80);
+
+        d.kill("caller");
     }
 
     /// Sends `req` from `peer` on another thread, for one that waits for an
@@ -3076,6 +3106,40 @@ mod tests {
     fn ask_bg(d: &Arc<Daemon>, peer: &Peer, req: Request) -> std::thread::JoinHandle<Reply> {
         let (d, peer) = (d.clone(), peer.clone());
         std::thread::spawn(move || d.session(&peer, req))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sandboxed_program_asks_before_reading_notes() {
+        let d = Daemon::new();
+        caller_tab(&d);
+        d.directory.lock().insert(
+            "main".into(),
+            vec![
+                DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["caller".into()] },
+                DirSession { id: "s2".into(), name: "web".into(), terminals: vec!["t2".into()] },
+                DirSession { id: "s3".into(), name: "web".into(), terminals: vec![] },
+            ],
+        );
+        let peer = peer(&d, None, true);
+        let waiter = ask_bg(&d, &peer, Request::Note { session: Some("s2".into()), edit: None });
+        // The prompt names the session the id stands for.
+        let a = first_approval(&d);
+        assert_eq!(a.summary, "read the notes of session \"web\" (id s2)");
+        d.answer(a.req, false, false);
+        assert_eq!(waiter.join().unwrap().error.as_deref(), Some("denied in thel"));
+
+        // An allowed request acts on the session it was allowed for, not on
+        // one that took its place under a name like its id.
+        d.denied.lock().clear();
+        let waiter = ask_bg(&d, &peer, Request::Note { session: Some("s2".into()), edit: None });
+        let a = first_approval(&d);
+        d.directory.lock().get_mut("main").unwrap()[1] =
+            DirSession { id: "s9".into(), name: "s2".into(), terminals: vec![] };
+        d.answer(a.req, true, false);
+        assert_eq!(waiter.join().unwrap().error.as_deref(), Some("the session this was allowed for closed"));
+
+        d.kill("caller");
     }
 
     /// A sandboxed program gets one question at a time per terminal, and a
@@ -3097,8 +3161,11 @@ mod tests {
         let err = d.session(&peer, keys()).error.unwrap();
         assert!(err.contains("already waiting"), "{err}");
         // Whatever it names, so a wait tells it nothing about what is there.
+        let note = Request::Note { session: Some("nope".into()), edit: None };
         let folder = Request::New { name: None, cwd: "/nope".into(), command: vec![] };
-        assert!(d.session(&peer, folder).error.unwrap().contains("already waiting"));
+        for req in [note, folder] {
+            assert!(d.session(&peer, req).error.unwrap().contains("already waiting"));
+        }
         d.answer(req, false, false);
         assert_eq!(waiter.join().unwrap().error.as_deref(), Some("denied in thel"));
         d.kill("caller");
@@ -3357,6 +3424,63 @@ mod tests {
         d.kill("caller");
     }
 
+    /// A client attaching to a tab that already ended gets its exit at once.
+    #[test]
+    fn reattach_to_an_ended_tab_gets_its_exit() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        b.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let client = Client::spawn(&a).unwrap();
+        let mut sh = TabShared { ended: Some(Some(3)), ..blank_tab() };
+        reattach(&mut sh, "t1", &client);
+        let (ty, p) = read_frame(&mut b).unwrap();
+        assert_eq!(ty, CONTROL);
+        assert!(matches!(
+            parse_json::<Event>(&p),
+            Some(Event::TabExited { id, code: Some(3) }) if id == "t1"
+        ));
+        assert!(sh.subscribers.is_empty());
+    }
+
+    /// A refused command that waits for a reply gets one.
+    #[test]
+    fn refused_commands_that_wait_get_an_answer() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        b.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let client = Client::spawn(&a).unwrap();
+        refuse(Command::StopListener { id: "t".into(), pid: 1 }, &client);
+        let (_, p) = read_frame(&mut b).unwrap();
+        let reply = parse_json::<StopReply>(&p).unwrap();
+        assert!(reply.error.unwrap().contains("sandboxed"));
+        refuse(Command::Cwd { id: "t".into() }, &client);
+        let (_, p) = read_frame(&mut b).unwrap();
+        assert_eq!(parse_json::<CwdReply>(&p).unwrap().cwd, None);
+    }
+
+    /// A new connection tells the daemon the windows' sessions, then watches
+    /// again; a GUI that never watched sends no Watch.
+    #[test]
+    fn a_new_connection_replays_what_the_gui_told_the_daemon() {
+        let mut r = SessionReplay::default();
+        assert!(r.commands().is_empty());
+        let s = DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["t1".into()] };
+        r.directory.insert("main".into(), vec![s]);
+        assert!(matches!(
+            r.commands().as_slice(),
+            [Command::Directory { window, sessions }] if window == "main" && sessions[0].id == "s1"
+        ));
+        r.notes_dir = Some("/n".into());
+        assert!(matches!(
+            r.commands().as_slice(),
+            [Command::Directory { .. }, Command::Watch { notes_dir }] if notes_dir == Path::new("/n")
+        ));
+        // A window that closed for good is told again that it has nothing.
+        r.directory.insert("main".into(), vec![]);
+        assert!(matches!(
+            r.commands().as_slice(),
+            [Command::Directory { window, sessions }, Command::Watch { .. }] if window == "main" && sessions.is_empty()
+        ));
+    }
+
     /// A program is known by its start time, which stays put while it runs
     /// and comes after its parent's.
     #[cfg(target_os = "linux")]
@@ -3402,7 +3526,7 @@ mod tests {
         // Otherwise it could approve its own requests, or misplace them.
         assert!(!Command::Answer { req: 1, allow: true, remember: true }.harmless(own));
         assert!(!Command::Directory { window: "main".into(), sessions: vec![] }.harmless(own));
-        assert!(!Command::Watch.harmless(own));
+        assert!(!Command::Watch { notes_dir: "/n".into() }.harmless(own));
         let open = Command::Open {
             id: id(),
             command: "sh".into(),

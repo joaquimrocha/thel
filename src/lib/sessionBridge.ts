@@ -10,6 +10,7 @@ import {
   type Terminal,
 } from "@/store/sessions";
 import { useUI } from "@/store/ui";
+import { useNotes, type NoteEdit } from "@/store/notes";
 import { basename, refreshSessionGit } from "@/lib/launch";
 import { defaultShell, killTerminalWindow } from "@/lib/pty";
 
@@ -150,6 +151,21 @@ export async function askApproval(a: Approval, windowLabel: string) {
   });
 }
 
+/** A notes change `thel session note` made (the thel-session-note event). */
+export interface NoteChange {
+  session: string;
+  text: string;
+  edit: NoteEdit;
+}
+
+/** Takes a notes change if this window shows the session. Every window gets
+ * the event, and one that doesn't show the session keeps no notes for it:
+ * they would be stale if the session came back after it missed a change. */
+export function takeNote(n: NoteChange) {
+  if (!useSessions.getState().sessions.some((s) => s.id === n.session)) return;
+  useNotes.getState().receiveNote(n.session, n.text, n.edit);
+}
+
 let shellOnce: Promise<string> | undefined;
 
 // Terminals the daemon started for a session this window doesn't hold, by
@@ -256,6 +272,7 @@ export function startSessionBridge(): () => void {
       resolved.add(e.payload);
       useUI.getState().withdrawConfirm(approvalKey(e.payload));
     }),
+    win.listen<NoteChange>("thel-session-note", (e) => takeNote(e.payload)),
   ]);
   // After the listeners are in place, so the replay of what waits lands.
   void listening.then(() => invoke("watch_sessions")).catch(() => {});

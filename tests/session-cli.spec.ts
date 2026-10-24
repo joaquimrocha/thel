@@ -447,3 +447,20 @@ test("a new session for a closed window shows in one that is open", async ({ pag
   await expect(rows(page)).toHaveCount(2);
   await expect(rows(page).nth(1)).toContainText("api");
 });
+
+test("a note changed from the CLI leaves the editor's caret where it was", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await expect.poll(async () => (await mock(page)).reported?.length).toBe(1);
+  const session = (await mock(page)).reported![0].id;
+  await rows(page).first().click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Notes" }).click();
+  const editor = page.getByRole("dialog").getByRole("textbox");
+  await editor.fill("ab");
+  await page.keyboard.press("ArrowLeft");
+
+  await emit(page, "thel-session-note", { session, text: "ab\nfrom cli\n", edit: { kind: "append", text: "from cli" } });
+  await expect(editor).toHaveValue("ab\nfrom cli\n");
+  await page.keyboard.type("X");
+  await expect(editor).toHaveValue("aXb\nfrom cli\n");
+});

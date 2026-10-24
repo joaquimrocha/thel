@@ -97,13 +97,14 @@ async fn stop_port_process(terminal: String, pid: u32) -> Result<(), String> {
 }
 
 /// Has the daemon send this GUI its `thel session` events: the terminals it
-/// starts (`thel-session-adopt`) and the sandboxed callers' requests to ask
-/// about (`thel-session-approve`, `thel-session-resolved`). Each call also
-/// replays what still waits, so a window that just opened sees it.
+/// starts (`thel-session-adopt`), the sandboxed callers' requests to ask about
+/// (`thel-session-approve`, `thel-session-resolved`) and notes changes
+/// (`thel-session-note`). Each call also replays what still waits, so a window
+/// that just opened sees it.
 #[tauri::command(async)]
 fn watch_sessions(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(unix)]
-    return daemon::watch(app);
+    return daemon::watch(notes_dir(&app)?, app);
     #[cfg(not(unix))]
     {
         let _ = app;
@@ -568,67 +569,35 @@ fn open_url(url: String) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Where a session's notes live: one markdown file per session in thel's
-/// config dir. Debug builds get their own folder for the same reason the store
-/// files are prefixed there, a dev run shares the bundle id with the installed
-/// app.
-fn note_path(app: &tauri::AppHandle, session_id: &str) -> Result<std::path::PathBuf, String> {
-    // The id comes from the frontend, so keep it to a bare filename: nothing
-    // here may reach outside the notes folder.
-    if session_id.is_empty()
-        || !session_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err("invalid session id".into());
-    }
+/// Where session notes live: thel's config dir. Debug builds get their own
+/// folder for the same reason the store files are prefixed there, a dev run
+/// shares the bundle id with the installed app.
+fn notes_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = if cfg!(debug_assertions) {
         "dev-notes"
     } else {
         "notes"
     };
-    Ok(app
-        .path()
-        .app_config_dir()
-        .map_err(|e| e.to_string())?
-        .join(dir)
-        .join(format!("{session_id}.md")))
+    Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join(dir))
 }
 
 /// A session's notes, empty when it has none yet.
 #[tauri::command]
 fn read_note(app: tauri::AppHandle, session_id: String) -> Result<String, String> {
-    let path = note_path(&app, &session_id)?;
-    match std::fs::read_to_string(&path) {
-        Ok(text) => Ok(text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(e.to_string()),
-    }
+    session::read_note(&session::note_file(&notes_dir(&app)?, &session_id)?)
 }
 
-/// Save a session's notes. Emptying them removes the file, so cleared notes
-/// leave nothing behind.
+/// Save a session's notes. Emptying them removes the file. With `base`, what
+/// the window last saw on disk, a note that changed since is left alone and
+/// returned (see session::save_note).
 #[tauri::command]
-fn write_note(app: tauri::AppHandle, session_id: String, text: String) -> Result<(), String> {
-    let path = note_path(&app, &session_id)?;
-    if text.is_empty() {
-        return delete_note(app, session_id);
-    }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&path, text).map_err(|e| e.to_string())
-}
-
-/// Drop a session's notes (its session was closed).
-#[tauri::command]
-fn delete_note(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
-    let path = note_path(&app, &session_id)?;
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
+fn write_note(
+    app: tauri::AppHandle,
+    session_id: String,
+    text: String,
+    base: Option<String>,
+) -> Result<Option<String>, String> {
+    session::save_note(&session::note_file(&notes_dir(&app)?, &session_id)?, base.as_deref(), &text)
 }
 
 /// The files on the clipboard (a file-manager "Copy"), as paths. Empty when
@@ -654,8 +623,8 @@ Usage:
   thel                Launch the app
   thel notify [MSG]   Post a desktop notification for the current terminal
                       (run from inside a thel terminal; MSG is optional)
-  thel session CMD    Open, list and type into sessions from inside a thel
-                      terminal, e.g. from an agent
+  thel session CMD    Open, list, type into and take notes on sessions from
+                      inside a thel terminal, e.g. from an agent
                       (see `thel session --help`)
 
 Options:
@@ -746,7 +715,7 @@ pub fn run() {
             notify_cmd::run(&argv[2..]);
             return;
         }
-        // `thel session ...`: open, list and type into sessions from a terminal.
+        // `thel session ...`: drive sessions and their notes from a terminal.
         Some("session") => std::process::exit(session::run(&argv[2..])),
         Some("-h" | "--help") => {
             print_help();
@@ -827,7 +796,6 @@ pub fn run() {
             clipboard_files,
             read_note,
             write_note,
-            delete_note,
             git::git_info,
             git::worktree_info,
             git::list_worktrees,

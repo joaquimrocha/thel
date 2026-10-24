@@ -1,12 +1,12 @@
 //! `thel session`: lets a program in a thel terminal open sessions and
-//! terminals, list them and type into them, the way `thel notify` posts a
-//! notification. The CLI sends a request to the daemon, which acts only for a
-//! caller running inside one of its terminals. Sessions are the GUI's: each
-//! window reports its sessions to the daemon, and the daemon hands the
-//! terminals it starts to the GUI to place.
+//! terminals, list them, type into them and edit their notes, the way
+//! `thel notify` posts a notification. The CLI sends a request to the daemon,
+//! which acts only for a caller running inside one of its terminals. Sessions
+//! are the GUI's: each window reports its sessions to the daemon, and the
+//! daemon hands the terminals it starts to the GUI to place.
 
 // The daemon is unix-only, and most of this serves it; elsewhere only the
-// CLI's parser runs.
+// notes helpers and the CLI's parser run.
 #![cfg_attr(not(unix), allow(dead_code))]
 
 use std::collections::{HashMap, HashSet};
@@ -37,6 +37,168 @@ pub enum Request {
         terminal: String,
         data: Vec<u8>,
     },
+    /// Read the notes of `session` (an id or a name, by default the
+    /// caller's), or change them when `edit` is set.
+    Note {
+        session: Option<String>,
+        edit: Option<NoteEdit>,
+    },
+}
+
+/// A notes change `thel session note` made, for the GUI windows.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct NoteChange {
+    pub session: String,
+    pub text: String,
+    pub edit: NoteEdit,
+}
+
+/// A change `thel session note` makes to a session's notes.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NoteEdit {
+    Set { text: String },
+    /// Adds `text` as new lines at the end. An empty `text` changes nothing.
+    Append { text: String },
+}
+
+impl NoteEdit {
+    /// The notes after this edit of `old`.
+    pub fn apply(&self, old: &str) -> String {
+        match self {
+            NoteEdit::Set { text } => text.clone(),
+            NoteEdit::Append { text } if text.is_empty() => old.to_string(),
+            NoteEdit::Append { text } => {
+                let mut out = old.to_string();
+                if !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push_str(text);
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                out
+            }
+        }
+    }
+}
+
+/// The notes file of session `id` in `dir`: one markdown file per session.
+pub fn note_file(dir: &Path, id: &str) -> Result<PathBuf, String> {
+    // The id comes from a window, so keep it to a bare filename: nothing here
+    // may reach outside the notes folder.
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("invalid session id".into());
+    }
+    Ok(dir.join(format!("{id}.md")))
+}
+
+/// A notes file's text, empty when there is none yet. Fails on anything but
+/// a regular file: a link put in the notes folder could point at any file the
+/// reader may read, and a program that may only write that folder would get
+/// it read back as notes.
+pub fn read_note(path: &Path) -> Result<String, String> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    // Nonblocking, so a FIFO fails the check below instead of hanging the open.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut opts, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let mut file = match opts.open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("the notes file is not a regular file".into());
+    }
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut file, &mut text).map_err(|e| e.to_string())?;
+    Ok(text)
+}
+
+/// Saves a notes file. Empty notes remove it, so cleared notes leave nothing
+/// behind.
+pub fn write_note(path: &Path, text: &str) -> Result<(), String> {
+    if text.is_empty() {
+        return match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        };
+    }
+    if let Some(dir) = path.parent() {
+        make_notes_dir(dir)?;
+    }
+    // Written beside it and renamed over it, so a reader in the other process
+    // (the GUI or the daemon) sees the old notes or the new, never half.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("{}.{n}.tmp", std::process::id()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    let res = opts
+        .open(&tmp)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()))
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if res.is_err() {
+        // Best effort: the error that matters is the one returned below.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res.map_err(|e| e.to_string())
+}
+
+fn make_notes_dir(dir: &Path) -> Result<(), String> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir).map_err(|e| e.to_string())
+}
+
+/// Locks the notes in `dir` until the returned file drops. The daemon and the
+/// GUI are two processes that both edit notes; each takes this around a read
+/// and the write after it, so neither saves over a change made in between.
+/// Fails after a few seconds without the lock: any program of the user's can
+/// take it and keep it.
+pub fn lock_notes(dir: &Path) -> Result<std::fs::File, String> {
+    make_notes_dir(dir)?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut opts, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = opts.open(dir.join(".lock")).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    for _ in 0..300 {
+        use std::os::fd::AsRawFd;
+        // SAFETY: the fd is open for as long as `file` lives.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    #[cfg(not(unix))]
+    return Ok(file);
+    #[cfg(unix)]
+    Err("another program holds the notes lock".into())
+}
+
+/// Saves `text` as the GUI's edit of a note it last saw on disk as `base`.
+/// Returns what is on disk instead, unsaved, when that changed in the
+/// meantime: `thel session note` edited it, and the window merges its text
+/// once it hears of that edit. Without a `base` it saves whatever is there.
+pub fn save_note(path: &Path, base: Option<&str>, text: &str) -> Result<Option<String>, String> {
+    let _lock = lock_notes(path.parent().ok_or("a notes file needs a folder")?)?;
+    if let Some(base) = base {
+        let now = read_note(path)?;
+        if now != base {
+            return Ok(Some(now));
+        }
+    }
+    write_note(path, text).map(|()| None)
 }
 
 impl Request {
@@ -75,6 +237,8 @@ pub struct Reply {
     /// The terminal a New or Terminal request started.
     pub terminal: Option<String>,
     pub sessions: Vec<Listed>,
+    /// The notes a Note request read. An edit leaves them out.
+    pub note: Option<String>,
 }
 
 /// A session as `thel session list` shows it.
@@ -137,7 +301,7 @@ pub struct Approval {
 }
 
 /// `req` in words, for the approval prompt. `session` is how it names the
-/// session a Terminal request acts on (see session_label); the other
+/// session a Terminal or Note request acts on (see session_label); the other
 /// requests have none. Every part the caller chose goes through `shown` or
 /// `named`, so it can't pass for the prompt's own words. What runs and where
 /// comes first, before any name the caller chose.
@@ -164,6 +328,12 @@ pub fn describe(req: &Request, session: &str) -> String {
         Request::SendKeys { terminal, data } => {
             format!("type into terminal {}: {}", shown(terminal), shown_bytes(data))
         }
+        Request::Note { edit, .. } => match edit {
+            None => format!("read the notes of {session}"),
+            Some(NoteEdit::Set { text }) if text.is_empty() => format!("clear the notes of {session}"),
+            Some(NoteEdit::Set { text }) => format!("replace the notes of {session} with: {}", shown(text)),
+            Some(NoteEdit::Append { text }) => format!("add to the notes of {session}: {}", shown(text)),
+        },
     }
 }
 
@@ -412,9 +582,9 @@ fn key(name: &str) -> Option<Vec<u8>> {
 /// The text of `thel session --help`.
 pub const HELP: &str = "Usage: thel session COMMAND [OPTIONS]
 
-Open, list and type into thel sessions from inside a thel terminal, e.g. from
-an agent. On Linux, a sandboxed caller's request waits for approval in the thel
-window.
+Open, list, type into and take notes on thel sessions from inside a thel
+terminal, e.g. from an agent. On Linux, a sandboxed caller's request waits for
+approval in the thel window.
 
 Commands:
   new [-n NAME] [-c DIR] [-- CMD [ARG...]]
@@ -426,6 +596,10 @@ Commands:
   list [-a] [--json]
         List the sessions and their terminals. A sandboxed caller sees only
         its own session and those it started; -a asks to see all of them.
+  note [-t SESSION] [-w | -a [TEXT...]]
+        Print the notes of SESSION, an id or a name (default: this terminal's
+        session). -w replaces them with stdin; an empty stdin clears them.
+        -a adds TEXT, or stdin when there is no TEXT, as new lines at the end.
   send-keys -t TERMINAL [-l] KEY...
         Type into a terminal. Each KEY is text or a key name: Enter, Tab,
         Escape, BSpace, Space, Up, Down, Left, Right, Home, End, C-<letter>,
@@ -436,6 +610,7 @@ Commands:
 Example:
   id=$(thel session new -n tests -- npm test --watch)
   thel session send-keys -t \"$id\" q
+  thel session note -a \"- [ ] fix the flaky login test\"
 ";
 
 /// `path` with its `.` and `..` parts folded away without reading the
@@ -462,7 +637,12 @@ enum Parsed {
     Ask { req: Request, json: bool },
 }
 
-fn parse(args: &[String], cwd: &str) -> Result<Parsed, String> {
+/// `stdin` is read only by a note edit that takes its text from there.
+fn parse(
+    args: &[String],
+    cwd: &str,
+    stdin: impl FnOnce() -> Result<String, String>,
+) -> Result<Parsed, String> {
     let Some((sub, rest)) = args.split_first() else {
         return Ok(Parsed::Help);
     };
@@ -481,7 +661,7 @@ fn parse(args: &[String], cwd: &str) -> Result<Parsed, String> {
                 let v = it.next().ok_or_else(|| format!("{a} needs a value"))?;
                 opts.insert(a.as_str(), v.clone());
             }
-            "-l" | "--json" | "-a" => {
+            "-l" | "--json" | "-w" | "-a" => {
                 flags.insert(a.as_str());
             }
             // A word with a space in it is text, such as a note's "- [ ] item".
@@ -500,6 +680,7 @@ fn parse(args: &[String], cwd: &str) -> Result<Parsed, String> {
         "terminal" => &["-t", "-c"],
         "list" => &["-a", "--json"],
         "send-keys" => &["-t", "-l"],
+        "note" => &["-t", "-w", "-a"],
         "help" | "-h" | "--help" => return Ok(Parsed::Help),
         other => return Err(format!("unknown command {other}")),
     };
@@ -535,6 +716,22 @@ fn parse(args: &[String], cwd: &str) -> Result<Parsed, String> {
             terminal: opts.get("-t").cloned().ok_or("send-keys needs -t TERMINAL")?,
             data: keys(&tail, flags.contains("-l")),
         },
+        "note" => {
+            let edit = match (flags.contains("-w"), flags.contains("-a")) {
+                (true, true) => return Err("note takes -w or -a, not both".into()),
+                (true, false) if !tail.is_empty() => {
+                    return Err("note -w reads stdin; use -a to pass TEXT".into())
+                }
+                (true, false) => Some(NoteEdit::Set { text: stdin()? }),
+                (false, true) if tail.is_empty() => Some(NoteEdit::Append { text: stdin()? }),
+                (false, true) => Some(NoteEdit::Append { text: tail.join(" ") }),
+                (false, false) if !tail.is_empty() => {
+                    return Err(format!("unexpected argument {}", tail[0]))
+                }
+                (false, false) => None,
+            };
+            Request::Note { session: opts.get("-t").cloned(), edit }
+        }
         _ => unreachable!("takes already turned away the rest"),
     };
     Ok(Parsed::Ask { req, json: flags.contains("--json") })
@@ -543,7 +740,13 @@ fn parse(args: &[String], cwd: &str) -> Result<Parsed, String> {
 /// Runs `thel session ARGS...` and returns the process exit code.
 pub fn run(args: &[String]) -> i32 {
     let cwd = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
-    let (req, json) = match parse(args, &cwd) {
+    let stdin = || {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+            .map_err(|e| format!("reading stdin: {e}"))?;
+        Ok(text)
+    };
+    let (req, json) = match parse(args, &cwd, stdin) {
         Ok(Parsed::Help) => {
             print!("{HELP}");
             return 0;
@@ -572,6 +775,9 @@ pub fn run(args: &[String]) -> i32 {
     if let Some(t) = reply.terminal {
         println!("{t}");
     }
+    if let Some(note) = reply.note {
+        print!("{note}");
+    }
     if matches!(req, Request::List { .. }) {
         if json {
             println!("{}", serde_json::to_string_pretty(&reply.sessions).unwrap_or_default());
@@ -596,6 +802,37 @@ fn format_list(sessions: &[Listed]) -> String {
     out
 }
 
+/// A private temp dir for a test, removed when dropped, so also by a failing
+/// assertion.
+#[cfg(test)]
+pub(crate) struct TestDir(pub PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    /// Creates it, `0700` and new: creation fails if the name already exists.
+    pub fn new(prefix: &str) -> TestDir {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}-{n}", std::process::id()));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&dir).unwrap();
+        TestDir(dir)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        // Best effort: a leftover temp dir must not fail the test.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,10 +841,112 @@ mod tests {
         v.iter().map(|s| s.to_string()).collect()
     }
 
+    fn no_stdin() -> Result<String, String> {
+        panic!("read stdin")
+    }
+
+    #[test]
+    fn parses_note_reads_and_edits() {
+        let note = |a: &[&str]| match parse(&args(a), "/w", || Ok("from stdin".into())) {
+            Ok(Parsed::Ask { req: Request::Note { session, edit }, .. }) => Ok((session, edit)),
+            Ok(other) => panic!("{other:?}"),
+            Err(e) => Err(e),
+        };
+        assert_eq!(note(&["note"]).unwrap(), (None, None));
+        assert_eq!(
+            note(&["note", "-t", "api", "-w"]).unwrap(),
+            (Some("api".into()), Some(NoteEdit::Set { text: "from stdin".into() }))
+        );
+        assert_eq!(
+            note(&["note", "-a", "fix", "it"]).unwrap().1,
+            Some(NoteEdit::Append { text: "fix it".into() })
+        );
+        assert_eq!(
+            note(&["note", "-a"]).unwrap().1,
+            Some(NoteEdit::Append { text: "from stdin".into() })
+        );
+        assert_eq!(
+            note(&["note", "-a", "- [ ] fix the flaky login test"]).unwrap().1,
+            Some(NoteEdit::Append { text: "- [ ] fix the flaky login test".into() })
+        );
+        assert_eq!(note(&["note", "-w", "-a"]).unwrap_err(), "note takes -w or -a, not both");
+        assert_eq!(note(&["note", "-w", "text"]).unwrap_err(), "note -w reads stdin; use -a to pass TEXT");
+        assert_eq!(note(&["note", "stray"]).unwrap_err(), "unexpected argument stray");
+        assert_eq!(note(&["note", "--json"]).unwrap_err(), "note takes no --json");
+        // A plain read never touches stdin.
+        assert!(parse(&args(&["note", "-t", "api"]), "/w", no_stdin).is_ok());
+    }
+
+    #[test]
+    fn writes_notes_whole_and_leaves_nothing_beside_them() {
+        let dir = TestDir::new("thel-notes");
+        let path = dir.0.join("s1.md");
+        write_note(&path, "one").unwrap();
+        write_note(&path, "two").unwrap();
+        assert_eq!(read_note(&path).unwrap(), "two");
+        let names: Vec<_> = std::fs::read_dir(&dir.0).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["s1.md"]);
+        write_note(&path, "").unwrap();
+        assert!(std::fs::read_dir(&dir.0).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn a_save_from_the_window_leaves_a_note_that_changed_since_alone() {
+        let dir = TestDir::new("thel-notes");
+        let path = dir.0.join("s1.md");
+        assert_eq!(save_note(&path, Some(""), "old\n").unwrap(), None);
+        write_note(&path, "old\nagent\n").unwrap();
+        assert_eq!(save_note(&path, Some("old\n"), "old\ntyped").unwrap().as_deref(), Some("old\nagent\n"));
+        assert_eq!(read_note(&path).unwrap(), "old\nagent\n");
+        assert_eq!(save_note(&path, None, "").unwrap(), None);
+        assert_eq!(read_note(&path).unwrap(), "");
+        // Held, the lock keeps a save waiting, then fails it.
+        let held = lock_notes(&dir.0).unwrap();
+        assert_eq!(save_note(&path, None, "x").unwrap_err(), "another program holds the notes lock");
+        drop(held);
+        assert_eq!(save_note(&path, None, "x").unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_only_a_notes_file_itself() {
+        let dir = TestDir::new("thel-notes");
+        let secret = dir.0.join("secret");
+        std::fs::write(&secret, "key").unwrap();
+        let link = dir.0.join("s1.md");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        assert!(read_note(&link).is_err(), "a link isn't followed");
+        let fifo = dir.0.join("s2.md");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: c is a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(read_note(&fifo).is_err(), "a FIFO fails without hanging");
+        // A new notes folder is private.
+        use std::os::unix::fs::PermissionsExt;
+        write_note(&dir.0.join("new").join("s3.md"), "x").unwrap();
+        assert_eq!(std::fs::metadata(dir.0.join("new")).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn edits_notes_and_keeps_the_file_inside_the_folder() {
+        let add = |old: &str, t: &str| NoteEdit::Append { text: t.into() }.apply(old);
+        assert_eq!(add("", "a"), "a\n");
+        assert_eq!(add("x", "a"), "x\na\n");
+        assert_eq!(add("x\n", "a\n"), "x\na\n");
+        assert_eq!(add("", ""), "");
+        assert_eq!(add("x", ""), "x");
+        assert_eq!(NoteEdit::Set { text: "".into() }.apply("x"), "");
+        let dir = Path::new("/n");
+        assert_eq!(note_file(dir, "s-1_a").unwrap(), Path::new("/n/s-1_a.md"));
+        for bad in ["", "../x", "a/b", "a.b"] {
+            assert_eq!(note_file(dir, bad).unwrap_err(), "invalid session id", "{bad}");
+        }
+    }
+
     #[test]
     fn parses_each_command() {
         assert_eq!(
-            parse(&args(&["new", "-n", "api", "-c", "srv", "--", "npm", "run", "dev"]), "/w").unwrap(),
+            parse(&args(&["new", "-n", "api", "-c", "srv", "--", "npm", "run", "dev"]), "/w", no_stdin).unwrap(),
             Parsed::Ask {
                 req: Request::New {
                     name: Some("api".into()),
@@ -619,7 +958,7 @@ mod tests {
         );
         // A command needs no "--" when it starts the remaining arguments.
         assert_eq!(
-            parse(&args(&["terminal", "-t", "api", "htop", "-d", "5"]), "/w").unwrap(),
+            parse(&args(&["terminal", "-t", "api", "htop", "-d", "5"]), "/w", no_stdin).unwrap(),
             Parsed::Ask {
                 req: Request::Terminal {
                     session: Some("api".into()),
@@ -630,38 +969,39 @@ mod tests {
             }
         );
         assert_eq!(
-            parse(&args(&["list", "--json"]), "/w").unwrap(),
+            parse(&args(&["list", "--json"]), "/w", no_stdin).unwrap(),
             Parsed::Ask { req: Request::List { all: false }, json: true }
         );
         assert_eq!(
-            parse(&args(&["list", "-a"]), "/w").unwrap(),
+            parse(&args(&["list", "-a"]), "/w", no_stdin).unwrap(),
             Parsed::Ask { req: Request::List { all: true }, json: false }
         );
-        assert_eq!(parse(&args(&[]), "/w").unwrap(), Parsed::Help);
-        assert_eq!(parse(&args(&["new", "--help"]), "/w").unwrap(), Parsed::Help);
-        assert_eq!(parse(&args(&["--help"]), "/w").unwrap(), Parsed::Help);
-        assert_eq!(parse(&args(&["-h"]), "/w").unwrap(), Parsed::Help);
-        let err = |a: &[&str]| parse(&args(a), "/w").unwrap_err();
+        assert_eq!(parse(&args(&[]), "/w", no_stdin).unwrap(), Parsed::Help);
+        assert_eq!(parse(&args(&["new", "--help"]), "/w", no_stdin).unwrap(), Parsed::Help);
+        assert_eq!(parse(&args(&["--help"]), "/w", no_stdin).unwrap(), Parsed::Help);
+        assert_eq!(parse(&args(&["-h"]), "/w", no_stdin).unwrap(), Parsed::Help);
+        let err = |a: &[&str]| parse(&args(a), "/w", no_stdin).unwrap_err();
         assert_eq!(err(&["send-keys", "ls"]), "send-keys needs -t TERMINAL");
         assert_eq!(err(&["new", "-x"]), "unknown option -x");
         assert_eq!(err(&["frob"]), "unknown command frob");
-        assert_eq!(parse(&args(&["list", "-t", "x"]), "/w").unwrap_err(), "list takes no -t");
-        assert_eq!(parse(&args(&["new", "-l"]), "/w").unwrap_err(), "new takes no -l");
+        assert_eq!(parse(&args(&["list", "-t", "x"]), "/w", no_stdin).unwrap_err(), "list takes no -t");
+        assert_eq!(parse(&args(&["list", "x"]), "/w", no_stdin).unwrap_err(), "unexpected argument x");
+        assert_eq!(parse(&args(&["new", "-l"]), "/w", no_stdin).unwrap_err(), "new takes no -l");
         // An absolute -c stays as given.
         let Parsed::Ask { req: Request::New { cwd, .. }, .. } =
-            parse(&args(&["new", "-c", "/tmp"]), "/w").unwrap()
+            parse(&args(&["new", "-c", "/tmp"]), "/w", no_stdin).unwrap()
         else {
             panic!()
         };
         assert_eq!(cwd, "/tmp");
         // With no current directory to read, only an absolute -c will do.
-        assert!(parse(&args(&["new", "-c", "/tmp"]), "").is_ok());
+        assert!(parse(&args(&["new", "-c", "/tmp"]), "", no_stdin).is_ok());
         assert_eq!(
-            parse(&args(&["new", "-c", "srv"]), "").unwrap_err(),
+            parse(&args(&["new", "-c", "srv"]), "", no_stdin).unwrap_err(),
             "can't read the current directory; pass -c with an absolute path"
         );
-        assert!(parse(&args(&["list"]), "").is_ok());
-        assert!(parse(&args(&["send-keys", "-t", "t", "- y"]), "/w").is_ok());
+        assert!(parse(&args(&["list"]), "", no_stdin).is_ok());
+        assert!(parse(&args(&["send-keys", "-t", "t", "- y"]), "/w", no_stdin).is_ok());
     }
 
     #[test]
@@ -672,6 +1012,16 @@ mod tests {
         assert_eq!(keys(&args(&["hi\x07\x1b[2J"]), false), b"hi[2J");
         assert_eq!(keys(&args(&["hi\x07", "Enter"]), true), b"hi\x07Enter");
         assert_eq!(keys(&args(&["M-\x07"]), false), b"M-");
+    }
+
+    #[test]
+    fn tells_sessions_that_share_a_name_apart() {
+        let mut d = Directory::new();
+        let api = |id: &str| DirSession { id: id.into(), name: "api".into(), terminals: vec![] };
+        d.insert("w".into(), vec![api("3f2a9c1d77")]);
+        assert_eq!(session_label(&d, "3f2a9c1d77", "api"), "session \"api\"");
+        d.get_mut("w").unwrap().push(api("b0"));
+        assert_eq!(session_label(&d, "3f2a9c1d77", "api"), "session \"api\" (id 3f2a9c1d)");
     }
 
     #[test]
@@ -687,7 +1037,7 @@ mod tests {
         }
         // `-c` folds `.` and `..`, so the name is the folder's own.
         let Ok(Parsed::Ask { req: Request::New { cwd, .. }, .. }) =
-            parse(&args(&["new", "-c", "../web/."]), "/w/srv")
+            parse(&args(&["new", "-c", "../web/."]), "/w/srv", no_stdin)
         else {
             panic!("a new session")
         };
@@ -712,16 +1062,6 @@ mod tests {
         assert_eq!(gone.resolved().unwrap_err(), "no folder /nonexistent-thel");
         let file = Request::New { name: None, cwd: "/proc/self/exe".into(), command: vec![] };
         assert_eq!(file.resolved().unwrap_err(), "no folder /proc/self/exe");
-    }
-
-    #[test]
-    fn tells_sessions_that_share_a_name_apart() {
-        let mut d = Directory::new();
-        let api = |id: &str| DirSession { id: id.into(), name: "api".into(), terminals: vec![] };
-        d.insert("w".into(), vec![api("3f2a9c1d77")]);
-        assert_eq!(session_label(&d, "3f2a9c1d77", "api"), "session \"api\"");
-        d.get_mut("w").unwrap().push(api("b0"));
-        assert_eq!(session_label(&d, "3f2a9c1d77", "api"), "session \"api\" (id 3f2a9c1d)");
     }
 
     #[test]
@@ -754,6 +1094,24 @@ mod tests {
         assert_eq!(describe(&r, "session \"api\""), "open a terminal running `\"\\u{2800}\\u{2800}rm\"` in /, in session \"api\"");
         let r = Request::SendKeys { terminal: "t1".into(), data: b"\xe2\xa0\x80\x9b; rm".to_vec() };
         assert_eq!(describe(&r, ""), "type into terminal t1: \"\\xe2\\xa0\\x80\\x9b; rm\"");
+    }
+
+    #[test]
+    fn describes_note_requests_for_the_prompt() {
+        let r = Request::Note { session: Some("api".into()), edit: None };
+        assert_eq!(describe(&r, "session \"api\""), "read the notes of session \"api\"");
+        let r = Request::Note { session: None, edit: Some(NoteEdit::Append { text: "done".into() }) };
+        assert_eq!(describe(&r, "session \"api\""), "add to the notes of session \"api\": done");
+        // Text can't fake the end of the prompt with a look-alike quote, nor
+        // hide a line behind blank characters.
+        let text = format!("x\u{201d}. Safe {}\nrm", "\u{2800}".repeat(3));
+        let r = Request::Note { session: None, edit: Some(NoteEdit::Set { text }) };
+        assert_eq!(
+            describe(&r, "session \"api\""),
+            "replace the notes of session \"api\" with: \"x\\u{201d}. Safe \\u{2800}\\u{2800}\\u{2800}\\nrm\""
+        );
+        let r = Request::Note { session: None, edit: Some(NoteEdit::Set { text: String::new() }) };
+        assert_eq!(describe(&r, "session \"api\""), "clear the notes of session \"api\"");
     }
 
     #[test]

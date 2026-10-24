@@ -67,6 +67,7 @@ See [docs/install.md](docs/install.md) for that step and for direct downloads.
   panel.
 - **Session notes.** A markdown scratchpad docked beside each session, with
   tickable checklists. Notes live with the session and go when it does.
+  `thel session note` reads and edits them from a terminal.
 - **Launchers.** Save the commands you start often (e.g. an AI agent) and pick a
   default. Launchers support session variables (like `__SESSION_DIR__`) and can
   run with or without a login shell.
@@ -113,11 +114,12 @@ See [docs/notifications.md](docs/notifications.md) for the full details.
 ## Driving thel from a terminal
 
 A program in a thel terminal, such as a coding agent, can open sessions and
-terminals, list them and type into them with `thel session`:
+terminals, list them, type into them and edit their notes with `thel session`:
 
 ```sh
 id=$(thel session new -n tests -- npm test --watch)
 thel session send-keys -t "$id" q
+thel session note -a "- [ ] fix the flaky login test"
 ```
 
 It works only from inside a thel terminal. On Linux, a sandboxed program's
