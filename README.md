@@ -122,10 +122,10 @@ thel session send-keys -t "$id" q
 thel session note -a "- [ ] fix the flaky login test"
 ```
 
-It works only from inside a thel terminal. On Linux, a sandboxed program's
-requests wait for you to allow them in the thel window; macOS can't tell a
-sandboxed program apart. See
-[docs/session-cli.md](docs/session-cli.md).
+It is off until you turn it on in Settings > Sessions, and works only from
+inside a thel terminal. On Linux, a sandboxed program's requests wait for you
+to allow them in the thel window. On macOS thel is not a sandbox: any program
+in a thel terminal can use it. See [docs/session-cli.md](docs/session-cli.md).
 
 ## Prerequisites
 

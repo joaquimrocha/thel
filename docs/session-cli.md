@@ -14,6 +14,11 @@ thel session send-keys -t TERMINAL [-l] KEY...
 thel session note [-t SESSION] [-w | -a [TEXT...]]
 ```
 
+It is off until you turn on **Settings > Sessions > Let programs in terminals
+use `thel session`**. While it is off, every request fails with a message that
+says where to turn it on, and a sandboxed caller's requests fail without
+asking you.
+
 | Command | Does |
 |---|---|
 | `new` | Opens a session with one terminal running CMD (default: `$SHELL`) in DIR (default: the current directory). The name defaults to DIR's last component, or `~` for your home folder. Prints the terminal's id. |
@@ -59,6 +64,10 @@ sessions in the wrong one.
 
 The daemon socket is private to your user (a `0700` directory, a `0600` socket,
 and a check of the caller's uid). On top of that, `thel session`:
+
+- **Is off until you turn it on.** The window tells the daemon your setting,
+  and the daemon refuses every request while it is off. A daemon starts with
+  it off, until a window tells it otherwise.
 
 - **Works only from inside a thel terminal.** The daemon gets the caller's pid
   from the socket and walks its parents up to one of its terminals. On Linux it
@@ -121,5 +130,20 @@ namespaces don't, so a program in one of those reads as unconfined. So does
 every caller when the daemon itself runs with the flag, for example when thel
 was started from inside a sandbox; the daemon logs a warning then.
 
-macOS has no `no_new_privs`, so nothing reads as sandboxed there: a sandboxed
-program on macOS can open and type into terminals without asking you.
+### macOS
+
+thel on macOS is not a sandbox for the programs in its terminals. macOS has no
+`no_new_privs`, and thel does not detect Seatbelt (`sandbox-exec`) or App
+Sandbox confinement, so nothing reads as sandboxed there. With the setting on,
+any program in a thel terminal, sandboxed or not, can open, list and type into
+terminals and read and edit notes without asking you, with the same authority
+as your user.
+
+With the setting off, the CLI stops working, but a program can still talk to
+the daemon's socket itself the way the window does. The daemon can't tell the
+window apart from such a program: the macOS app is not signed, so the daemon
+has no signature to check the caller against.
+
+Running an agent in a thel terminal on macOS gives it your authority. If you
+confine an agent with a sandbox profile, don't let it connect to the daemon's
+socket, `$TMPDIR/thel/daemon.sock`.

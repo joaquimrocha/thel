@@ -13,6 +13,7 @@ interface MockWindow {
     reported?: { id: string; name: string; terminals: string[] }[];
     watched?: number;
     answers?: unknown[];
+    sessionCli?: boolean;
   };
 }
 const mock = (page: Page) =>
@@ -42,6 +43,17 @@ test("the window reports its sessions and asks for waiting terminals", async ({ 
   const { reported, watched } = await mock(page);
   expect(reported![0].terminals).toHaveLength(1);
   expect(watched).toBeGreaterThanOrEqual(1);
+});
+
+test("thel session stays off for the daemon until the user turns it on", async ({ page }) => {
+  await gotoApp(page);
+  const sessionCli = () => page.evaluate(() => (window as never as MockWindow).__MOCK__.sessionCli);
+  await expect.poll(sessionCli).toBe(false);
+  await page.keyboard.press("Control+Comma");
+  const dialog = page.getByRole("dialog", { name: "Settings" });
+  await dialog.getByRole("tab", { name: "Sessions" }).click();
+  await dialog.getByRole("switch", { name: /use thel session/ }).click();
+  await expect.poll(sessionCli).toBe(true);
 });
 
 test("a terminal that keeps changing its title doesn't hold back the report", async ({ page }) => {

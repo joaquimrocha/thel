@@ -124,6 +124,19 @@ fn answer_session(req: u64, allow: bool, remember: bool) -> Result<(), String> {
     }
 }
 
+/// Tells the daemon whether programs in thel's terminals may use `thel
+/// session`, the user's setting.
+#[tauri::command(async)]
+fn allow_session_cli(enabled: bool) -> Result<(), String> {
+    #[cfg(unix)]
+    return daemon::allow_session_cli(enabled);
+    #[cfg(not(unix))]
+    {
+        let _ = enabled;
+        Ok(())
+    }
+}
+
 /// Tells the daemon which sessions the calling window shows, so `thel
 /// session` can find and list them.
 #[tauri::command(async)]
@@ -778,6 +791,7 @@ pub fn run() {
             stop_port_process,
             watch_sessions,
             report_sessions,
+            allow_session_cli,
             answer_session,
             kill_terminal_window,
             terminal_cwd,

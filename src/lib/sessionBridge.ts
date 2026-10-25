@@ -10,6 +10,7 @@ import {
   type Terminal,
 } from "@/store/sessions";
 import { useUI } from "@/store/ui";
+import { usePrefs } from "@/store/prefs";
 import { useNotes, type NoteEdit } from "@/store/notes";
 import { basename, refreshSessionGit } from "@/lib/launch";
 import { defaultShell, killTerminalWindow } from "@/lib/pty";
@@ -264,6 +265,11 @@ export function startSessionBridge(): () => void {
     clearTimeout(timer);
     timer = setTimeout(report, REPORT_DEBOUNCE_MS);
   });
+  const allow = (enabled: boolean) => void invoke("allow_session_cli", { enabled }).catch(() => {});
+  allow(usePrefs.getState().sessionCli);
+  const unsubscribePrefs = usePrefs.subscribe((s, prev) => {
+    if (s.sessionCli !== prev.sessionCli) allow(s.sessionCli);
+  });
   const listening = Promise.all([
     win.listen<Adopt>("thel-session-adopt", (e) => void adopt(e.payload, label)),
     win.listen<string>("thel-session-claimed", (e) => forgetClaimed(e.payload)),
@@ -279,6 +285,7 @@ export function startSessionBridge(): () => void {
   return () => {
     clearTimeout(timer);
     unsubscribe();
+    unsubscribePrefs();
     void listening.then((fs) => fs.forEach((f) => f()));
   };
 }

@@ -19,6 +19,7 @@ const NOTIFY_WAITING_KEY = "thel.notifyAgentWaiting";
 const NOTIFY_FINISHED_KEY = "thel.notifyCommandFinished";
 const GROUP_BY_REPO_KEY = "thel.groupSessionsByRepo";
 const MARK_IDLE_KEY = "thel.markIdle";
+const SESSION_CLI_KEY = "thel.sessionCli";
 
 // Prefs live in localStorage shared by every app window, but each window caches
 // them in its own store. We broadcast each change so the others update live
@@ -130,6 +131,10 @@ interface PrefsState {
   // running.
   markIdle: boolean;
   setMarkIdle: (value: boolean) => void;
+  // Let programs in thel's terminals use `thel session`. Default off: it
+  // lets them start and type into terminals with the user's authority.
+  sessionCli: boolean;
+  setSessionCli: (value: boolean) => void;
 }
 
 export const usePrefs = create<PrefsState>((set) => ({
@@ -194,6 +199,11 @@ export const usePrefs = create<PrefsState>((set) => ({
     persistBool(MARK_IDLE_KEY, markIdle);
     set({ markIdle });
   },
+  sessionCli: readBool(SESSION_CLI_KEY, false),
+  setSessionCli: (sessionCli) => {
+    persistBool(SESSION_CLI_KEY, sessionCli);
+    set({ sessionCli });
+  },
 }));
 
 // Apply a change received from another window. Reuses the public setters (under
@@ -215,6 +225,7 @@ const REMOTE_APPLIERS: Record<string, (value: unknown) => void> = {
   [GROUP_BY_REPO_KEY]: (v) =>
     usePrefs.getState().setGroupSessionsByRepo(Boolean(v)),
   [MARK_IDLE_KEY]: (v) => usePrefs.getState().setMarkIdle(Boolean(v)),
+  [SESSION_CLI_KEY]: (v) => usePrefs.getState().setSessionCli(Boolean(v)),
 };
 
 /** Mirror preference changes made in other app windows. No-op outside Tauri. */

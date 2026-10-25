@@ -23,7 +23,7 @@ import { useUI } from "@/store/ui";
 import { useTheme } from "@/store/theme";
 import { usePrefs, type SessionsOnClose } from "@/store/prefs";
 import { zoomedFontSize } from "@/lib/theme";
-import { runsDaemon } from "@/lib/platform";
+import { isMac, runsDaemon } from "@/lib/platform";
 import { openUrl } from "@/lib/pty";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/Logo";
@@ -72,6 +72,8 @@ export function SettingsDialog() {
   const setGroupSessionsByRepo = usePrefs((s) => s.setGroupSessionsByRepo);
   const markIdle = usePrefs((s) => s.markIdle);
   const setMarkIdle = usePrefs((s) => s.setMarkIdle);
+  const sessionCli = usePrefs((s) => s.sessionCli);
+  const setSessionCli = usePrefs((s) => s.setSessionCli);
   const setNewTerminalInSessionDir = usePrefs(
     (s) => s.setNewTerminalInSessionDir,
   );
@@ -265,6 +267,33 @@ export function SettingsDialog() {
                   minutes shows a gray dot instead of green.
                 </p>
               </div>
+              {runsDaemon && (
+                <div className="space-y-1.5">
+                  <label className="flex items-center gap-2 text-sm">
+                    <Switch checked={sessionCli} onCheckedChange={setSessionCli} />
+                    Let programs in terminals use{" "}
+                    <code className="rounded bg-muted px-1 font-mono">thel session</code>
+                  </label>
+                  <p className="pl-9 text-xs text-muted-foreground">
+                    Programs such as coding agents can then open sessions and
+                    terminals, type into them and edit session notes, with
+                    your user's authority.{" "}
+                    {isMac
+                      ? "On macOS that includes sandboxed programs."
+                      : "Sandboxed programs still ask you first."}{" "}
+                    <button
+                      className="underline underline-offset-2 hover:text-foreground"
+                      onClick={() =>
+                        void openUrl(
+                          "https://github.com/joaquimrocha/thel/blob/main/docs/session-cli.md",
+                        )
+                      }
+                    >
+                      Learn more
+                    </button>
+                  </p>
+                </div>
+              )}
             </TabsContent>
 
             <TabsContent value="notifications" className="mt-0 space-y-4">
