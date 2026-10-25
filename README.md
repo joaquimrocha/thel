@@ -114,7 +114,8 @@ See [docs/notifications.md](docs/notifications.md) for the full details.
 ## Driving thel from a terminal
 
 A program in a thel terminal, such as a coding agent, can open sessions and
-terminals, list them, type into them and edit their notes with `thel session`:
+terminals, list them, type into them, close them and edit their notes with
+`thel session`:
 
 ```sh
 id=$(thel session new -n tests -- npm test --watch)

@@ -40,7 +40,8 @@ const directory = (sessions: Session[]) =>
     terminals: sessionTerminals(s).map((t) => t.id),
   }));
 
-/** A sandboxed program's request (session::Approval). */
+/** A request to ask the user about (session::Approval): one from a
+ * sandboxed program, or one that closes something. */
 export interface Approval {
   req: number;
   caller: string;
@@ -50,7 +51,13 @@ export interface Approval {
   target_session: string | null;
   window: string | null;
   program: string | null;
+  sandboxed: boolean;
+  // A yes holds for this request alone, so the prompt offers no lasting yes.
+  once: boolean;
 }
+
+/** What `thel session close` or `close-session` closes (session::Closing). */
+export type Closing = { kind: "terminal"; id: string } | { kind: "session"; id: string };
 
 // Names an approval's prompt, so the daemon's word that it is settled can take
 // it back.
@@ -100,8 +107,8 @@ function program(path: string | null) {
   return at < 0 ? `, ${quoted(path)},` : `, ${quoted(path.slice(at + 1))} (in ${quoted(path.slice(0, at) || "/")}),`;
 }
 
-/** Asks the user about a sandboxed program's request, in the window that
- * shows the program's terminal (see actsFor). */
+/** Asks the user about a request from a program in a terminal, in the window
+ * that shows that terminal (see actsFor). */
 export async function askApproval(a: Approval, windowLabel: string) {
   if (!(await actsFor(a.window, windowLabel)) || resolved.has(a.req)) return;
   const key = approvalKey(a.req);
@@ -122,7 +129,9 @@ export async function askApproval(a: Approval, windowLabel: string) {
   const target = !a.target
     ? null
     : a.target === a.caller
-      ? "its own terminal, whose shell runs outside the sandbox"
+      ? a.sandboxed
+        ? "its own terminal, whose shell runs outside the sandbox"
+        : "its own terminal"
       : (locate(a.target, a.target_session) ??
         (a.target_session
           ? `a terminal in ${a.target_session}, in another window`
@@ -135,15 +144,19 @@ export async function askApproval(a: Approval, windowLabel: string) {
     resolved.add(a.req);
     void invoke("answer_session", { req: a.req, allow, remember }).catch(() => {});
   };
+  const asker = a.sandboxed ? `A sandboxed program${program(a.program)}` : "A program";
+  const where = who ?? (a.caller_session ? `a terminal in ${a.caller_session}` : "a terminal");
+  const outcome = a.once ? " This can't be undone." : " It would run outside its sandbox.";
   useUI.getState().requestConfirm({
     key,
-    title: "Allow a sandboxed program?",
-    description: `A sandboxed program${program(a.program)} in ${who ?? (a.caller_session ? `a terminal in ${a.caller_session}` : "a terminal")} asks thel to${into} ${a.summary}. It would run outside its sandbox.`,
+    title: a.sandboxed ? "Allow a sandboxed program?" : "Allow a program to close this?",
+    description: `${asker} in ${where} asks thel to${into} ${a.summary}.${outcome}`,
     // Only for a program the prompt names: the daemon won't remember a yes
-    // for one it can't.
-    checkbox: a.program
-      ? { label: "Allow everything from this program and what it runs, until it exits" }
-      : undefined,
+    // for one it can't, nor for a request that holds once.
+    checkbox:
+      a.program && !a.once
+        ? { label: "Allow everything from this program and what it runs, until it exits" }
+        : undefined,
     guarded: true,
     confirmLabel: "Allow",
     cancelLabel: "Deny",
@@ -165,6 +178,17 @@ export interface NoteChange {
 export function takeNote(n: NoteChange) {
   if (!useSessions.getState().sessions.some((s) => s.id === n.session)) return;
   useNotes.getState().receiveNote(n.session, n.text, n.edit);
+}
+
+/** Closes what `thel session` asked to close, once the user allowed it, if
+ * this window holds it. Every window gets the event. */
+export function takeClose(c: Closing) {
+  const { sessions, closeTerminal, removeSession } = useSessions.getState();
+  if (c.kind === "session") {
+    if (sessions.some((s) => s.id === c.id)) removeSession(c.id);
+  } else if (sessions.some((s) => sessionTerminals(s).some((t) => t.id === c.id))) {
+    closeTerminal(c.id);
+  }
 }
 
 let shellOnce: Promise<string> | undefined;
@@ -279,6 +303,7 @@ export function startSessionBridge(): () => void {
       useUI.getState().withdrawConfirm(approvalKey(e.payload));
     }),
     win.listen<NoteChange>("thel-session-note", (e) => takeNote(e.payload)),
+    win.listen<Closing>("thel-session-close", (e) => takeClose(e.payload)),
   ]);
   // After the listeners are in place, so the replay of what waits lands.
   void listening.then(() => invoke("watch_sessions")).catch(() => {});
