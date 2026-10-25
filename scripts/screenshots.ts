@@ -10,10 +10,10 @@
 // THEL_SHOTS_WORK  folder holding the projects shown (default ~/work)
 // THEL_SHOTS_AGENT command for the agent pane (default "claude")
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { App } from "../tests-e2e/app.ts";
+import { APP, App } from "../tests-e2e/app.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DOCS = join(ROOT, "docs/screenshots");
@@ -28,8 +28,10 @@ const [th1, th2] = worktrees(thel, 2);
 const BASH = "/bin/bash";
 const RC_DIR = mkdtempSync(join(tmpdir(), "thel-shots-"));
 const RC = join(RC_DIR, "bashrc");
-// No history file, so the typed commands stay out of ~/.bash_history.
-writeFileSync(RC, "PS1='\\u@\\h \\W\\$ '\nunset HISTFILE\n");
+// No history file, so the typed commands stay out of ~/.bash_history. The
+// app binary is on PATH as `thel`, for the `thel session` scene.
+symlinkSync(APP, join(RC_DIR, "thel"));
+writeFileSync(RC, `PS1='\\u@\\h \\W\\$ '\nunset HISTFILE\nPATH=${RC_DIR}:$PATH\n`);
 const BASH_ARGS = ["--noprofile", "--rcfile", RC, "-i"];
 // The window size the published shots were taken at (2474x1542 at 2x).
 const SIZE = { width: 1237, height: 771 };
@@ -163,11 +165,12 @@ const groupedSeed = {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function shot(app: App, name: string, site = `shots/${name}.png`) {
+// `site` null keeps the shot out of the website, for release notes only.
+async function shot(app: App, name: string, site: string | null = `shots/${name}.png`) {
   await sleep(500); // Let dialog animations settle.
   const out = join(DOCS, `${name}.png`);
   await app.screenshot(out);
-  copyFileSync(out, join(SITE, site));
+  if (site) copyFileSync(out, join(SITE, site));
   console.log(`wrote ${name}`);
 }
 
@@ -270,6 +273,67 @@ try {
     await app.find("[data-repo-group]");
     await focus(app);
     await shot(app, "grouped-sessions");
+  });
+
+  // Features new in 0.8.0, for its release notes.
+  const plain = {
+    ...common,
+    "thel-layout.json": {
+      layout: {
+        activeSessionId: "headlamp",
+        sessions: [
+          session("headlamp", headlamp, agent(headlamp), "rocket"),
+          session("thel", thel, shell(thel), "terminal"),
+          { ...session("home", homedir()), name: "~" },
+        ],
+      },
+    },
+  };
+  await withApp(plain, async (app) => {
+    await app.click(await sessionRow(app, "thel"));
+    await focus(app, ".xterm-helper-textarea");
+    await app.run("python3 -m http.server 8000 --bind 127.0.0.1", /Serving HTTP/);
+    await app.find("[data-testid=ports-indicator]");
+    await app.press("R", { ctrl: true, shift: true });
+    await app.find("[data-testid=listen-port]");
+    await focus(app);
+    await shot(app, "ports", null);
+    await escape(app);
+
+    await app.press(",", { ctrl: true, shift: true, code: "Comma" });
+    await app.find("//*[normalize-space()='Move to profile']", "xpath");
+    await focus(app);
+    await shot(app, "move-to-profile", null);
+    await escape(app);
+
+    await app.press("N", { ctrl: true, shift: true });
+    const path = await app.find('input[placeholder="/path/to/folder"]');
+    const missing = join(WORK, "new-project");
+    await app.fill(path, missing);
+    await app.button("Create folder and session");
+    await focus(app, 'input[placeholder="/path/to/folder"]', missing.length);
+    await shot(app, "create-folder", null);
+    await escape(app);
+
+    await app.press(",", { ctrl: true, code: "Comma" });
+    await app.click(await app.button("About"));
+    await app.click(await app.button("Show initial screen"));
+    await app.find("[data-testid=initial-screen]");
+    await focus(app);
+    await shot(app, "initial-screen", null);
+    await escape(app);
+
+    await app.press(",", { ctrl: true, code: "Comma" });
+    await app.click(await app.button("Sessions"));
+    await app.click(await app.find("//label[contains(., 'thel session')]//button[@role='switch']", "xpath"));
+    await escape(app);
+    await app.click(await sessionRow(app, "~"));
+    await focus(app, ".xterm-helper-textarea");
+    await app.type("setpriv --no-new-privs thel session new -n dev -- npm run dev");
+    await app.press("Enter");
+    await app.find("//*[normalize-space()='Allow a sandboxed program?']", "xpath");
+    await focus(app);
+    await shot(app, "sandbox-prompt", null);
   });
 } finally {
   rmSync(RC_DIR, { recursive: true, force: true });

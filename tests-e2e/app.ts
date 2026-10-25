@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const APP = process.env.THEL_APP ?? join(ROOT, "src-tauri/target/debug/thel");
+export const APP = process.env.THEL_APP ?? join(ROOT, "src-tauri/target/debug/thel");
 const DRIVER =
   process.env.TAURI_DRIVER ??
   [join(homedir(), ".cargo/bin/tauri-driver")].find(existsSync) ??
