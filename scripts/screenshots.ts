@@ -39,6 +39,9 @@ const SIZE = { width: 1237, height: 771 };
 for (const k of Object.keys(process.env)) {
   if (/^(CLAUDE|ANTHROPIC)/.test(k) && k !== "CLAUDE_CONFIG_DIR") delete process.env[k];
 }
+// Claude Code's updater installs under the run's temp XDG_DATA_HOME and
+// repoints ~/.local/bin/claude there, which dangles once the run cleans up.
+process.env.DISABLE_AUTOUPDATER = "1";
 
 const shell = (cwd: string, title = "Terminal") => ({
   id: crypto.randomUUID(),
