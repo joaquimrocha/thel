@@ -52,7 +52,8 @@ function isModalOpen(): boolean {
     ui.profileMenuOpen ||
     ui.sessionSettings !== null ||
     ui.addIconOpen ||
-    ui.confirm !== null
+    ui.confirm !== null ||
+    ui.initialScreenOpen
   );
 }
 

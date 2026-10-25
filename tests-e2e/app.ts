@@ -144,7 +144,10 @@ export class App {
     // storeFile.ts: dev builds prefix every store file with "dev-".
     const config = join(env.XDG_CONFIG_HOME!, "dev.thel.Thel");
     mkdirSync(config, { recursive: true });
-    for (const [name, data] of Object.entries(opts.seed ?? {})) {
+    // A saved layout, even an empty one, means thel ran before, so the
+    // initial screen stays shut.
+    const seed = { "thel-layout.json": { layout: { sessions: [] } }, ...opts.seed };
+    for (const [name, data] of Object.entries(seed)) {
       writeFileSync(join(config, `dev-${name}`), JSON.stringify(data));
     }
 

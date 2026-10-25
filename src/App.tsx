@@ -11,6 +11,7 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SettingsDialog } from "@/components/SettingsDialog";
+import { InitialScreen, showInitialScreenOnFirstRun } from "@/components/InitialScreen";
 import { LaunchersDialog } from "@/components/LaunchersDialog";
 import { NotificationsDialog } from "@/components/NotificationsDialog";
 import { SessionsDialog } from "@/components/SessionsDialog";
@@ -182,6 +183,7 @@ export default function App() {
       await hydrateSessions();
       const stopPersistence = startPersistence();
       const stopBridge = startSessionBridge();
+      void showInitialScreenOnFirstRun();
       unsubscribe = () => {
         stopPersistence();
         stopMoves();
@@ -282,6 +284,7 @@ export default function App() {
       <NewSessionDialog />
       <ConfirmDialog />
       <SettingsDialog />
+      <InitialScreen />
       <LaunchersDialog />
       <NotificationsDialog />
       <SessionsDialog />
