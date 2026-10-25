@@ -237,6 +237,11 @@ function install(config: MockConfig) {
         store.answers = [...((store.answers as unknown[]) ?? []), args];
         return null;
       }
+      case "allow_session_cli": {
+        const store = w.__MOCK__ as Record<string, unknown>;
+        store.sessionCli = args.enabled;
+        return null;
+      }
       case "watch_sessions": {
         const store = w.__MOCK__ as Record<string, unknown>;
         store.watched = ((store.watched as number) ?? 0) + 1;

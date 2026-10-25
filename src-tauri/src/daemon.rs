@@ -548,6 +548,11 @@ enum Command {
         allow: bool,
         remember: bool,
     },
+    /// Whether the user lets programs in the tabs use `thel session`, as the
+    /// GUI's setting says. Off until a GUI says otherwise.
+    SessionCli {
+        enabled: bool,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -903,6 +908,8 @@ struct Daemon {
     approval_timeout: Duration,
     /// Where session notes live, as the last watching GUI said.
     notes_dir: Mutex<Option<PathBuf>>,
+    /// Whether `thel session` may be used at all (see Command::SessionCli).
+    session_cli: AtomicBool,
 }
 
 pub fn run() {
@@ -1276,7 +1283,8 @@ fn refuse(cmd: Command, client: &Arc<Client>) {
         | Command::Session { .. }
         | Command::Watch { .. }
         | Command::Directory { .. }
-        | Command::Answer { .. } => return,
+        | Command::Answer { .. }
+        | Command::SessionCli { .. } => return,
     };
     client.enqueue(Arc::new(reply));
 }
@@ -1361,6 +1369,7 @@ fn dispatch(daemon: &Arc<Daemon>, cmd: Command, client: &Arc<Client>, peer: &Pee
         }
         Command::Directory { window, sessions } => daemon.report(window, sessions),
         Command::Answer { req, allow, remember } => daemon.answer(req, allow, remember),
+        Command::SessionCli { enabled } => daemon.session_cli.store(enabled, Ordering::SeqCst),
     }
 }
 
@@ -1419,6 +1428,7 @@ impl Daemon {
             started: Mutex::new(HashMap::new()),
             approval_timeout: APPROVAL_TIMEOUT,
             notes_dir: Mutex::new(None),
+            session_cli: AtomicBool::new(false),
         })
     }
 
@@ -1667,6 +1677,9 @@ impl Daemon {
         } else {
             peer.pid.and_then(|p| self.tab_of_pid(p)).ok_or(outside)?
         };
+        if !self.session_cli.load(Ordering::SeqCst) {
+            return Err(SESSION_CLI_OFF.into());
+        }
         // A sandboxed program may list sessions, but anything that starts or
         // types needs the user's yes, which runs it outside the sandbox.
         let trusted = peer.program.is_some() && self.trusted.lock().get(&caller) == peer.program.as_ref();
@@ -2462,6 +2475,10 @@ pub fn stop_listener(id: &str, pid: u32) -> Result<(), String> {
     reply.error.map_or(Ok(()), Err)
 }
 
+/// What `thel session` answers while the user has it turned off.
+const SESSION_CLI_OFF: &str =
+    "thel session is off. Turn on \"Let programs in terminals use thel session\" in thel's Settings > Sessions";
+
 /// What this GUI told the daemon for `thel session`. A daemon that was
 /// restarted, or that dropped the old connection, knows none of it, so each new
 /// connection sends it again.
@@ -2471,6 +2488,7 @@ struct SessionReplay {
     /// Each window's last report. A window that left keeps its empty one, so
     /// a daemon that missed it still drops that window's sessions.
     directory: Directory,
+    session_cli: bool,
 }
 
 impl SessionReplay {
@@ -2484,6 +2502,8 @@ impl SessionReplay {
             })
             .collect();
         cmds.extend(self.notes_dir.clone().map(|notes_dir| Command::Watch { notes_dir }));
+        // Off too: a daemon that kept running may still have it on.
+        cmds.push(Command::SessionCli { enabled: self.session_cli });
         cmds
     }
 }
@@ -2534,6 +2554,19 @@ pub fn report_sessions(window: String, sessions: Vec<DirSession>) -> Result<(), 
     let res = c.send_frame(CONTROL, &serde_json::to_vec(&Command::Directory { window, sessions }).unwrap_or_default());
     drop(replay);
     on_client_error(res)
+}
+
+/// Tells the daemon whether programs in the tabs may use `thel session`.
+pub fn allow_session_cli(enabled: bool) -> Result<(), String> {
+    // Sent under the replay lock, for the same reason as report_sessions.
+    let c = client()?;
+    let mut replay = SESSION_REPLAY.lock();
+    replay.session_cli = enabled;
+    let res = c.send_frame(CONTROL, &serde_json::to_vec(&Command::SessionCli { enabled }).unwrap_or_default());
+    drop(replay);
+    // It says what programs may do, so a failed send reconnects now, which
+    // sends it again, rather than with whatever the GUI sends next.
+    on_client_error(res).or_else(|e| client().map(drop).map_err(|_| e))
 }
 
 /// Send a `thel session` request and wait for the daemon's answer.
@@ -2985,6 +3018,32 @@ mod tests {
         assert_eq!(sh.subscribers.len(), 0);
     }
 
+    /// A daemon the user lets programs drive with `thel session`.
+    fn session_daemon() -> Arc<Daemon> {
+        let d = Daemon::new();
+        d.session_cli.store(true, Ordering::SeqCst);
+        d
+    }
+
+    /// `thel session` does nothing while the user has it off, and says where
+    /// to turn it on; a program outside any tab learns nothing more.
+    #[test]
+    fn thel_session_is_off_until_the_user_turns_it_on() {
+        let d = Daemon::new();
+        let pid = caller_tab(&d);
+        let list = || Request::List { all: true };
+        let inside = peer(&d, Some(pid), false);
+        assert_eq!(d.session(&inside, list()).error.as_deref(), Some(SESSION_CLI_OFF));
+        let sandboxed = peer(&d, Some(pid), true);
+        assert_eq!(d.session(&sandboxed, list()).error.as_deref(), Some(SESSION_CLI_OFF));
+        assert!(d.approvals.lock().is_empty(), "nothing was asked");
+        let outside = peer(&d, Some(std::process::id()), false);
+        assert!(d.session(&outside, list()).error.unwrap().contains("inside a thel terminal"));
+        d.session_cli.store(true, Ordering::SeqCst);
+        assert!(d.session(&inside, list()).error.is_none());
+        d.kill("caller");
+    }
+
     /// Opens tab "caller" running a shell, and returns its pid.
     fn caller_tab(d: &Arc<Daemon>) -> u32 {
         d.open("caller", "sh".into(), vec![], Some("/".into()), None, 80, 24, None).unwrap();
@@ -3002,7 +3061,7 @@ mod tests {
     /// instead of a second run.
     #[test]
     fn an_unshown_terminal_that_ended_is_not_run_again() {
-        let d = Daemon::new();
+        let d = session_daemon();
         let pid = caller_tab(&d);
         let inside = peer(&d, Some(pid), false);
         let req = Request::New { name: None, cwd: "/".into(), command: vec!["true".into()] };
@@ -3115,7 +3174,7 @@ mod tests {
     /// sandboxed program, are refused.
     #[test]
     fn a_program_in_a_tab_drives_sessions() {
-        let d = Daemon::new();
+        let d = session_daemon();
         let pid = caller_tab(&d);
         d.directory.lock().insert(
             "main".into(),
@@ -3169,7 +3228,7 @@ mod tests {
     #[test]
     fn a_program_in_a_tab_edits_session_notes() {
         use crate::session::NoteEdit;
-        let d = Daemon::new();
+        let d = session_daemon();
         let pid = caller_tab(&d);
         d.directory.lock().insert(
             "main".into(),
@@ -3227,7 +3286,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_sandboxed_program_asks_before_reading_notes() {
-        let d = Daemon::new();
+        let d = session_daemon();
         caller_tab(&d);
         d.directory.lock().insert(
             "main".into(),
@@ -3263,7 +3322,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_sandboxed_program_cant_flood_the_prompt() {
-        let d = Daemon::new();
+        let d = session_daemon();
         let pid = caller_tab(&d);
         let peer = peer(&d, Some(pid), true);
         let long = Request::SendKeys { terminal: "caller".into(), data: vec![b'x'; APPROVAL_SUMMARY_MAX] };
@@ -3291,7 +3350,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_window_that_leaves_hands_on_its_questions() {
-        let d = Daemon::new();
+        let d = session_daemon();
         caller_tab(&d);
         let api = DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["caller".into()] };
         d.report("w1".into(), vec![api]);
@@ -3310,7 +3369,7 @@ mod tests {
     /// A terminal asked to start in a folder that isn't there doesn't start.
     #[test]
     fn a_terminal_starts_only_in_a_folder() {
-        let d = Daemon::new();
+        let d = session_daemon();
         let start = |cwd: &str| d.start(vec![], cwd.into(), Place::Session { id: "s1".into() }, false);
         assert_eq!(start("/nope").unwrap_err(), "no folder /nope");
         assert!(d.adopts.lock().is_empty());
@@ -3321,7 +3380,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_sandboxed_list_shows_what_it_started_and_asks_for_the_rest() {
-        let d = Daemon::new();
+        let d = session_daemon();
         caller_tab(&d);
         d.directory.lock().insert(
             "main".into(),
@@ -3376,7 +3435,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_sandboxed_request_acts_on_the_session_it_was_allowed_for() {
-        let d = Daemon::new();
+        let d = session_daemon();
         caller_tab(&d);
         d.directory.lock().insert(
             "main".into(),
@@ -3409,7 +3468,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_sandboxed_request_waits_for_the_users_answer() {
-        let d = Daemon::new();
+        let d = session_daemon();
         let pid = caller_tab(&d);
         d.directory.lock().insert(
             "main".into(),
@@ -3478,7 +3537,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_question_ends_with_its_caller_or_its_timeout() {
-        let mut d = Daemon::new();
+        let mut d = session_daemon();
         Arc::get_mut(&mut d).unwrap().approval_timeout = Duration::from_millis(300);
         caller_tab(&d);
         let keys = || Request::SendKeys { terminal: "caller".into(), data: b"ls".to_vec() };
@@ -3521,7 +3580,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_question_ends_with_its_terminal() {
-        let d = Daemon::new();
+        let d = session_daemon();
         caller_tab(&d);
         let peer = peer(&d, None, true);
         let keys = || Request::SendKeys { terminal: "caller".into(), data: b"ls".to_vec() };
@@ -3577,23 +3636,29 @@ mod tests {
     #[test]
     fn a_new_connection_replays_what_the_gui_told_the_daemon() {
         let mut r = SessionReplay::default();
-        assert!(r.commands().is_empty());
+        assert!(matches!(r.commands().as_slice(), [Command::SessionCli { enabled: false }]));
         let s = DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["t1".into()] };
         r.directory.insert("main".into(), vec![s]);
         assert!(matches!(
             r.commands().as_slice(),
-            [Command::Directory { window, sessions }] if window == "main" && sessions[0].id == "s1"
+            [Command::Directory { window, sessions }, Command::SessionCli { .. }] if window == "main" && sessions[0].id == "s1"
         ));
         r.notes_dir = Some("/n".into());
         assert!(matches!(
             r.commands().as_slice(),
-            [Command::Directory { .. }, Command::Watch { notes_dir }] if notes_dir == Path::new("/n")
+            [Command::Directory { .. }, Command::Watch { notes_dir }, Command::SessionCli { .. }] if notes_dir == Path::new("/n")
         ));
         // A window that closed for good is told again that it has nothing.
         r.directory.insert("main".into(), vec![]);
         assert!(matches!(
             r.commands().as_slice(),
-            [Command::Directory { window, sessions }, Command::Watch { .. }] if window == "main" && sessions.is_empty()
+            [Command::Directory { window, sessions }, Command::Watch { .. }, Command::SessionCli { enabled: false }]
+                if window == "main" && sessions.is_empty()
+        ));
+        r.session_cli = true;
+        assert!(matches!(
+            r.commands().as_slice(),
+            [Command::Directory { .. }, Command::Watch { .. }, Command::SessionCli { enabled: true }]
         ));
     }
 
@@ -3643,6 +3708,7 @@ mod tests {
         assert!(!Command::Answer { req: 1, allow: true, remember: true }.harmless(own));
         assert!(!Command::Directory { window: "main".into(), sessions: vec![] }.harmless(own));
         assert!(!Command::Watch { notes_dir: "/n".into() }.harmless(own));
+        assert!(!Command::SessionCli { enabled: true }.harmless(own));
         let open = Command::Open {
             id: id(),
             command: "sh".into(),
