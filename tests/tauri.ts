@@ -1,6 +1,8 @@
 import type { Page } from "@playwright/test";
 
 export interface MockConfig {
+  // Start as thel's first run, which shows the initial screen.
+  firstRun?: boolean;
   // Window label this page reports (default "main" = the default profile).
   label?: string;
   // Labels of the other windows open beside this one.
@@ -533,5 +535,9 @@ export async function installTauriMock(page: Page, config: MockConfig = {}) {
       get: () => p,
     });
   }, platform);
+  // The initial screen would cover every test; firstRun shows it.
+  if (!config.firstRun) {
+    await page.addInitScript(() => localStorage.setItem("thel.initialScreenSeen", "1"));
+  }
   await page.addInitScript(install, config);
 }

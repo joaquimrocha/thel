@@ -9,6 +9,7 @@ import {
   Users,
   Info,
   Bell,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -59,6 +60,7 @@ export function SettingsDialog() {
   const setOpen = useUI((s) => s.setSettingsOpen);
   const openHelp = useUI((s) => s.openHelp);
   const openLaunchers = useUI((s) => s.openLaunchers);
+  const setInitialScreenOpen = useUI((s) => s.setInitialScreenOpen);
   const theme = useTheme((s) => s.theme);
   const setTheme = useTheme((s) => s.setTheme);
   const copyToasts = usePrefs((s) => s.copyToasts);
@@ -429,6 +431,13 @@ export function SettingsDialog() {
                   <dd>Apache-2.0</dd>
                 </div>
               </dl>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={go(() => setInitialScreenOpen(true))}
+              >
+                <Sparkles className="size-4" /> Show initial screen
+              </Button>
             </TabsContent>
           </div>
         </Tabs>

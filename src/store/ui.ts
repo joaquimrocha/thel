@@ -38,6 +38,10 @@ interface UIState {
   setSettingsOpen: (open: boolean) => void;
   openSettings: (tab?: string) => void;
 
+  // The initial screen (InitialScreen): a tour of thel, first run or on request.
+  initialScreenOpen: boolean;
+  setInitialScreenOpen: (open: boolean) => void;
+
   launchersOpen: boolean;
   setLaunchersOpen: (open: boolean) => void;
   openLaunchers: () => void;
@@ -188,6 +192,9 @@ export const useUI = create<UIState>((set) => ({
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   openSettings: (tab = "appearance") =>
     set({ settingsOpen: true, settingsTab: tab }),
+
+  initialScreenOpen: false,
+  setInitialScreenOpen: (open) => set({ initialScreenOpen: open }),
 
   launchersOpen: false,
   setLaunchersOpen: (open) => set({ launchersOpen: open }),

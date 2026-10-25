@@ -16,8 +16,8 @@ thel session close -t TERMINAL
 thel session close-session [-t SESSION]
 ```
 
-It is off until you turn on **Settings > Sessions > Let programs in terminals
-use `thel session`**. While it is off, every request fails with a message that
+It is off until you turn on **Let programs in terminals use `thel session`**,
+on thel's initial screen or in **Settings > Sessions**. While it is off, every request fails with a message that
 says where to turn it on, and a sandboxed caller's requests fail without
 asking you.
 

@@ -38,6 +38,10 @@ let hydrationFailed = false;
 // raise the corrupt-layout prompt twice.
 let hydrationStarted = false;
 
+// Whether hydrateSessions found a saved layout, even an empty or unreadable
+// one. A first run has none.
+let layoutFound = false;
+
 // Settles once hydrateSessions has loaded (or failed to load) the saved layout.
 let markHydrated = () => {};
 const hydrated = new Promise<void>((resolve) => (markHydrated = resolve));
@@ -189,6 +193,7 @@ export async function hydrateSessions(): Promise<void> {
   try {
     const store = await getStore();
     raw = await store.get<PersistedLayout>(KEY);
+    layoutFound = raw !== undefined;
     if (!raw?.sessions?.length) return;
     useSessions.setState({
       activeSessionId: raw.activeSessionId,
@@ -200,6 +205,7 @@ export async function hydrateSessions(): Promise<void> {
     // startPersistence). Let the user recover it manually or set it aside and
     // start saving again.
     hydrationFailed = true;
+    layoutFound = true;
     useUI.getState().requestConfirm({
       title: "Couldn't restore your saved layout",
       description:
@@ -213,6 +219,13 @@ export async function hydrateSessions(): Promise<void> {
     useSessions.setState({ hydrated: true });
     markHydrated();
   }
+}
+
+/** Whether this window's profile had a saved layout when it started, once
+ * hydrateSessions has run. */
+export async function savedLayoutFound(): Promise<boolean> {
+  await hydrated;
+  return layoutFound;
 }
 
 // Set the unreadable layout aside (copied to a sibling file so it can still be
