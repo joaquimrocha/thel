@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
 use crate::pty::{decode_utf8_stream, CreateOpts, TermMsg};
-use crate::session::{Adopt, Approval, DirSession, Directory, NoteChange, Place, Reply, Request};
+use crate::session::{Adopt, Approval, Closing, DirSession, Directory, NoteChange, Place, Reply, Request};
 
 const PROTOCOL_VERSION: u32 = 5;
 const EMPTY_GRACE: Duration = Duration::from_secs(45);
@@ -577,12 +577,14 @@ enum Event {
     // An adopted terminal no longer waits for a window: one opened it, or it
     // was closed. Windows that held it back for a session on its way drop it.
     Claimed { terminal: String },
-    // A sandboxed caller's request for the user to allow or deny.
+    // A request for the user to allow or deny.
     Approve { approval: Approval },
     // An Approval was answered or timed out; windows still showing it close it.
     Resolved { req: u64 },
     // `thel session note` changed a session's notes to `text` by `edit`.
     Note(NoteChange),
+    // `thel session close` or `close-session`, for the window showing it to close.
+    Close(Closing),
 }
 
 /// Reply to Command::Status: tab id -> a foreground command is running.
@@ -890,11 +892,11 @@ struct Daemon {
     /// The sessions each GUI window last reported. Kept after the GUI leaves,
     /// so a request still finds its session while no window is open.
     directory: Mutex<Directory>,
-    /// Sandboxed callers' requests waiting for an answer, and where to send it.
+    /// Requests waiting for the user's answer, and where to send it.
     approvals: Mutex<Vec<(Approval, AnswerTx)>>,
     next_approval: AtomicU64,
-    /// Terminals whose sandboxed programs the user said no to, with when they
-    /// may ask again and how long the last pause was.
+    /// Terminals whose programs the user said no to, with when they may ask
+    /// again and how long the last pause was.
     denied: Mutex<HashMap<String, (std::time::Instant, Duration)>>,
     /// The sandboxed program in each terminal the user allowed everything
     /// from (see sandbox_program), until the terminal ends.
@@ -1681,9 +1683,10 @@ impl Daemon {
             return Err(SESSION_CLI_OFF.into());
         }
         // A sandboxed program may list sessions, but anything that starts or
-        // types needs the user's yes, which runs it outside the sandbox.
+        // types needs the user's yes, which runs it outside the sandbox. A
+        // close always asks, whoever the caller.
         let trusted = peer.program.is_some() && self.trusted.lock().get(&caller) == peer.program.as_ref();
-        let asks = peer.sandboxed && req != (Request::List { all: false }) && !trusted;
+        let asks = req.closes() || (peer.sandboxed && req != (Request::List { all: false }) && !trusted);
         req.check()?;
         let req = if asks {
             // Before the lookups, so a request that can't be asked fails the
@@ -1793,6 +1796,28 @@ impl Daemon {
                 self.broadcast(&Event::Note(NoteChange { session: id, text, edit }));
                 Ok(Reply::default())
             }
+            Request::Close { terminal } => {
+                if !self.tabs.lock().contains_key(&terminal) {
+                    return Err("that terminal closed already".into());
+                }
+                // A window that shows it closes it as its close button does;
+                // one no window shows is ended here.
+                let shown = crate::session::session_of(&self.directory.lock(), &terminal).is_some();
+                if shown && !self.watchers.lock().is_empty() {
+                    self.broadcast(&Event::Close(Closing::Terminal { id: terminal }));
+                } else {
+                    self.kill(&terminal);
+                }
+                Ok(Reply::default())
+            }
+            Request::CloseSession { session } => {
+                let (id, _) = self.session_id(caller, session.as_deref(), pinned)?;
+                if self.watchers.lock().is_empty() {
+                    return Err(NO_WINDOW_TO_CLOSE.into());
+                }
+                self.broadcast(&Event::Close(Closing::Session { id }));
+                Ok(Reply::default())
+            }
         }
     }
 
@@ -1823,14 +1848,23 @@ impl Daemon {
                 let (id, label) = self.pinned(caller, session.as_deref())?;
                 (Request::Note { session: Some(id), edit }, Some(label))
             }
+            Request::CloseSession { .. } if self.watchers.lock().is_empty() => return Err(NO_WINDOW_TO_CLOSE.into()),
+            Request::CloseSession { session } => {
+                let (id, label) = self.pinned(caller, session.as_deref())?;
+                (Request::CloseSession { session: Some(id) }, Some(label))
+            }
+            // Asked about only while it is there to close.
+            Request::Close { terminal } if !self.tabs.lock().contains_key(&terminal) => {
+                return Err("no terminal by that id".into())
+            }
             other => (other, None),
         })
     }
 
     /// The id of the session `key` names, and how the prompt names it.
     fn pinned(&self, caller: &str, key: Option<&str>) -> Result<(String, String), String> {
-        // Only a sandboxed caller pins, and its list hides the sessions it
-        // didn't start, so a failed lookup mustn't tell it their names or ids.
+        // A sandboxed caller's list hides the sessions it didn't start, so a
+        // failed lookup mustn't tell it their names or ids.
         let (id, name) = self
             .session_id(caller, key, false)
             .map_err(|e| if key.is_some() { "no session by that name or id".to_string() } else { e })?;
@@ -1838,8 +1872,8 @@ impl Daemon {
         Ok((id, label))
     }
 
-    /// Asks the watching GUIs to allow `req` from a sandboxed program in tab
-    /// `caller`, and waits for the answer. Fails on a no, or when nobody
+    /// Asks the watching GUIs to allow `req` from a program in tab `caller`,
+    /// and waits for the answer. Fails on a no, or when nobody
     /// answers in time.
     fn ask(&self, peer: &Peer, caller: &str, req: &Request, session: Option<&str>) -> Result<(), String> {
         let summary = crate::session::describe(req, session.unwrap_or_default());
@@ -1850,7 +1884,7 @@ impl Daemon {
             ));
         }
         let target = match req {
-            Request::SendKeys { terminal, .. } => Some(terminal.clone()),
+            Request::SendKeys { terminal, .. } | Request::Close { terminal } => Some(terminal.clone()),
             _ => None,
         };
         let (caller_session, target_session) = {
@@ -1869,6 +1903,8 @@ impl Daemon {
             target,
             window: self.window_of(caller),
             program: peer.program.and_then(|(pid, start)| exe_of(pid, start)),
+            sandboxed: peer.sandboxed,
+            once: req.closes(),
         };
         let (tx, rx) = sync_channel(1);
         {
@@ -1905,8 +1941,10 @@ impl Daemon {
         };
         match answer {
             Ok((true, remember)) => {
-                // A yes for good needs the program the prompt named.
-                if let Some(program) = peer.program.filter(|_| remember && approval.program.is_some()) {
+                // A yes for good needs the program the prompt named, and a
+                // request the prompt offered one for.
+                let lasting = remember && approval.program.is_some() && !approval.once;
+                if let Some(program) = peer.program.filter(|_| lasting) {
                     // Checked under the trusted lock, so a tab that ends
                     // meanwhile drops the trust again when its end takes it.
                     let mut trusted = self.trusted.lock();
@@ -2475,6 +2513,9 @@ pub fn stop_listener(id: &str, pid: u32) -> Result<(), String> {
     reply.error.map_or(Ok(()), Err)
 }
 
+/// Why a session can't close: sessions and their notes are the windows'.
+const NO_WINDOW_TO_CLOSE: &str = "no thel window is open to close it";
+
 /// What `thel session` answers while the user has it turned off.
 const SESSION_CLI_OFF: &str =
     "thel session is off. Turn on \"Let programs in terminals use thel session\" in thel's Settings > Sessions";
@@ -2637,6 +2678,7 @@ fn client_read_loop(mut r: UnixStream, routes: Arc<Mutex<HashMap<String, Channel
                 Some(Event::Approve { approval }) => session_event("thel-session-approve", approval),
                 Some(Event::Resolved { req }) => session_event("thel-session-resolved", req),
                 Some(Event::Note(change)) => session_event("thel-session-note", change),
+                Some(Event::Close(closing)) => session_event("thel-session-close", closing),
                 None => {}
             },
             _ => break, // EOF / error: daemon gone
@@ -3530,6 +3572,73 @@ mod tests {
         // Until the terminal ends.
         d.kill("caller");
         assert!(d.trusted.lock().is_empty());
+    }
+
+    /// A close asks the user whoever the caller, even a program allowed
+    /// everything, and a yes holds once. The window showing what it closes
+    /// does the closing; with none open, the daemon ends a terminal itself
+    /// and can't close a session.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_close_always_asks_the_user() {
+        let d = session_daemon();
+        let pid = caller_tab(&d);
+        d.open("other", "sh".into(), vec![], Some("/".into()), None, 80, 24, None).unwrap();
+        d.directory.lock().insert(
+            "main".into(),
+            vec![DirSession { id: "s1".into(), name: "api".into(), terminals: vec!["caller".into(), "other".into()] }],
+        );
+        let inside = peer(&d, Some(pid), false);
+        let close = || Request::Close { terminal: "other".into() };
+        let answer = |peer: &Peer, req: Request, allow: bool, remember: bool| {
+            let waiter = ask_bg(&d, peer, req);
+            let a = first_approval(&d);
+            d.answer(a.req, allow, remember);
+            d.denied.lock().clear();
+            (a, waiter.join().unwrap())
+        };
+        let (gui_end, mut gui) = UnixStream::pair().unwrap();
+        gui.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let next_close = |gui: &mut UnixStream| loop {
+            let (_, p) = read_frame(gui).unwrap();
+            if let Some(Event::Close(c)) = parse_json::<Event>(&p) {
+                break c;
+            }
+        };
+
+        assert_eq!(d.session(&inside, Request::Close { terminal: "nope".into() }).error.as_deref(), Some("no terminal by that id"));
+        assert!(d.approvals.lock().is_empty(), "nothing to close, nothing asked");
+        let (a, reply) = answer(&inside, close(), false, false);
+        assert!(!a.sandboxed && a.once);
+        assert_eq!((a.summary.as_str(), a.target.as_deref()), ("close terminal other", Some("other")));
+        assert_eq!(reply.error.as_deref(), Some("denied in thel"));
+        assert!(d.tabs.lock().contains_key("other"));
+
+        let sandboxed = Peer { program: Some((pid, start_time(pid).unwrap())), ..peer(&d, Some(pid), true) };
+        d.trusted.lock().insert("caller".into(), sandboxed.program.unwrap());
+        let (a, reply) = answer(&sandboxed, close(), false, false);
+        assert!(a.sandboxed && a.once, "asked though the program is allowed everything");
+        assert_eq!(reply.error.as_deref(), Some("denied in thel"));
+        d.trusted.lock().clear();
+
+        d.watchers.lock().push(Client::spawn(&gui_end).unwrap());
+        let (_, reply) = answer(&sandboxed, close(), true, true);
+        assert!(reply.error.is_none());
+        assert!(d.trusted.lock().is_empty(), "a yes to a close is not a yes for good");
+        assert_eq!(next_close(&mut gui), Closing::Terminal { id: "other".into() });
+        let (a, reply) = answer(&inside, Request::CloseSession { session: None }, true, false);
+        assert_eq!(a.summary, "close session \"api\", with all its terminals and its notes");
+        assert!(reply.error.is_none());
+        assert_eq!(next_close(&mut gui), Closing::Session { id: "s1".into() });
+
+        d.watchers.lock().clear();
+        let reply = d.session(&inside, Request::CloseSession { session: None });
+        assert_eq!(reply.error.as_deref(), Some(NO_WINDOW_TO_CLOSE));
+        assert!(d.approvals.lock().is_empty(), "nothing to close it with, nothing asked");
+        let (_, reply) = answer(&inside, close(), true, false);
+        assert!(reply.error.is_none());
+        assert!(!d.tabs.lock().contains_key("other"), "ended by the daemon");
+        d.kill("caller");
     }
 
     /// A caller that hangs up while it waits takes its question with it, and

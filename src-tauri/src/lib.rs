@@ -112,7 +112,7 @@ fn watch_sessions(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
-/// The user's answer to a sandboxed program's `thel session` request.
+/// The user's answer to a `thel session` request it was asked about.
 #[tauri::command(async)]
 fn answer_session(req: u64, allow: bool, remember: bool) -> Result<(), String> {
     #[cfg(unix)]

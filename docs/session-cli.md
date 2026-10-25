@@ -1,10 +1,10 @@
 # `thel session`
 
 `thel session` lets a program running in a thel terminal open sessions and
-terminals, list them, type into them and edit their notes. It is meant for
-coding agents and scripts: an agent can start a dev server in its own session,
-or a test watcher beside itself, and you see it in the sidebar like any other
-session.
+terminals, list them, type into them, close them and edit their notes. It is
+meant for coding agents and scripts: an agent can start a dev server in its
+own session, or a test watcher beside itself, and you see it in the sidebar
+like any other session.
 
 ```
 thel session new [-n NAME] [-c DIR] [-- CMD [ARG...]]
@@ -12,6 +12,8 @@ thel session terminal [-t SESSION] [-c DIR] [-- CMD [ARG...]]
 thel session list [-a] [--json]
 thel session send-keys -t TERMINAL [-l] KEY...
 thel session note [-t SESSION] [-w | -a [TEXT...]]
+thel session close -t TERMINAL
+thel session close-session [-t SESSION]
 ```
 
 It is off until you turn on **Settings > Sessions > Let programs in terminals
@@ -25,6 +27,8 @@ asking you.
 | `terminal` | Opens a terminal in SESSION, given as an id or a unique name. Without `-t`, the caller's own session. Prints the terminal's id. |
 | `list` | Lists sessions and their terminals: `running`, `exited`, or `starting` (no window has shown it yet). `-a` shows every session to a sandboxed caller, which otherwise sees only its own session and those it started. `--json` for scripts. |
 | `send-keys` | Types into a terminal. Each KEY is text or a key name: `Enter`, `Tab`, `Escape`, `BSpace`, `Space`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `C-<letter>`, `M-<char>`. |
+| `close` | Closes a terminal, as its tab's close button does. Always asks you first. |
+| `close-session` | Closes SESSION (an id or a unique name; without `-t`, the caller's own session) with all its terminals and its notes, as the sidebar's Close session does. Always asks you first, and needs a thel window open. |
 | `note` | Prints the notes of SESSION (an id or a unique name; without `-t`, the caller's own session). `-w` replaces them with stdin, and an empty stdin clears them. `-a` adds TEXT, or stdin when there is no TEXT, as new lines at the end. |
 
 `send-keys` drops control characters from text, so an argument can't carry its
@@ -68,7 +72,6 @@ and a check of the caller's uid). On top of that, `thel session`:
 - **Is off until you turn it on.** The window tells the daemon your setting,
   and the daemon refuses every request while it is off. A daemon starts with
   it off, until a window tells it otherwise.
-
 - **Works only from inside a thel terminal.** The daemon gets the caller's pid
   from the socket and walks its parents up to one of its terminals. On Linux it
   also accepts a process in a terminal's cgroup scope, which covers programs
@@ -90,6 +93,11 @@ and a check of the caller's uid). On top of that, `thel session`:
   the command once. A sandboxed caller's list shows its own session and those
   it started without asking; `list -a`, for the rest, asks. Reading notes
   asks too, since they can hold anything you wrote.
+- **Asks you before closing anything.** `close` and `close-session` wait for
+  your yes whoever asks, sandboxed or not, even a program you allowed
+  everything. A yes holds for that one close. Without a window open, a
+  terminal no window shows is ended by the daemon, and a session can't be
+  closed.
 - **Keeps the prompt honest.** A terminal gets one question at a time; a
   second request fails while the first waits. After you deny one, that
   terminal's requests fail without asking for 30 seconds, twice as long

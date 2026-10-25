@@ -43,6 +43,19 @@ pub enum Request {
         session: Option<String>,
         edit: Option<NoteEdit>,
     },
+    /// Close a terminal, as its tab's close button does.
+    Close { terminal: String },
+    /// Close `session` (an id or a name, by default the caller's) with its
+    /// terminals and notes, as the sidebar's Close session does.
+    CloseSession { session: Option<String> },
+}
+
+/// What a window closes for `thel session close` or `close-session`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Closing {
+    Terminal { id: String },
+    Session { id: String },
 }
 
 /// A notes change `thel session note` made, for the GUI windows.
@@ -202,6 +215,12 @@ pub fn save_note(path: &Path, base: Option<&str>, text: &str) -> Result<Option<S
 }
 
 impl Request {
+    /// Whether it closes something, which the user is always asked about:
+    /// what it ends can't be brought back.
+    pub fn closes(&self) -> bool {
+        matches!(self, Request::Close { .. } | Request::CloseSession { .. })
+    }
+
     /// Refuses what the CLI never sends: a relative directory would resolve
     /// against the daemon's own, and the prompt would show it as `.`.
     pub fn check(&self) -> Result<(), String> {
@@ -278,8 +297,8 @@ impl TerminalState {
     }
 }
 
-/// A sandboxed caller's request, waiting for the user to allow or deny it in a
-/// thel window.
+/// A request waiting for the user to allow or deny it in a thel window: one
+/// from a sandboxed caller, or one that closes something.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Approval {
     pub req: u64,
@@ -289,7 +308,7 @@ pub struct Approval {
     pub caller_session: Option<String>,
     /// What it asks for, in words.
     pub summary: String,
-    /// The terminal a SendKeys request types into, for the GUI to name.
+    /// The terminal a SendKeys or Close request acts on, for the GUI to name.
     pub target: Option<String>,
     /// How the prompt names the session showing `target` (see session_label).
     pub target_session: Option<String>,
@@ -298,6 +317,11 @@ pub struct Approval {
     /// The executable of the sandboxed program asking (see sandbox_program),
     /// which a yes for good trusts along with all it runs.
     pub program: Option<String>,
+    /// Whether the caller runs sandboxed. Otherwise it is asked about only
+    /// because the request closes something.
+    pub sandboxed: bool,
+    /// A yes holds for this request alone: the prompt offers no yes for good.
+    pub once: bool,
 }
 
 /// `req` in words, for the approval prompt. `session` is how it names the
@@ -334,6 +358,8 @@ pub fn describe(req: &Request, session: &str) -> String {
             Some(NoteEdit::Set { text }) => format!("replace the notes of {session} with: {}", shown(text)),
             Some(NoteEdit::Append { text }) => format!("add to the notes of {session}: {}", shown(text)),
         },
+        Request::Close { terminal } => format!("close terminal {}", shown(terminal)),
+        Request::CloseSession { .. } => format!("close {session}, with all its terminals and its notes"),
     }
 }
 
@@ -582,9 +608,9 @@ fn key(name: &str) -> Option<Vec<u8>> {
 /// The text of `thel session --help`.
 pub const HELP: &str = "Usage: thel session COMMAND [OPTIONS]
 
-Open, list, type into and take notes on thel sessions from inside a thel
-terminal, e.g. from an agent. On Linux, a sandboxed caller's request waits for
-approval in the thel window.
+Open, list, type into, close and take notes on thel sessions from inside a
+thel terminal, e.g. from an agent. On Linux, a sandboxed caller's request waits
+for approval in the thel window, and so does every close.
 
 Commands:
   new [-n NAME] [-c DIR] [-- CMD [ARG...]]
@@ -600,6 +626,12 @@ Commands:
         Print the notes of SESSION, an id or a name (default: this terminal's
         session). -w replaces them with stdin; an empty stdin clears them.
         -a adds TEXT, or stdin when there is no TEXT, as new lines at the end.
+  close -t TERMINAL
+        Close a terminal. Always waits for your yes in the thel window.
+  close-session [-t SESSION]
+        Close SESSION, an id or a name (default: this terminal's session),
+        with all its terminals and its notes. Always waits for your yes in
+        the thel window.
   send-keys -t TERMINAL [-l] KEY...
         Type into a terminal. Each KEY is text or a key name: Enter, Tab,
         Escape, BSpace, Space, Up, Down, Left, Right, Home, End, C-<letter>,
@@ -681,6 +713,7 @@ fn parse(
         "list" => &["-a", "--json"],
         "send-keys" => &["-t", "-l"],
         "note" => &["-t", "-w", "-a"],
+        "close" | "close-session" => &["-t"],
         "help" | "-h" | "--help" => return Ok(Parsed::Help),
         other => return Err(format!("unknown command {other}")),
     };
@@ -732,6 +765,9 @@ fn parse(
             };
             Request::Note { session: opts.get("-t").cloned(), edit }
         }
+        "close" | "close-session" if !tail.is_empty() => return Err(format!("unexpected argument {}", tail[0])),
+        "close" => Request::Close { terminal: opts.get("-t").cloned().ok_or("close needs -t TERMINAL")? },
+        "close-session" => Request::CloseSession { session: opts.get("-t").cloned() },
         _ => unreachable!("takes already turned away the rest"),
     };
     Ok(Parsed::Ask { req, json: flags.contains("--json") })
@@ -985,6 +1021,16 @@ mod tests {
         assert_eq!(err(&["new", "-x"]), "unknown option -x");
         assert_eq!(err(&["frob"]), "unknown command frob");
         assert_eq!(parse(&args(&["list", "-t", "x"]), "/w", no_stdin).unwrap_err(), "list takes no -t");
+        let ask = |a: &[&str]| match parse(&args(a), "/w", no_stdin).unwrap() {
+            Parsed::Ask { req, .. } => req,
+            Parsed::Help => panic!("help for {a:?}"),
+        };
+        assert_eq!(ask(&["close", "-t", "t1"]), Request::Close { terminal: "t1".into() });
+        assert_eq!(ask(&["close-session"]), Request::CloseSession { session: None });
+        assert_eq!(ask(&["close-session", "-t", "api"]), Request::CloseSession { session: Some("api".into()) });
+        assert_eq!(err(&["close"]), "close needs -t TERMINAL");
+        assert_eq!(err(&["close", "-t", "t1", "t2"]), "unexpected argument t2");
+        assert_eq!(err(&["close-session", "api"]), "unexpected argument api");
         assert_eq!(parse(&args(&["list", "x"]), "/w", no_stdin).unwrap_err(), "unexpected argument x");
         assert_eq!(parse(&args(&["new", "-l"]), "/w", no_stdin).unwrap_err(), "new takes no -l");
         // An absolute -c stays as given.
@@ -1112,6 +1158,22 @@ mod tests {
         );
         let r = Request::Note { session: None, edit: Some(NoteEdit::Set { text: String::new() }) };
         assert_eq!(describe(&r, "session \"api\""), "clear the notes of session \"api\"");
+    }
+
+    #[test]
+    fn describes_closes_for_the_prompt() {
+        let r = Request::Close { terminal: "t1".into() };
+        assert!(r.closes());
+        assert_eq!(describe(&r, ""), "close terminal t1");
+        let r = Request::Close { terminal: "t1\u{202e}x".into() };
+        assert_eq!(describe(&r, ""), "close terminal \"t1\\u{202e}x\"");
+        let r = Request::CloseSession { session: None };
+        assert!(r.closes());
+        assert_eq!(
+            describe(&r, "session \"api\""),
+            "close session \"api\", with all its terminals and its notes"
+        );
+        assert!(!Request::List { all: true }.closes());
     }
 
     #[test]

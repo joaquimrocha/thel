@@ -163,7 +163,9 @@ test("a new session for this window appears beside the current one", async ({ pa
     .toBe(true);
 });
 
-const approve = (page: Page, payload: unknown) => emit(page, "thel-session-approve", payload);
+// A sandboxed program's request unless the payload says otherwise.
+const approve = (page: Page, payload: Record<string, unknown>) =>
+  emit(page, "thel-session-approve", { sandboxed: true, once: false, ...payload });
 const answers = (page: Page) =>
   page.evaluate(() => (window as never as MockWindow).__MOCK__.answers ?? []);
 
@@ -198,6 +200,39 @@ test("a sandboxed program's request waits for the user's answer", async ({ page 
     { req: 1, allow: false, remember: false },
     { req: 2, allow: true, remember: true },
   ]);
+});
+
+test("a close asks with no lasting yes, and the window closes what was allowed", async ({ page }) => {
+  await gotoApp(page);
+  await createSession(page);
+  await createSession(page);
+  await expect.poll(async () => (await mock(page)).reported?.length).toBe(2);
+  const [first, second] = (await mock(page)).reported!;
+  const caller = second.terminals[0];
+  const dialog = page.getByRole("dialog", { name: "Allow a program to close this?" });
+
+  const summary = `close terminal ${first.terminals[0]}`;
+  await expect
+    .poll(() => approve(page, { req: 11, caller, summary, target: first.terminals[0], sandboxed: false, once: true }))
+    .toBeGreaterThan(0);
+  await expect(dialog).toContainText("A program in");
+  await expect(dialog).toContainText(`${summary}. This can't be undone.`);
+  await expect(dialog.getByRole("checkbox")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Allow" }).click();
+  await expect(dialog).toBeHidden();
+  expect(await answers(page)).toEqual([{ req: 11, allow: true, remember: false }]);
+
+  // A sandboxed program allowed everything still gets no lasting yes here.
+  const sandboxed = page.getByRole("dialog", { name: "Allow a sandboxed program?" });
+  await approve(page, { req: 12, caller, summary, program: "/usr/bin/agent", once: true });
+  await expect(sandboxed).toContainText("This can't be undone.");
+  await expect(sandboxed.getByRole("checkbox")).toHaveCount(0);
+  await sandboxed.getByRole("button", { name: "Deny" }).click();
+
+  await emit(page, "thel-session-close", { kind: "terminal", id: caller });
+  await expect(page.locator(`[data-tab-id="${caller}"]`)).toHaveCount(0);
+  await emit(page, "thel-session-close", { kind: "session", id: first.id });
+  await expect(rows(page)).toHaveCount(1);
 });
 
 test("a request answered elsewhere, or timed out, leaves the window", async ({ page }) => {
