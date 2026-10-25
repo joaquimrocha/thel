@@ -38,7 +38,7 @@ Communication over the Unix Domain Socket uses length-prefixed frames:
 ### Frame Types
 
 1. **`CONTROL` (0)**: Holds serialized JSON structures.
-   - **`Hello` / `HelloReply`**: Handshake verifying protocol compatibility (currently protocol version `1`).
+   - **`Hello` / `HelloReply`**: Handshake verifying protocol compatibility.
    - **`Command`**: Client actions (`Open`, `Resize`, `Detach`, `Kill`, `Status`).
    - **`Event`**: Daemon notifications sent to clients (`TabExited`, `TabBusy`, `Error`).
 2. **`OUTPUT` (1)**: Streamed output from a terminal to connected clients.
