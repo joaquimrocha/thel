@@ -262,7 +262,7 @@ try {
   await withApp(groupedSeed, async (app) => {
     const menu = await app.find('button[aria-label="Sidebar menu"]');
     await app.click(menu);
-    await app.click(await app.find('[aria-label="Group sessions by repo"]'));
+    await app.click(await app.find("//*[@role='menuitemcheckbox'][normalize-space()='Group sessions by repo']", "xpath"));
     await app.click(menu);
     await app.find("[data-repo-group]");
     await focus(app);
