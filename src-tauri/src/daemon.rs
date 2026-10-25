@@ -71,6 +71,19 @@ type AnswerTx = SyncSender<(bool, bool)>;
 const HANGUP_POLL: Duration = Duration::from_millis(250);
 // How often a tab whose terminal closed checks whether its process ended.
 const EXIT_POLL: Duration = Duration::from_millis(100);
+// The most connections served at once. Each gets a thread, and a spawn past
+// the system's limit would bring down the daemon with every terminal in it.
+const MAX_CLIENTS: usize = 256;
+// The most of those that sandboxed programs hold at once, so they can't take
+// the slots the GUI and other programs need.
+const MAX_SANDBOXED_CLIENTS: usize = 32;
+// How long a new connection may take to say hello before it is dropped, so
+// idle connections can't hold the slots.
+const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
+// The longest frame from anyone, and from a sandboxed program, which sends
+// requests and notes, never terminal output.
+const MAX_FRAME: usize = 16 * 1024 * 1024;
+const MAX_SANDBOXED_FRAME: usize = 1024 * 1024;
 // The longest request the approval prompt shows, in bytes of its summary. A
 // longer one is refused rather than cut, so the user sees all of what they
 // allow.
@@ -605,14 +618,18 @@ fn write_frame<W: Write>(w: &mut W, ty: u8, payload: &[u8]) -> io::Result<()> {
 }
 
 fn read_frame<R: Read>(r: &mut R) -> io::Result<(u8, Vec<u8>)> {
+    read_frame_max(r, MAX_FRAME)
+}
+
+/// read_frame for frames of at most `max` bytes, checked before allocating.
+fn read_frame_max<R: Read>(r: &mut R, max: usize) -> io::Result<(u8, Vec<u8>)> {
     let mut head = [0u8; 5];
     r.read_exact(&mut head)?;
     let len = u32::from_le_bytes([head[1], head[2], head[3], head[4]]) as usize;
-    // Cap the maximum frame size to 16 MB to prevent uncapped allocations / DoS
-    if len > 16 * 1024 * 1024 {
+    if len > max {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "frame size exceeds maximum limit of 16 MB",
+            format!("frame of {len} bytes is over the limit of {max}"),
         ));
     }
     let mut payload = vec![0u8; len];
@@ -877,6 +894,8 @@ struct Daemon {
     /// The sandboxed program in each terminal the user allowed everything
     /// from (see sandbox_program), until the terminal ends.
     trusted: Mutex<HashMap<String, (u32, u64)>>,
+    /// Connections from sandboxed programs (see MAX_SANDBOXED_CLIENTS).
+    sandboxed_clients: AtomicUsize,
     /// The terminal of the sandboxed caller that started each terminal, so
     /// its list shows what it started, until the caller's terminal ends.
     started: Mutex<HashMap<String, String>>,
@@ -945,8 +964,14 @@ pub fn run() {
     });
 
     for stream in listener.incoming().flatten() {
+        if daemon.clients.load(Ordering::SeqCst) >= MAX_CLIENTS {
+            eprintln!("[thel-daemon] refused a connection: {MAX_CLIENTS} already open");
+            continue;
+        }
         let daemon = daemon.clone();
-        std::thread::spawn(move || handle_client(stream, daemon));
+        if let Err(e) = std::thread::Builder::new().spawn(move || handle_client(stream, daemon)) {
+            eprintln!("[thel-daemon] refused a connection: {e}");
+        }
     }
 }
 
@@ -1116,9 +1141,9 @@ fn handle_client(stream: UnixStream, daemon: Arc<Daemon>) {
     daemon.maybe_schedule_exit();
 }
 
-/// Handshake, then read commands until the client disconnects. May return on any
-/// handshake failure; handle_client owns the client count, so the balance holds
-/// no matter where this returns.
+/// Checks the peer, then serves it (see serve_peer). May return on any
+/// failure; handle_client owns the client count, so the balance holds no
+/// matter where this returns.
 fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
     // Reject a peer that isn't this user before honoring anything (free hardening
     // some terminals omit).
@@ -1127,17 +1152,30 @@ fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
         return;
     }
     let peer = Peer::of(stream.as_raw_fd(), daemon);
-    if peer.sandboxed {
-        eprintln!(
-            "[thel-daemon] pid {} is sandboxed: it may notify, read state, and ask through `thel session`",
-            peer.pid.unwrap_or(0)
-        );
+    if !peer.sandboxed {
+        return serve_peer(stream, daemon, &peer);
     }
+    eprintln!(
+        "[thel-daemon] pid {} is sandboxed: it may notify, read state, and ask through `thel session`",
+        peer.pid.unwrap_or(0)
+    );
+    if daemon.sandboxed_clients.fetch_add(1, Ordering::SeqCst) < MAX_SANDBOXED_CLIENTS {
+        serve_peer(stream, daemon, &peer);
+    } else {
+        eprintln!("[thel-daemon] refused a sandboxed connection: {MAX_SANDBOXED_CLIENTS} already open");
+    }
+    daemon.sandboxed_clients.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// Handshake, then read commands until the client disconnects.
+fn serve_peer(stream: UnixStream, daemon: &Arc<Daemon>, peer: &Peer) {
     // This thread reads commands from `conn`; the handshake replies are written
     // directly here, before the Client's writer thread takes over the write side.
     let mut conn = stream;
-
-    let hello: Hello = match read_frame(&mut conn) {
+    let max = if peer.sandboxed { MAX_SANDBOXED_FRAME } else { MAX_FRAME };
+    // A connection whose timeout can't be set is served without one.
+    let _ = conn.set_read_timeout(Some(HELLO_TIMEOUT));
+    let hello: Hello = match read_frame_max(&mut conn, max) {
         Ok((CONTROL, p)) => match parse_json(&p) {
             Some(h) => h,
             None => return,
@@ -1164,7 +1202,7 @@ fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
         ok: true,
         error: None,
     });
-    if conn.write_all(&reply).is_err() || conn.flush().is_err() {
+    if conn.write_all(&reply).is_err() || conn.flush().is_err() || conn.set_read_timeout(None).is_err() {
         return;
     }
 
@@ -1176,13 +1214,13 @@ fn serve_client(stream: UnixStream, daemon: &Arc<Daemon>) {
     };
 
     loop {
-        match read_frame(&mut conn) {
+        match read_frame_max(&mut conn, max) {
             Ok((CONTROL, p)) => {
                 if let Some(cmd) = parse_json::<Command>(&p) {
                     if peer.sandboxed && !cmd.harmless(peer.own_tab(daemon).as_deref()) {
                         refuse(cmd, &client);
                     } else {
-                        dispatch(daemon, cmd, &client, &peer);
+                        dispatch(daemon, cmd, &client, peer);
                     }
                 }
             }
@@ -1377,6 +1415,7 @@ impl Daemon {
             next_approval: AtomicU64::new(first_approval_id()),
             denied: Mutex::new(HashMap::new()),
             trusted: Mutex::new(HashMap::new()),
+            sandboxed_clients: AtomicUsize::new(0),
             started: Mutex::new(HashMap::new()),
             approval_timeout: APPROVAL_TIMEOUT,
             notes_dir: Mutex::new(None),
@@ -3746,6 +3785,13 @@ mod tests {
         // Header declares 4 payload bytes but only 1 follows.
         let mut buf = Cursor::new(vec![OUTPUT, 4, 0, 0, 0, b'x']);
         assert!(read_frame(&mut buf).is_err());
+    }
+
+    #[test]
+    fn read_frame_max_holds_a_frame_to_its_limit() {
+        let frame = frame_bytes(CONTROL, &[b'x'; 10]);
+        assert_eq!(read_frame_max(&mut Cursor::new(&frame), 10).unwrap().1.len(), 10);
+        assert!(read_frame_max(&mut Cursor::new(&frame), 9).is_err());
     }
 
     #[test]
