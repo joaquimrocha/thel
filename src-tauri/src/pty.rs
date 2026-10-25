@@ -975,11 +975,13 @@ mod tests {
             .unwrap();
         let pid = child.id();
 
-        let me = std::process::id();
+        let mut quiet = std::process::Command::new("sleep").arg("30").spawn().unwrap();
         assert_eq!(
-            super::stop_tree_listener(pid, me),
+            super::stop_tree_listener(pid, quiet.id()),
             Err("That process is no longer listening in this terminal".to_string()),
         );
+        quiet.kill().unwrap();
+        quiet.wait().unwrap();
         assert_eq!(super::stop_tree_listener(pid, pid), Ok(()));
         use std::os::unix::process::ExitStatusExt;
         assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGTERM));
