@@ -878,6 +878,7 @@ pub(crate) fn decode_utf8_stream(carry: &mut Vec<u8>, chunk: &[u8]) -> String {
 /// The fields of a `/proc/<pid>/stat` line after comm, so index 0 is field 3
 /// (state) and index 1 is the ppid. comm (field 2) is parenthesised and may
 /// itself hold spaces and parens, so fields count from its last closing paren.
+#[cfg(target_os = "linux")]
 pub(crate) fn stat_fields(stat: &str) -> Option<Vec<&str>> {
     Some(stat.rsplit_once(')')?.1.split_ascii_whitespace().collect())
 }
