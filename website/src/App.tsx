@@ -10,6 +10,22 @@ const INSTALL_DOC = `${REPO}/blob/main/docs/install.md`;
 // build, since that is the only other one there is; the other download stays
 // one click away either way.
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.userAgent);
+
+// Chromium freezes its Linux UA to "x86_64" whatever the CPU, so ask its
+// client hints first; Firefox and WebKit still put the real arch in the UA.
+async function linuxArch(): Promise<"aarch64" | "x86_64"> {
+  const uaData = (navigator as {
+    userAgentData?: {
+      getHighEntropyValues(hints: string[]): Promise<{ architecture?: string }>;
+    };
+  }).userAgentData;
+  const hinted = await uaData
+    ?.getHighEntropyValues(["architecture"])
+    .then((v) => v.architecture)
+    .catch(() => undefined);
+  if (hinted) return hinted === "arm" ? "aarch64" : "x86_64";
+  return /aarch64|arm64|armv8/i.test(navigator.userAgent) ? "aarch64" : "x86_64";
+}
 // Set to the announcement post URL once it is published; null hides the banner.
 const POST_URL: string | null = "https://joaquimrocha.com/announcing-thel/";
 
@@ -205,15 +221,18 @@ function Hero() {
   const [tarball, setTarball] = useState(latest);
   const [dmg, setDmg] = useState(latest);
   useEffect(() => {
-    fetch("https://api.github.com/repos/joaquimrocha/thel/releases/latest")
-      .then((r) => (r.ok ? r.json() : null))
+    Promise.all([
+      fetch("https://api.github.com/repos/joaquimrocha/thel/releases/latest")
+        .then((r) => (r.ok ? r.json() : null)),
+      linuxArch(),
+    ])
       .then(
-        (rel: {
+        ([rel, arch]: [{
           assets?: { name: string; browser_download_url: string }[];
-        } | null) => {
+        } | null, string]) => {
           const find = (re: RegExp) =>
             rel?.assets?.find((a) => re.test(a.name))?.browser_download_url;
-          const tar = find(/\.tar\.(xz|gz)$/);
+          const tar = find(new RegExp(`-linux-${arch}\\.tar\\.(xz|gz)$`));
           const disk = find(/\.dmg$/);
           if (tar) setTarball(tar);
           if (disk) setDmg(disk);
