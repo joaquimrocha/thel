@@ -297,7 +297,7 @@ try {
     await app.press("R", { ctrl: true, shift: true });
     await app.find("[data-testid=listen-port]");
     await focus(app);
-    await shot(app, "ports", null);
+    await shot(app, "ports");
     await escape(app);
 
     await app.press(",", { ctrl: true, shift: true, code: "Comma" });

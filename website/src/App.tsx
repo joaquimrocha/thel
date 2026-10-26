@@ -44,6 +44,18 @@ const FEATURES: Feature[] = [
     link: { label: "More on notifications ↗", href: `${REPO}#notifications` },
   },
   {
+    title: "Driven by your agents",
+    desc: (
+      <>
+        Agents can open sessions and terminals, type into them and keep session
+        notes with <code className="font-mono text-[13px]">thel session</code>,
+        so a dev server or test watcher runs where you can see it. Off until you
+        turn it on; closing always asks you first.
+      </>
+    ),
+    link: { label: "More on thel session ↗", href: `${REPO}#driving-thel-from-a-terminal` },
+  },
+  {
     title: "Keyboard-friendly",
     desc: "Every major action is reachable from a fuzzy command palette or direct shortcuts, and the keymap is fully rebindable and persisted.",
   },
@@ -58,6 +70,10 @@ const FEATURES: Feature[] = [
   {
     title: "Profiles",
     desc: "Independent profiles, each in its own window with its own saved layout and accent color.",
+  },
+  {
+    title: "Resource usage",
+    desc: "See each terminal's CPU, memory and listening ports, open a port in the browser or stop its process. On systemd Linux, each terminal gets its own cgroup, so nothing it started slips past.",
   },
 ];
 
@@ -96,6 +112,11 @@ const SHOTS = [
     src: "/shots/notifications.png",
     title: "Notifications",
     desc: "Activity in terminals you weren't watching.",
+  },
+  {
+    src: "/shots/ports.png",
+    title: "Listening ports",
+    desc: "A dev server's port, one click away.",
   },
 ];
 
